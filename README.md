@@ -9,6 +9,11 @@ Bluetooth Landscape Exploration &amp; Enumeration Platform
 ----------------------------------
 	- Script:		pybluez_dbus__now_with_classes.py
 
+--------------------
+- TL;DC Tool Usage -
+--------------------
+    - Command Line:     python3 dbus__bleep.py -m user
+
 ---------------
 - How to Run: -
 ---------------
