@@ -7,7 +7,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 #   Bluetooth Landscape Exploration & Enumeration Platform
 #       - Python Class Structures for Interacting with the BlueZ D-Bus interfaces
 #
-#   Last Edit Date:         2024/01/13
+#   Last Edit Date:         2024/02/29
 #   Author:                 Paul A. Wortman
 #
 #   Important Notes:
