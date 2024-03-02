@@ -7,7 +7,7 @@ Bluetooth Landscape Exploration &amp; Enumeration Platform
 ----------------------------------
 - Main Script for Functionality: -
 ----------------------------------
-	- Script:		pybluez_dbus__now_with_classes.py
+	- Script:		dbus__bleep.py
 
 --------------------
 - TL;DC Tool Usage -
