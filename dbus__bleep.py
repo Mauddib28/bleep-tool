@@ -7,7 +7,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 #   Bluetooth Landscape Exploration & Enumeration Platform
 #       - Python Class Structures for Interacting with the BlueZ D-Bus interfaces
 #
-#   Last Edit Date:         2024/05/10
+#   Last Edit Date:         2024/05/16
 #   Author:                 Paul A. Wortman
 #
 #   Important Notes:
@@ -347,40 +347,21 @@ class system_dbus__bluez_adapter:
         # Set the internal/customer discovery filter
         self.custom_discovery_filter = new_discovery_filter
 
-    # TODO: Move this function from a nested-internal function to just an internal function to the class
     # Function for setting a timeout time for device discovery
     #   - Used as a callback function for the code (automatically on the backend?)
-    #def discovery_timeout(adapter_interface, mainloop, timer_id):
     def discovery_timeout(self, adapter_interface, mainloop):
         # Debugging the Discovery Timout function
         if dbg != 0:    # ~!~
-            #print("[?] Debugging Timed Scan\n\tTimer ID:\t{0}\n\tTimer List:\t{1}".format(self.timer_id__last, self.timer_id__list))
             output_log_string = "[?] Debugging Timed Scan\n\tTimer ID:\t{0}\n\tTimer List:\t{1}".format(self.timer_id__last, self.timer_id__list)
             print_and_log(output_log_string, LOG__DEBUG)
-        # To get the .source_remove() call to work one has to (1) track the timer_id as a class property (or global) variable, (2) Add the newly created 'timer_id' to this variable, (3) when the callback function gets called, pull the information from the Class object
-        #GLib.source_remove(timer_id)
-        #GLib.source_remove(self.timer_id__last)
         ## Stop the MainLoop
         mainloop.quit()
         ## Stop other processes, signals, etc.
         adapter_interface.StopDiscovery()
-        '''
-        ## Note: Below is only needed when signal receivers are required WITH the device scanning
-        bus = dbus.SystemBus()
-        # Removing the signal receiver to the System Bus
-        bus.remove_signal_receiver(interfaces_added,"InterfacesAdded")
-        # Removing another signal receiver to the System Bus
-        bus.remove_signal_receiver(interfaces_added,"InterfacesRemoved")
-        # Removing another signal receiver to the System Bus
-        bus.remove_signal_receiver(properties_changed,"PropertiesChanged")
-        # List the devices that were found
-        list_devices_found()
-        '''
         return True
     # Note: Might need to use the '*args' debugging to determine how/what information is passed to the above function
 
 
-    ## [x] Add "Auto-termination" of the script after some period of time (to augment usability with automated scripts; lack of requirement for human interaction)
     # Function for Performing Bluetooth Device Scanning (type provided by user) as well as a default (or user provided) timeout
     #   - Nota Bene: The discovery filter can be 'auto', 'bredr', OR 'le'
     #   - Default timer set to 5000 milliseconds (i.e. 5 seconds)
@@ -395,8 +376,6 @@ class system_dbus__bluez_adapter:
     
         ## Setup the Device Discovery
         # Create the Object for the Adapter Interface;
-        #   [ ] Re-create these adpaters using the adpter Class Object
-        #adapter_object, adapter_interface, adapter_properties = create_and_return__system_adapter_dbus_elements()
         try:    # Attempt to create the adapter structures
             adapter_object, adapter_interface, adapter_properties = create_and_return__system_adapter_dbus_elements__specific_hci(self.bluetooth_adapter)
         except dbus.exceptions.DBusException:       # Checking for generic exception; TODO: Create more detailed expection
@@ -567,9 +546,6 @@ class system_dbus__bluez_signals:
         # Add the information to the general log
         logging__log_event(LOG__GENERAL, dbus_signal__properties_changed__details_string)
 
-    # Function for Catching a Bluez GATT Characteristic Properties Changed Signal
-    #def callback__signal__bluez__gatt_characteristic__properties_changed(self, interface
-
     ## Definition of GLib MainLoop Functions
     # Internal Function for Adding Signal Receivers to the Class' D-Bus property
     def mainloop__configure__add_signal_receiver(self, callback_function, dbus_interface_to_watch, signal_to_catch):
@@ -583,10 +559,8 @@ class system_dbus__bluez_signals:
         self._bus.remove_signal_receiver(callback_function, signal_receiving)
 
     # Internal Function for adding a timeout to the Class' D-Bus property; Take in a timeout in milliseconds and a function to call once timesd out
+    #def mainloop__configure__add_timeout(self, timeout_ms, callback_function, watched_interface):
     def mainloop__configure__add_timeout(self, timeout_ms, callback_function, mainloop):
-
-        # Create a GLib MainLoop Object (cause it's needed?)
-        #mainloop = GLib.MainLoop() ; Not needed since the function is being passed a GLib MainLoop object
 
         # Adding a timeout to the GLib MainLoop
         self.timer_id__last = GLib.timeout_add(timeout_ms, callback_function, mainloop)           # Nota Bene: This version of the script runs endlessly and does not stop.... Requires human interaction (TODO: FIX THIS); BECAUSE mainloop.quit() does NOT get called in the callback function (??)
@@ -601,10 +575,6 @@ class system_dbus__bluez_signals:
         self.clear_single_timer(timer_id)
 
     ## Definitions for Notification catching using GLib MainLoop
-    # Internal Function for Adding the Signal Receiver to D-Bus to Capture Signals          [ MIXED FUNCTION THAT IS PERFORMING BASIC LISTENING + TRYING TO ACT AS THE CALLBACK FUNCTION + TIMER ]
-    #   - Note: This function has the default assumption of looking for PropertiesChanged signals on the Properties D-Bus interface
-    # => This might need to be the callback function? OR make a new (general?) function for forcing the Notification Listening to end
-    #def mainloop__notifications__capture(self, notifying_interface, callback_function=debugging__dbus_signals__catchall, dbus_interface_to_watch=bluetooth_constants.DBUS_PROPERTIES, signal_to_catch="PropertiesChanged", listening_time__ms=5000):
     def mainloop__notifications__capture(self, callback_function, dbus_interface_to_watch=bluetooth_constants.DBUS_PROPERTIES, signal_to_catch="PropertiesChanged", listening_time__ms=5000):
         ## Setup the Notification Capture       <----- Configuration and setup of the interface
         # Setting the debugging D-Bus signal catcher as the callback for any "PropertiesChanged" signals incoming on the org.freedesktop.DBus.Properties interface
@@ -628,7 +598,6 @@ class system_dbus__bluez_signals:
         # Stop the mainloop
         mainloop.quit()
         # Notification Listening for Notifications is Done
-        #print("[+] Emittion Listening Completed")
         output_log_string = "[+] Emittion Listening Completed"
         print_and_log(output_log_string)
         # Nota Bene: During testing this function was successfully shown to capture a SINGLE notification and then end
@@ -639,10 +608,6 @@ class system_dbus__bluez_signals:
         # Add the information to the general log
         dbus__signal_catch__start_string = "[*] Starting D-Bus Signal Catching"
         logging__log_event(LOG__GENERAL, dbus__signal_catch__start_string)
-        # Setup the notifications capture
-        #self.mainloop__notifications__capture(self, notification_interface, callback_function, dbus_interface_to_watch=bluetooth_constants.DBUS_PROPERTIES, signal_to_catch="PropertiesChanged", listening_time__ms=5000)
-        # Note: Passing the defaults to the function above; Note getting an error about "got multiple values for argument 'dbus_interface_to_watch'"
-        #   - The issue is that because the 'dbus_interface_to_watch' variable is passed as "dbus_interface_to_watch=bluetooth_constants.DBUS_PROPERTIES" which means Python interprets this as a keyword where the other is being passed as a positional argument (in the definition)
         self.mainloop__notifications__capture(callback_function)
         # dbus_interface_to_watch=bluetooth_constants.DBUS_PROPERTIES, signal_to_catch="PropertiesChanged", listening_time__ms=5000)
 
@@ -669,7 +634,6 @@ class system_dbus__bluez_signals:
         # Note the massing of the mainloop structure to the timeout callback function; hence needing to call this here within the function (after mainloop is defined)
 
         ## Running the MainLoop
-        ## Running the MainLoop             <----- This MUST be in the MAIN TIMED FUNCTION; MOVE THIS AND ABOVE TO THE RUNNING TIMED LISTEN FUNCTION
         # Loop for listening on the D-Bus for Notify signals (e.g. "PropertiesChanged")
         try:
             if dbg != 1:        # ~!~
@@ -732,15 +696,12 @@ class system_dbus__bluez_signals:
         value = changed.get('Value')            # Note: Need to confirm that this works (or that the data passed via the "changed" variable would have this entry)
         # Check if 'value' variable got anything set to it
         if not value:
-            #print("[+] Got Changed of:\t{0}\n\tType:\t{1}".format(changed.items(), type(changed.items())))
             output_log_string = "[+] Got Changed of:\t{0}\n\tType:\t{1}".format(changed.items(), type(changed.items()))
             print_and_log(output_log_string)
         else:
-            #print("[+] Found 'Value' in Changed:\t{0}".format(value))
             output_log_string = "[+] Found 'Value' in Changed:\t{0}".format(value)
             print_and_log(output_log_string)
             if isinstance(value, dbus.Array):
-                #print("\tASCii:\t{0}".format(convert__hex_to_ascii(bluetooth_utils.dbus_to_python(value))))
                 output_log_string = "\tASCii:\t{0}".format(convert__hex_to_ascii(bluetooth_utils.dbus_to_python(value)))
                 print_and_log(output_log_string)
 
@@ -764,7 +725,6 @@ class system_dbus__bluez_signals:
         #   -> Note: with the above we notice the arguements are (1) time in milliseconds, (2) the callback function to make, and (3) the mainloop object
         # Run the mainloop()
         mainloop.run()                  #   <------ Thread is getting caught here due to (1) lack of a try statement to allow keyboard interrupt and (2) timeout NOT happening (since NOT backgrounding the thread?)
-        # TODO: Confirm that the above command will work; especially within the this Class structure
 
     # Function to verify the passed Characteristic Interface is valid for Notification Emittion Capture
     def validate__dbus__gatt_characteristic(self, user_device_object, characteristic_name):
@@ -848,7 +808,6 @@ class system_dbus__bluez_signals:
             raise bluetooth_exceptions.UnsupportedError(bluetooth_constants.RESULT_ERR_NOT_SUPPORTED)
             return passed
         # Check if the Notify Service is already running
-        #if characteristic_interface.Get(bluetooth_constants.GATT_CHARACTERISTIC_INTERFACE, "Notifying") == False:
         if user_device_object.find_and_get__characteristic_property(characteristic_interface, "Notifying") == False:
             raise bluetooth_exceptions.StateError(bluetooth_constants.RESULT_ERR_WRONG_STATE)
             return passed
@@ -868,18 +827,12 @@ class system_dbus__bluez_signals:
     def capture_and_act__emittion__gatt_characteristic(self, user_device_object, characteristic_name):
         # Determine what element (e.g. S/C/D) is desired to capture a notification from
         #   - Bonus:    Decide if emittion capture once or continuous
-        ## TODO: Add step(s) here
 
         # Perform requirement/error check on provided S/C/D + Generate the Characteristic Interface needed
         #   - Prepare required configuration and tracking structures
-        #print("[*] Creating Characteristic Structures to Emittion Capture")
         output_log_string = "[*] Creating Characteristic Structures to Emittion Capture"
         print_and_log(output_log_string)
         characteristic_properties, characteristic_interface = self.validate__dbus__gatt_characteristic(user_device_object, characteristic_name)
-        #sanity_check = self.validate__dbus__gatt_characteristic(user_device_object, characteristic_name)
-        #if not sanity_check:
-        #    print("[-] Characteristic [ {0} ] Failed Pre-Check".format(characteristic_name))
-        #    return
         if characteristic_interface is None:
             #print("[-] No Characteristic Interface Generated for [ {0} ]".format(characteristic_name))
             output_log_string = "[-] No Characteristic Interface Generated for [ {0} ]".format(characteristic_name)
@@ -888,34 +841,26 @@ class system_dbus__bluez_signals:
 
         # Configure the Thread for notification capture
         #   - Include BOTH callback function and teardown process (e.g. disable notification, stop MainLoop)
-        #print("[*] Configuring and running the Thread")
         output_log_string = "[*] Configuring and running the Thread"
         print_and_log(output_log_string)
         self.threads__configure_and_run(self.start_notification, characteristic_interface)       # Note: This call to the threads function will set the receivers, start notification, and run the MainLoop
-        # Function below gets used how?? Gets called by the above function, which will pass the characteristic_interface to it as well 
-        #start_notification(self, characteristic_interface):
 
         # Artifical Timing on the Notification Running/Being Captured
-        #print("[*] Waiting 20 Seconds....\n\tStart:\t{0}".format(time.ctime()))
         output_log_string = "[*] Waiting 20 Seconds....\n\tStart:\t{0}".format(time.ctime())
         print_and_log(output_log_string)
         time.sleep(20)
-        #print("\tEnd:\t{0}\n[+] Done waiting time".format(time.ctime()))
         output_log_string = "\tEnd:\t{0}\n[+] Done waiting time".format(time.ctime())
         print_and_log(output_log_string)
 
         # Stop the Notification on the Characteristic Interface
-        #print("[*] Validating Characteristic to Stop Notification")
         output_log_string = "[*] Validating Characteristic to Stop Notification"
         print_and_log(output_log_string)
         self.validate__dbus__gatt_characteristic__pre_stop(user_device_object, characteristic_properties, characteristic_interface)
-        #print("[*] Stopping Notification on the Characteristic Interface")
         output_log_string = "[*] Stopping Notification on the Characteristic Interface"
         print_and_log(output_log_string)
         self.stop_notification(characteristic_interface)
 
         # Chec/Verify that "Action" was perform with/using any received value
-        ## TODO: Something....
 
 # Device Object + Interface for Bluetooth Low Energy    -   Used to Interact with a Device, Determine the Device Properties, and Introspect the ``Lower Level'' Properties (i.e. Services, Characteristics, and Descriptors)
 #   - Note: Added in functionality to change the HCI adapter
@@ -976,12 +921,8 @@ class system_dbus__bluez_device__low_energy:
         if dbg != 0:
             output_log_string = "[!] Starting understand_and_handle__dbus_errors()\n\tError:\t{0}".format(exception_e)
             print_and_log(output_log_string)
-        #if exception_e == DBusException:
-            # Something
-            #print("[!] Error: May need to Connect to the Device first?\n\t{0}".format(exception_e))
         if exception_e == AttributeError:
             # Attribute Error Condition
-            #print("[!] Error: May not have setup a D-Bus interface being used?\n\t{0}".format(exception_e))
             output_log_string = "[!] Error: May not have setup a D-Bus interface being used?\n\t{0}".format(exception_e)
             print_and_log(output_log_string)
         elif isinstance(exception_e, dbus.exceptions.DBusException):         ## Does not seem to work
@@ -990,28 +931,15 @@ class system_dbus__bluez_device__low_energy:
                 #print("[!] Error: D-Bus error has occured!\n\t{0}".format(exception_e))
                 output_log_string = "[!] Error: D-Bus error has occured!\n\t{0}".format(exception_e)
                 print_and_log(output_log_string, LOG__DEBUG)
-                #raise RuntimeError(exception_e.get_dbus_message())
-            #if "NotPermitted" in exception_e.args:
-            # Read not permitted error
-            #if "Read not permitted" in exception_e.args:
-            #    # Not Permitted Error Condition
-            #    #print("[!] Error: May not have permission for R/W; perhaps need more than just connection to device? OR the 'read' capability does not exist at the target\n\t{0}".format(exception_e))
-            #    output_log_string = "[!] Error: May not have permission for R/W; perhaps need more than just connection to device? OR the 'read' capability does not exist at the target\n\t{0}".format(exception_e)
-            #    print_and_log(output_log_string)
-            #    # Return Read Not Permitted Error
-            #    return bluetooth_constants.RESULT_ERR_READ_NOT_PERMITTED
-            # org.bluez.Error.NotPermitted
             if exception_e.get_dbus_name() == 'org.bluez.Error.NotPermitted':
                 # Error of Not Permitted
                 output_log_string = "[!] Error: May not have permission for R/W; perhaps need more than just connection to device? OR the 'read' capability does not exist at the target\n\t{0}".format(exception_e)
                 print_and_log(output_log_string)
                 # Return Read Not Permitted Error
                 return bluetooth_constants.RESULT_ERR_READ_NOT_PERMITTED
-            #elif "InvalidAgruments" in exception_e.args:
             # Invalid offset exception
             elif "Invalid offset" in exception_e.args:
                 # Invalid Arguments Error Condition
-                #print("[!] Error: May have incorrectly passed R/W variables? (e.g. invalid offset)\n\t{0}".format(exception_e))
                 output_log_string = "[!] Error: May have incorrectly passed R/W variables? (e.g. invalid offset)\n\t{0}".format(exception_e)
                 print_and_log(output_log_string)
             # ATT Error     | TODO: Figure out why this branch does NOT trigger
@@ -1019,7 +947,6 @@ class system_dbus__bluez_device__low_energy:
                 # ATT error
                 if "0x0e" in exception_e.args:
                     # Unlikely Error; maybe a Write Response from earlier bluez version (i.e. 5.50) Write with Response?; OR Host Rejected due to security reasons; e.g. The host at the remote side has rejected the connection because the remote host determined that the local host did not meet its security criteria.
-                    #print("[!] Error: May be an incorreclty understood Write with Response or an Unlikely Error or Host Rejected Due to Security Reasons\n\t{0}".format(exception_e))
                     output_log_string = "[!] Error: May be an incorreclty understood Write with Response or an Unlikely Error or Host Rejected Due to Security Reasons\n\t{0}".format(exception_e)
                     print_and_log(output_log_string)
                 else:
@@ -1027,6 +954,7 @@ class system_dbus__bluez_device__low_energy:
                     print_and_log(output_log_string)
             elif "Operation failed with ATT error" in exception_e.args:     # Second attempt at catching the "ATT error" error
                 print("[!!!!!!] ATT ERROR YO!")
+            # org.freedesktop.DBus.Error.NoReply
             elif (exception_e.get_dbus_name() == 'org.freedesktop.DBus.Error.NoReply'):
                 # Error of NoReply from the taret
                 output_log_string = "[!] Error: No Reply received from target\n\t{0}".format(exception_e)
@@ -1041,7 +969,6 @@ class system_dbus__bluez_device__low_energy:
                 # Attempt to add a return value
                 return bluetooth_constants.RESULT_ERR_NOT_FOUND
             # org.freedesktop.DBus.Error.ServiceUnknown
-            #elif "was not provided by any .service files" in exception_e.args:
             elif (exception_e.get_dbus_name() == 'org.freedesktop.DBus.Error.ServiceUnknown'):
                 # Error of ServiceUnknown
                 output_log_string = "[!] Error: Unknown Service name provided\n\t{0}".format(exception_e)
@@ -1054,12 +981,11 @@ class system_dbus__bluez_device__low_energy:
                     print("[!!! !!!] ATT ERROR TIMEZ!")
                 elif "Not connected" in exception_e.args:
                     # Error of not connected to target (?)
-                    #print("[!] error: may not be connected to the target device\n\t{0}".format(exception_e))
                     output_log_string = "[!] Error: may not be connected to the target device\n\t{0}".format(exception_e)
                     print_and_log(output_log_string, LOG__DEBUG)
                     # Return code for not being connected
                     return bluetooth_constants.RESULT_ERR_NOT_CONNECTED
-                elif "le-connection-abort-by-local" in e.args:
+                elif "le-connection-abort-by-local" in exception_e.args:
                     output_log_string = "[!] Error: Target Device has terminated the connection remotely\n\t{0}".format(exception_e)
                     print_and_log(output_log_string, LOG__DEBUG)
                     return bluetooth_constants.RESULT_ERR_REMOTE_DISCONNECT
@@ -1071,12 +997,12 @@ class system_dbus__bluez_device__low_energy:
                 # Error of In Progress
                 output_log_string = "[!] Error: In Progress error received\n\t{0}".format(exception_e)
                 print_and_log(output_log_string)
-                # Perform a forced wait (???); TODO: Determine if this is acceptable action
+                # Perform a forced wait
                 time.sleep(timewait_in_progress)       # Force a sleep of 200 milliseconds
                 return bluetooth_constants.RESULT_ERR_ACTION_IN_PROGRESS
             # org.freedesktop.DBus.Error.UnknownObject
             elif exception_e.get_dbus_name() == 'org.freedesktop.DBus.Error.UnknownObject':
-                # org.freedesktop.DBus.Error.UnknownObject; TODO: Add signature recognition checking
+                # org.freedesktop.DBus.Error.UnknownObject
                 if "Method \"GetAll\" with signature \"s\"" in exception_e.args:
                     # Error of an Unknown Object call
                     output_log_string = "[!] Error: Method x with signature y error received, device may no longer be within range\n\t{0}".format(exception_e)
@@ -1137,9 +1063,6 @@ class system_dbus__bluez_device__low_energy:
         else:
             out_log_string = "[*] BLE Class::perform__fix_error::Error of Unknown Type and Solution Happened\t-\t[ {0} ]".format(self.error_buffer)
             print_and_log(out_log_string, LOG__DEBUG)
-        # Assume error handled ??
-        #self.reset__error_buffer()
-
 
     # Internal Function for Creating and Setting the Device Object relating to the BLE Device Path
     def create_and_set__device_object(self):
@@ -1167,7 +1090,6 @@ class system_dbus__bluez_device__low_energy:
         self.device_properties = dbus.Interface(self.device_object, bluetooth_constants.DBUS_PROPERTIES)
 
     # Internal Function for Creating and Setting the Device Introspection relating to the Device Interface
-    ##  - NOTE: This will provide a 'snapshot in time' of the Bluetooth Low Energy GATT Device Interface; Does NOT handle the need to double-read some properties
     def create_and_set__device_introspection(self):
         # Check that the Device Interface exist (is it None?)
         if not self.device_interface:
@@ -1214,19 +1136,13 @@ class system_dbus__bluez_device__low_energy:
             descriptor_properties_array = bluetooth_utils.dbus_to_python(descriptor_properties.GetAll(bluetooth_constants.GATT_DESCRIPTOR_INTERFACE))       # Do not need this?  Since this call won't work?
             # Get Error:    org.freedesktop.DBus.Error.UnknownMethod: Method "ReadValue" with signature "s" on interface "org.freedesktop.DBus.Properties" doesn't exist
         except Exception as e:
-            #print("[-] Unable to make call to GetAll() for a descriptor [ {0} ]".format(descriptor_path))
             output_log_string = "[-] Unable to make call to GetAll() for a descriptor [ {0} ]".format(descriptor_path)
             print_and_log(output_log_string)
             self.understand_and_handle__dbus_errors(e)
-        # Get Error:    dbus.exceptions.DBusException: org.freedesktop.DBus.Error.UnknownObject: Method "GetAll" with signature "s" on interface "org.freedesktop.DBus.Properties" doesn't exist
-        # Note: There is no introspection for descriptors   <--- WRONG!?! TODO: Add descriptor_introspection
+        # Note: There is no introspection for descriptors
         descriptor_introspection = descriptor_interface.Introspect(dbus_interface=INTROSPECT_INTERFACE)
         # Return the set of GATT parts
         return descriptor_path, descriptor_object, descriptor_interface, descriptor_properties, descriptor_introspection
-
-    # Internal Function for Retrieving an array of the device properties; DEPRECIATED VERSION (???)
-    #def find_and_get__all_device_properties(self):
-    #    return bluetooth_utils.dbus_to_python(self.device_properties.GetAll(bluetooth_constants.DEVICE_INTERFACE))
 
     # Internal Function for Requesting/Getting a Specific Device Property using the Device Property interface
     def find_and_get__device_property(self, property_name):
@@ -1236,10 +1152,8 @@ class system_dbus__bluez_device__low_energy:
             self.create_and_set__device_properties()
         # Attempt to read the given 'property_name'; Note conversion to Python from D-Bus object
         property_return = bluetooth_utils.dbus_to_python(self.device_properties.Get(bluetooth_constants.DEVICE_INTERFACE, property_name))
-        # Commented out the code below to move this try statement to a higher level
         # Print out the result of the search
         if dbg != 0:        # ~!~
-            #print("Device\t{0}\t-\tProperty\t{1}\n\tValue:\t\t{2}".format(self.device_address, property_name, property_return))
             output_log_string = "Device\t{0}\t-\tProperty\t{1}\n\tValue:\t\t{2}".format(self.device_address, property_name, property_return)
             print_and_log(output_log_string, LOG__DEBUG)
         # Return the property_return
@@ -1269,7 +1183,6 @@ class system_dbus__bluez_device__low_energy:
             print_and_log(output_log_string)
             # Nota Bene: HERE is where this framework can see ALL the SERVICE UUIDs, including the GENERIC ACCESS PROFILE UUID
             for device_property in device_properties_array:
-                #print("\t{0}\t\t-\tValue:\t{1}".format(device_property, device_properties_array[device_property]))
                 output_log_string = "\t{0}\t\t-\tValue:\t{1}".format(device_property, device_properties_array[device_property])
                 print_and_log(output_log_string)
                 if dbg != 0:        # ~!~ Debugging Class of Device information during enumeration
@@ -1277,10 +1190,6 @@ class system_dbus__bluez_device__low_energy:
                     list__major_service_classes, list__major_device_class, list__minor_device_class, fixed_bits_check = decode__class_of_device(self.device_class)
                     output_log_string += "[?] Extracted Information:\n\tMajor Service Classes:\t{0}\n\tMajor Device Classes:\t{1}\n\tMinor Device Class:\t{2}\n\tFixed Bits Check:\t{3}".format(list__major_service_classes, list__major_device_class, list__minor_device_class, fixed_bits_check)
                     print_and_log(output_log_string)
-                ## Additional Checks to Convert any collected data      ## NOTE: Attempting to Decode Information here causes an error '[!] Error occurred while connecting to the device'
-                # Decode and Print Class of Device Information
-                #list__major_service_classes, list__major_device_class, list__minor_device_class, fixed_bits_check = decode__class_of_device(self.device_class)
-                #output_log_string += "\t\tMajor Service Classes:\t{0}\n\t\tMajor Device Classes:\t{1}\n\t\tMinor Device Class:\t{2}\n\t\tFixed Bits Check:\t{3}".format(list__major_service_classes, list__major_device_class, list__minor_device_class, fixed_bits_check)
         # Return the device_properties_array
         return device_properties_array
 
@@ -1304,7 +1213,6 @@ class system_dbus__bluez_device__low_energy:
         return property_return
 
     # Internal Function for Requesting/Getting all the service properties using the GATT Service Property interface
-    #   - TODO: Improve handling below; believe getting an error due to GAP + how D-Bus ignores this (by built in functionality; on purpose)
     def find_and_get__all_service_properties(self, service_properties_interface):
         # Check that the Service Properties Interface exists
         if not service_properties_interface:
@@ -1318,7 +1226,6 @@ class system_dbus__bluez_device__low_energy:
             service_properties_array = bluetooth_utils.dbus_to_python(service_properties_interface.GetAll(bluetooth_constants.GATT_SERVICE_INTERFACE))
             if dbg != 0:
                 for service_property in service_properties_array:
-                    #print("\t{0}\t\t-\tValue:\t{1}".format(service_property, service_properties_array[service_property]))
                     output_log_string = "\t{0}\t\t-\tValue:\t{1}".format(service_property, service_properties_array[service_property])
                     print_and_log(output_log_string, LOG__DEBUG)
         except Exception as e:
@@ -1340,7 +1247,7 @@ class system_dbus__bluez_device__low_energy:
         try:
             property_return = bluetooth_utils.dbus_to_python(characteristic_properties_interface.Get(bluetooth_constants.GATT_CHARACTERISTIC_INTERFACE, property_name))
         except Exception as e:
-            if dbg != 0:    # ~!~ TODO: Figure out why the Characteristic Handle always returns NULL/NONE; might be related to failure to read the property     <--- Reason: Server-side defined, and therefore no documentated "math" to generate
+            if dbg != 0:
                 self.error_buffer = self.understand_and_handle__dbus_errors(e)
             property_return = None
         # Return the property_return
@@ -1351,7 +1258,6 @@ class system_dbus__bluez_device__low_energy:
         # Check that the Charactersitic Properties Interface exists
         if not characteristic_properties_interface:
             if dbg != 0:
-                #print("[-] No characteristic_properties_interface passed")
                 output_log_string = "[-] No characteristic_properties_interface passed"
                 print_and_log(output_log_string, LOG__DEBUG)
             return None
@@ -1360,7 +1266,6 @@ class system_dbus__bluez_device__low_energy:
             characteristic_properties_array = bluetooth_utils.dbus_to_python(characteristic_properties_interface.GetAll(bluetooth_constants.GATT_CHARACTERISTIC_INTERFACE))
             if dbg != 0:
                 for characteristic_property in characteristic_properties_array:
-                    #print("\t{0}\t\t-\tValue:\t{1}".format(characteristic_property, characteristic_properties_array[characteristic_property]))
                     output_log_string = "\t{0}\t\t-\tValue:\t{1}".format(characteristic_property, characteristic_properties_array[characteristic_property])
                     print_and_log(output_log_string, LOG__DEBUG)
         except Exception as e:
@@ -1417,7 +1322,6 @@ class system_dbus__bluez_device__low_energy:
         # Ensure that the introspection_interface is not None
         if not introspection_interface:
             if dbg != 0:
-                #print("[!] Error: Introspection Interface is non-existant")
                 output_log_string = "[!] Error: Introspection Interface is non-existant"
                 print_and_log(output_log_string, LOG__DEBUG)
             return None
@@ -1474,15 +1378,12 @@ class system_dbus__bluez_device__low_energy:
         # Call internal class function
         if not service_characteristics_list:
             if dbg != 0:
-                #print("[*] Service's characteristics list is empty:\t\t{0}".format(service_characteristics_list))
                 output_log_string = "[*] Service's characteristics list is empty:\t\t{0}".format(service_characteristics_list)
                 print_and_log(output_log_string, LOG__DEBUG)
             return None
         for service_characteristic in service_characteristics_list:
             # Create the eTree string to interate through the characteristics of the service
             characteristic_path, characteristic_object, characteristic_interface, characteristic_properties, characteristic_introspection = self.create_and_return__characteristic__gatt_inspection_set(service_path, service_characteristic)
-            # TODO: Figure out how to have this function return (ALL?) characteristics related to the device (? or just a single level's worth)
-            #introspection_characteristics_list.append()
             introspection_characteristics_list.append(self.find_and_get__device__etree_details(characteristic_introspection, 'char'))
         # Return the found list
         return introspection_characteristics_list
@@ -1592,13 +1493,11 @@ class system_dbus__bluez_device__low_energy:
             ## Others
             else:
                 # Unknown Property
-                #print("[-] Unknown Property:\t{0}\t\t-\t\tValue:\t{1}".format(device_property, device_properties_array[device_property]))
                 output_log_string = "[-] Unknown Property:\t{0}\t\t-\t\tValue:\t{1}".format(device_property, device_properties_array[device_property])
                 print_and_log(output_log_string)
 
     # Internal Function for Writing a Single Byte to a Device Characteristic Interface
     def write__device__characteristic__single_byte(self, characteristic_interface, write_value, dict_options={}):
-        #print("[*] Performing Single Byte Write")
         output_log_string = "[*] Performing Single Byte Write"
         print_and_log(output_log_string)
         try:
@@ -1609,13 +1508,11 @@ class system_dbus__bluez_device__low_energy:
         except Exception as e:
             # Perform error handling
             self.understand_and_handle__dbus_errors(e)
-        #print("[+] Completed Single Byte Write")
         output_log_string = "[+] Completed Single Byte Write"
         print_and_log(output_log_string)
 
     # Internal Function for Writing Byte-by-Byte to a Device Characteristic Interface
     def write__device__characteristic__byte_by_byte(self, characteristic_interface, write_value, dict_options={}):
-        #print("[*] Performing Byte-by-Byte Write")
         output_log_string = "[*] Performing Byte-by-Byte Write"
         print_and_log(output_log_string)
         try:
@@ -1628,7 +1525,6 @@ class system_dbus__bluez_device__low_energy:
         except Exception as e:
             # Perform error handling
             self.understand_and_handle__dbus_errors(e)
-        #print("[+] Completed Byte-by-Byte Write")
         output_log_string = "[+] Completed Byte-by-Byte Write"
         print_and_log(output_log_string)
 
@@ -1639,7 +1535,7 @@ class system_dbus__bluez_device__low_energy:
         print_and_log(output_log_string)
         try:
             # Write the single array to the target
-            characteristic_interface.WriteValue(write_value, dict_options)      # NOTE: The lack of [ ] around write_value ensures we do NOT pass a nested array (e.g. [ [...] ])
+            characteristic_interface.WriteValue(write_value, dict_options)
         except Exception as e:
             # Perform error handling
             self.understand_and_handle__dbus_errors(e)
@@ -1658,16 +1554,12 @@ class system_dbus__bluez_device__low_energy:
             return None
         # Attempt to read the characteristic value; TODO: Improve the visibility of this function call
         try:
-            #characteristic_value = characteristic_interface.ReadValue(dict_options)
-            #return characteristic_interface.ReadValue(dict_options)
             characteristic_interface.ReadValue(dict_options)
-            #return self.find_and_get__characteristic_property(characteristic_properties, 'Value')
         except Exception as e:
             if dbg != 1:    # ~!~   NOTE: Testing why the 'read' gives a different value from the 'explore' or 'read-all' commands for the user interface
                 out_log_string = "[-] BLE Class::read__device__characteristic\t-\tFailure in Performing Read"
                 print_and_log(out_log_string, LOG__DEBUG)
             # Track the error via Class internal variable
-            #return_error = self.understand_and_handle__dbus_errors(e)      # Note: Desire to pass errors, but unsure how.... Perform Class error variable?
             self.error_buffer = self.understand_and_handle__dbus_errors(e)
             out_log_string = "\tError Value Generated:\t\t[ {0} ]".format(self.error_buffer)
             print_and_log(out_log_string)
@@ -1676,13 +1568,8 @@ class system_dbus__bluez_device__low_energy:
             out_log_string = "[*] BLE Class::read__device__characteristic::Performing Fixes due to Error Buffer"
             print_and_log(out_log_string, LOG__DEBUG)
             self.perform__fix_error()
-            #characteristic_value = None
-            #return None
-            #return UNKNOWN_VALUE
-        # Return the value
-        #return characteristic_value
 
-    # Internal Function for Reading from a Device Characteristic Interface - SECONDARY TESTING FUNCTION; Examination of Return
+    # Internal Function for Reading from a Device Characteristic Interface
     def read__device__characteristic__with_signature(self, characteristic_interface, dict_options={}):
         # Check that the device characteristic interface exists
         if not characteristic_interface:
@@ -1694,15 +1581,11 @@ class system_dbus__bluez_device__low_energy:
         # Attempt to read the characteristic value; TODO: Improve the visibility of this function call
         try:
             characteristic_value = characteristic_interface.ReadValue(dict_options)
-            #return characteristic_interface.ReadValue(dict_options)
-            #return characteristic_interface.ReadValue(dict_options)
-            #return self.find_and_get__characteristic_property(characteristic_properties, 'Value')
         except Exception as e:
             if dbg != 1:    # ~!~   NOTE: Testing why the 'read' gives a different value from the 'explore' or 'read-all' commands for the user interface
                 out_log_string = "[-] BLE Class::read__device__characteristic\t-\tFailure in Performing Read"
                 print_and_log(out_log_string, LOG__DEBUG)
             # Track the error via Class internal variable
-            #return_error = self.understand_and_handle__dbus_errors(e)      # Note: Desire to pass errors, but unsure how.... Perform Class error variable?
             self.error_buffer = self.understand_and_handle__dbus_errors(e)
             out_log_string = "\tError Value Generated:\t\t[ {0} ]".format(self.error_buffer)
             print_and_log(out_log_string)
@@ -1712,9 +1595,6 @@ class system_dbus__bluez_device__low_energy:
             out_log_string = "[*] BLE Class::read__device__characteristic::Performing Fixes due to Error Buffer"
             print_and_log(out_log_string, LOG__DEBUG)
             self.perform__fix_error()
-            #characteristic_value = None
-            #return None
-            #return UNKNOWN_VALUE
         # Return the value
         return characteristic_value
 
@@ -1729,9 +1609,7 @@ class system_dbus__bluez_device__low_energy:
                 print_and_log(output_log_string, LOG__DEBUG)
         # Variables used for writing
         retry_type = None
-        #user_input_type = type(write_value)
         if dbg != 1:    # ~!~
-            #print("\tWrite Value:\t{0}\n\tWrite Type:\t{1}".format(write_value, type(write_value)))
             output_log_string = "\tWrite Value:\t{0}\n\tWrite Type:\t{1}".format(write_value, type(write_value))
             print_and_log(output_log_string)
         ## Attempt to write data to the target interface
@@ -1745,22 +1623,18 @@ class system_dbus__bluez_device__low_energy:
             return True     # TODO: Verify that this is correct behavior
         # Write Value is a float
         elif isinstance(write_value, float):
-            #print("[*] Write Value is Float")
             output_log_string = "[*] Write Value is Float"
             print_and_log(output_log_string)
         # Write Value is a string
         elif isinstance(write_value, str):
-            #print("[*] Write Value is String")
             output_log_string = "[*] Write Value is String"
             print_and_log(output_log_string)
             # Convert the input to an ASCii encoded string (required?)
             write_value = self.ascii_string__to__dbus_value(write_value)
             if dbg != 0:    # ~!~
-                #print("[?] Write Value:\t{0}\n\tWrite Type:\t{1}".format(write_value, type(write_value)))
                 output_log_string = "[?] Write Value:\t{0}\n\tWrite Type:\t{1}".format(write_value, type(write_value))
                 print_and_log(output_log_string, LOG__DEBUG)
             ## Code for writing a string type
-            ## TODO: Add separate choices for performing (1) byte-by-byte write and (2) total byte array all together
             # Check to see if the provided data is length ONE or GREATER; should be an indicitor of the type of data being passed
             if len(write_value) < 1:
                 #print("[-] Data of length zero was passed to write")
@@ -1818,14 +1692,11 @@ class system_dbus__bluez_device__low_energy:
         # Check that the device descriptor interface exists
         if not descriptor_interface:
             if dbg != 0:
-               #print("[-] Device Descriptor Interface is Empty... Was it created?")
                output_log_string = "[-] Device Descriptor Interface is Empty... Was it created?"
                print_and_log(output_log_string, LOG__DEBUG)
         # Attempt to read the descriptor value
         try:
             # Note: Need to perform a double read to get actual data from a GATT Descriptor
-            # First Read    ( Note: Do NOT set to a variable?  Because that causes issue???)    <---- Do not need this????
-            #descriptor_interface.ReadValue(dict_options)
             return descriptor_interface.ReadValue(dict_options)
         except Exception as e:
             if dbg != 0:
@@ -1837,7 +1708,6 @@ class system_dbus__bluez_device__low_energy:
         # Check that the device descriptor interface exists
         if not descriptor_interface:
             if dbg != 0:
-                #print("[-] Device Descriptor Interface is Empty.... Was it created?")
                 output_log_string = "[-] Device Descriptor Interface is Empty.... Was it created?"
                 print_and_log(output_log_string)
         # Attempt to write to the descriptor value
@@ -1846,22 +1716,18 @@ class system_dbus__bluez_device__low_energy:
             return True
         except Exception as e:
             if dbg != 0:
-                #print("[-] Device Descriptor Interface is Empty.... Was it created?")
                 output_log_string = "[-] Device Descriptor Interface is Empty.... Was it created?"
                 print_and_log(output_log_string)
         return False
 
     # Internal Function for Writing an ASCii string one byte at a time
-    ## TODO: Encorporate mechanics of this into the larger class write command; should help with type conversion when writing
     def write__device__characteristic__one_byte_at_a_time(self, characteristic_interface, ascii_string, dict_options={}):
         if dbg != 0:
-            #print("[*] Writing provided ASCii string")
             output_log_string = "[*] Writing provided ASCii string"
             print_and_log(output_log_string, LOG__DEBUG)
         encoded__ascii_string = self.ascii_string__to__dbus_value(ascii_string)
         for single_character in encoded__ascii_string:
             if dbg != 0:
-                #print("\tEncoded Chatacter:\t{0}".format(single_character))
                 output_log_string = "\tEncoded Chatacter:\t{0}".format(single_character)
                 print_and_log(output_log_string, LOG__DEBUG)
             try:
@@ -1870,7 +1736,6 @@ class system_dbus__bluez_device__low_energy:
                 self.understand_and_handle__dbus_errors(e)
                 return False
         if dbg != 0:
-            #print("[+] Completed writing the ASCii string")
             output_log_string = "[+] Completed writing the ASCii string"
             print_and_log(output_log_string, LOG__DEBUG)
         return True
@@ -1898,7 +1763,6 @@ class system_dbus__bluez_device__low_energy:
     def Reconnect_Check(self):
         out_log_string = "[*] BLE Class::Reconnect_Check\t-\tPerforming reconnect check"
         print_and_log(out_log_string, LOG__DEBUG)
-        # TODO: Determine if this try statement should be allowed or not
         try:
             # Update the .device_connected variable; Note: SHOULD fix the issue of the .device_connected value being "stale"
             self.device_connected = self.find_and_get__device_property("Connected")
@@ -1923,7 +1787,6 @@ class system_dbus__bluez_device__low_energy:
 
     # Function for grabbing property values from an array
     def grab__properties_array__value(self, properties_array, properties_string):
-        #print("[?] Searching for the string [ {0} ] in the properties array < {1} >".format(properties_string, properties_array))
         # Quick check to ensure there is a string value being passed
         if not properties_string:
             #print("[!] Properties String [ {0} ] is NoneType.... Returnning error")
@@ -1933,10 +1796,8 @@ class system_dbus__bluez_device__low_energy:
         # Attempt to read the properties value
         try:
             properties_value = properties_array[properties_string]
-            #print("\tProperty Value:\t{0}".format(''.join(chr(i) for i in properties_value)))
         except Exception as e:
             if dbg != 0:        # ~!~
-                #print("\t[-] No Value [ {1} ] for this Property [ {2} ]\n\tERROR:\t{0}".format(e, properties_string, properties_array))
                 output_log_string = "\t[-] No Value [ {1} ] for this Property [ {2} ]\n\tERROR:\t{0}".format(e, properties_string, properties_array)
                 print_and_log(output_log_string)
             properties_value = None
@@ -1945,7 +1806,6 @@ class system_dbus__bluez_device__low_energy:
     # Internal Function for Enumerating the Device's Services, Characteristics, and Descriptors
     def enumerate_and_print__device__all_internals(self, nuclear_write=False):
         if dbg != 0:    # ~!~
-            #print("[=] Warning! The generated Device Map will only be a skeleton of the target device. Reads have NOT been performed against the device yet...")
             output_log_string = "[=] BLE Class::enumerate_and_print__device__all_internals\tWarning! The generated Device Map will only be a skeleton of the target device. Reads have NOT been performed against the device yet..."
             print_and_log(output_log_string)
             print_and_log(output_log_string, LOG__ENUM)
@@ -1973,9 +1833,7 @@ class system_dbus__bluez_device__low_energy:
             # Find and Return the Characteristics List for the current Service
             service_characteristics_list = self.find_and_get__device__etree_details(service_introspection, 'char')
             # Process and Pretty Print Service Information for UUID and Value
-            #service_uuid = service_properties_array['UUID']
             service_uuid = self.grab__properties_array__value(service_properties_array, 'UUID')
-            #print("Service UUID:\t{0}\t\t-\t\t{1}\t\t-\t\t[{2}]".format(service_uuid, bluetooth_utils.get_name_from_uuid(service_uuid), service_name))
             output_log_string = "Service UUID:\t{0}\t\t-\t\t{1}\t\t-\t\t[{2}]".format(service_uuid, bluetooth_utils.get_name_from_uuid(service_uuid), service_name)
             print_and_log(output_log_string)
             print_and_log(output_log_string, LOG__ENUM)
@@ -1997,20 +1855,11 @@ class system_dbus__bluez_device__low_energy:
                 characteristic_descriptors_list = self.find_and_get__device__etree_details(characteristic_introspection, 'desc')
                 # Process and Pretty Print Characteristic Information for UUID and Flags
                 characteristic_uuid = characteristic_properties_array['UUID']
-                #characteristic_uuid = self.grab__properties_array__value(characteristic_properties_array, 'UUID')
-                #print("\tCharacteristic UUID:\t{0}\t\t-\t\t{1}".format(characteristic_uuid, bluetooth_utils.get_name_from_uuid(characteristic_uuid)))
-                # Display the Characteristic Handle
-                #print("\tCharacteristic Handle:\t{0}".format(characteristic_name))
-                # Note: Added the Characteristic Handle into the print out for the UUID
-                #print("\tCharacteristic [{2}] UUID:\t{0}\t\t-\t\t{1}".format(characteristic_uuid, bluetooth_utils.get_name_from_uuid(characteristic_uuid), characteristic_name))
-                #print("\tCharacteristic UUID:\t{0}\t\t-\t\t{1}\t\t-\t[{2}]".format(characteristic_uuid, bluetooth_utils.get_name_from_uuid(characteristic_uuid), characteristic_name))
                 output_log_string = "\tCharacteristic UUID:\t{0}\t\t-\t\t{1}\t\t-\t[{2}]".format(characteristic_uuid, bluetooth_utils.get_name_from_uuid(characteristic_uuid), characteristic_name)
                 print_and_log(output_log_string)
                 print_and_log(output_log_string, LOG__ENUM)
                 # Setup the characteristic variables that will be fed into the device__characteristic__map
-                #characteristic_flags = characteristic_properties_array['Flags']
                 characteristic_flags = self.grab__properties_array__value(characteristic_properties_array, 'Flags')
-                #print("\tCharacteristic Flags:\t{0}".format(characteristic_flags))
                 output_log_string = "\tCharacteristic Flags:\t{0}".format(characteristic_flags)
                 print_and_log(output_log_string)
                 print_and_log(output_log_string, LOG__ENUM)
@@ -2026,22 +1875,17 @@ class system_dbus__bluez_device__low_energy:
                     # Check if the flag allows for a read
                     if "read" in characteristic_flags:
                         # Attempt ReadValue of the characteristic interface
-                        #print("\tCharacteristic Value:\t{0}".format(self.read__device__characteristic(characteristic_interface)))
                         ## Check for the contents of the read and check if it should become ASCii converted
                         dbus_read_value = self.read__device__characteristic(characteristic_interface)
                         # Check to see what the returned data is
                         if isinstance(dbus_read_value, dbus.Array):
                             if dbg != 0:
-                                #print("[!!] D-Bus Read Value is a D-Bus Array type!")
                                 output_log_string = "[!!] D-Bus Read Value is a D-Bus Array type!"
                                 print_and_log(output_log_string, LOG__DEBUG)
-                            ## TODO: Check that the contents are ONLY D-Bus Bytes; then know to convert to ASCii
-                            #print("\tCharacteristic Value (ASCii):\t{0}".format(self.dbus_read_value__to__ascii_string(self.read__device__characteristic(characteristic_interface))))
                             output_log_string = "\tCharacteristic Value (ASCii):\t{0}".format(self.dbus_read_value__to__ascii_string(self.read__device__characteristic(characteristic_interface)))
                             print_and_log(output_log_string)
                             print_and_log(output_log_string, LOG__ENUM)
                         else:
-                            #print("\tCharacteristic Value:\t{0}".format(self.read__device__characteristic(characteristic_interface)))
                             output_log_string = "\tCharacteristic Value:\t{0}".format(self.read__device__characteristic(characteristic_interface))
                             print_and_log(output_log_string)
                             print_and_log(output_log_string, LOG__ENUM)
@@ -2054,24 +1898,19 @@ class system_dbus__bluez_device__low_energy:
                             print_and_log(output_log_string)
                             print_and_log(output_log_string, LOG__ENUM)
                             # Attempt to WriteValue of the characteristic interface
-                            #self.write__device__characteristic(characteristic_interface, int(1))
                             if self.write__device__characteristic(characteristic_interface, int(1)):
-                                #print("\t\t[+] Write\t-\tNon-Failure\t-\tUUID:\t{0}".format(characteristic_uuid))
                                 output_log_string = "\t\t[+] Write\t-\tNon-Failure\t-\tUUID:\t{0}".format(characteristic_uuid)
                                 print_and_log(output_log_string)
                                 print_and_log(output_log_string, LOG__ENUM)
                             else:
-                                #print("\t\t[-] Write\t-\tFailed\t-\tUUID:\t{0}".format(characteristic_uuid))
                                 output_log_string = "\t\t[-] Write\t-\tFailed\t-\tUUID:\t{0}".format(characteristic_uuid)
                                 print_and_log(output_log_string)
                                 print_and_log(output_log_string, LOG__ENUM)
                         else:
-                            #print("\t\t[-] Writes not being attempted\t-\tPassive Scan")
                             output_log_string = "\t\t[-] Writes not being attempted\t-\tDocile Scan"
                             print_and_log(output_log_string)
                             print_and_log(output_log_string, LOG__ENUM)
                 else:
-                    #print("\t[-] No Characteristic Flags")
                     output_log_string = "\t[-] No Characteristic Flags"
                     print_and_log(output_log_string)
                     print_and_log(output_log_string, LOG__ENUM)
@@ -2083,26 +1922,16 @@ class system_dbus__bluez_device__low_energy:
                     descriptor_path, descriptor_object, descriptor_interface, descriptor_properties, descriptor_introspection = self.create_and_return__descriptor__gatt_inspection_set(characteristic_path, descriptor_name)
                     try:
                         if dbg != 0:
-                            #print("[?] Descriptor Information:\n\tDescriptor Name:\t{0}\n\tDescriptors List:\t{1}".format(descriptor_name, characteristic_descriptors_list))
                             output_log_string = "[?] Descriptor Information:\n\tDescriptor Name:\t{0}\n\tDescriptors List:\t{1}".format(descriptor_name, characteristic_descriptors_list)
                             print_and_log(output_log_string, LOG__DEBUG)
                         # Examine the Properties of the current Descriptor 
                         descriptor_properties_array = self.find_and_get__all_descriptor_properties(descriptor_properties)
-                        ## NOTE: The code below DOES NOT perform ANY sort of read action, this ONLY populates the device map using information generated from the initial connection to the BLE device
-                        ##  -> This is because the information is produced by the underlying Linux D-Bus, which has not performed any reads of Services/Characteristics/Descriptors that were enumerated upon the ServicesResolved() call from Connect()
-                        ##      - Further moore, GATT Descriptors SPECIFICALLY will ONLY populate the 'Value' field AFTER a .ReadValue() method call has occured (e.g. has to have happened once before data is provided)
-                        ##          - Side Note: Arduino will NOT allow for an individual to write to a Descriptor Field (standard? limitation?)
-                        ##      - Confirmed through PAINFUL checking between Python CLI and 'busctl' commands
                         # Process and Pretty Print Descriptor Information for UUID
-                        #descriptor_uuid = descriptor_properties_array['UUID']
                         descriptor_uuid = self.grab__properties_array__value(descriptor_properties_array, 'UUID')
-                        #print("\t\tDescriptor UUID:\t{0}\t\t-\t\t{1}\t\t-\t\t[{2}]".format(descriptor_uuid, bluetooth_utils.get_name_from_uuid(descriptor_uuid), descriptor_name))
                         output_log_string = "\t\tDescriptor UUID:\t{0}\t\t-\t\t{1}\t\t-\t\t[{2}]".format(descriptor_uuid, bluetooth_utils.get_name_from_uuid(descriptor_uuid), descriptor_name)
                         print_and_log(output_log_string)
                         print_and_log(output_log_string, LOG__ENUM)
-                        #descriptor_value = descriptor_properties_array['Value']
                         descriptor_value = self.grab__properties_array__value(descriptor_properties_array, 'Value')
-                        #print("\t\tDescriptor Value:\t{0}".format(descriptor_value))
                         output_log_string = "\t\tDescriptor Value:\t{0}".format(descriptor_value)
                         print_and_log(output_log_string)
                         print_and_log(output_log_string, LOG__ENUM)
@@ -2116,7 +1945,6 @@ class system_dbus__bluez_device__low_energy:
                         device__descriptor__map["Flags"] = descriptor_flags
                     except Exception as e:
                         self.understand_and_handle__dbus_errors(e)
-                        #print("\t\t[-] Descriptor Access Error")
                         output_log_string = "\t\t[-] Descriptor Access Error"
                         print_and_log(output_log_string)
                         print_and_log(output_log_string, LOG__ENUM)
@@ -2143,18 +1971,12 @@ class system_dbus__bluez_device__low_energy:
         # Return the mapping that was generated
         return device__internals__map
 
-    # Internal Function for Generating a New Device Internals Map
-    ## TODO: Create function for generating an entirely new map
-    ## TODO: Create function for reading and updating ALL S/C/D + version for specific update
-
     # Internal Function for Updating and Existing Device Map with New Information
     ## Note: This is ONLY useful for updating KNOWN information; not NEW S/C/D that have appeared
     def enumerate_and_update__device__all_internals(self, old__device__internals__map):
-        #print("[*] Updating the Device Internals Map [ Full Enumeration ]")
         output_log_string = "[*] Updating the Device Internals Map [ Full Enumeration ]"
         print_and_log(output_log_string)
         if dbg != 0:
-            #print("\tOld Device Internals Map:\t{0}".format(old__device__internals__map))
             output_log_string = "\tOld Device Internals Map:\t{0}".format(old__device__internals__map)
             print_and_log(output_log_string, LOG__DEBUG)
         ## Code to re-read thorugh the old map and update KNOWN entries
@@ -2173,10 +1995,8 @@ class system_dbus__bluez_device__low_energy:
             # Find and Return the Characteristics List for the current Service
             service_characteristics_list = self.find_and_get__device__etree_details(service_introspection, 'char')
             # Process and Pretty Print Service Information for UUID and Value
-            #service_uuid = service_properties_array['UUID']
             service_uuid = self.grab__properties_array__value(service_properties_array, 'UUID')
             if dbg != 0:
-                #print("Service UUID:\t{0}\t\t-\t\t{1}".format(service_uuid, bluetooth_utils.get_name_from_uuid(service_uuid)))
                 output_log_string = "Service UUID:\t{0}\t\t-\t\t{1}".format(service_uuid, bluetooth_utils.get_name_from_uuid(service_uuid))
                 print_and_log(output_log_string, LOG__DEBUG)
             # Read the service 'Value' field
@@ -2196,10 +2016,8 @@ class system_dbus__bluez_device__low_energy:
                 # Find and Return the Descriptors List for the Characteristic
                 characteristic_descriptors_list = self.find_and_get__device__etree_details(characteristic_introspection, 'desc')
                 # Process and Pretty Print Characteristic Information for UUID and Flags
-                #characteristic_uuid = characteristic_properties_array['UUID']
                 characteristic_uuid = self.grab__properties_array__value(characteristic_properties_array, 'UUID')
                 if dbg != 0:
-                    #print("\tCharacteristic UUID:\t{0}\t\t-\t\t{1}".format(characteristic_uuid, bluetooth_utils.get_name_from_uuid(characteristic_uuid)))
                     output_log_string = "\tCharacteristic UUID:\t{0}\t\t-\t\t{1}".format(characteristic_uuid, bluetooth_utils.get_name_from_uuid(characteristic_uuid))
                     print_and_log(output_log_string, LOG__DEBUG)
                 # Setup the characteristic variables that will be fed into the device__characteristic__map
@@ -2221,28 +2039,23 @@ class system_dbus__bluez_device__low_energy:
                     # Check if the flag allows for a read
                     if "read" in characteristic_flags:
                         # Attempt ReadValue of the characteristic interface
-                        #print("\tCharacteristic Value:\t{0}".format(self.read__device__characteristic(characteristic_interface)))
                         ## Check for the contents of the read and check if it should become ASCii converted
                         dbus_read_value = self.read__device__characteristic(characteristic_interface)
                         # Check to see what the returned data is
                         if isinstance(dbus_read_value, dbus.Array):
                             if dbg != 0:
-                                #print("[!!] D-Bus Read Value is a D-Bus Array type!")
                                 output_log_string = "[!!] D-Bus Read Value is a D-Bus Array type!"
                                 print_and_log(output_log_string, LOG__DEBUG)
                             ## TODO: Check that the contents are ONLY D-Bus Bytes; then know to convert to ASCii
                             if dbg != 0:
-                                #print("\tCharacteristic Value (ASCii):\t{0}".format(self.dbus_read_value__to__ascii_string(self., landmine_map, security_mapread__device__characteristic(characteristic_interface))))
                                 output_log_string = "\tCharacteristic Value (ASCii):\t{0}".format(self.dbus_read_value__to__ascii_string(self.read__device__characteristic(characteristic_interface)))
                                 print_and_log(output_log_string, LOG__DEBUG)
                         else:
                             if dbg != 0:
-                                #print("\tCharacteristic Value:\t{0}".format(self.read__device__characteristic(characteristic_interface)))
                                 output_log_string = "\tCharacteristic Value:\t{0}".format(self.read__device__characteristic(characteristic_interface))
                                 print_and_log(output_log_string, LOG__DEBUG)
                 else:
                     if dbg != 0:
-                        #print("\t[-] No Characteristic Flags")
                         output_log_string = "\t[-] No Characteristic Flags"
                         print_and_log(output_log_string, LOG__DEBUG)
                 # Enumerate the Descriptors for the current Characteristic
@@ -2253,22 +2066,17 @@ class system_dbus__bluez_device__low_energy:
                     descriptor_path, descriptor_object, descriptor_interface, descriptor_properties, descriptor_introspection = self.create_and_return__descriptor__gatt_inspection_set(characteristic_path, descriptor_name)
                     try:
                         if dbg != 0:
-                            #print("[?] Descriptor Information:\n\tDescriptor Name:\t{0}\n\tDescriptors List:\t{1}".format(descriptor_name, characteristic_descriptors_list))
                             output_log_string = "[?] Descriptor Information:\n\tDescriptor Name:\t{0}\n\tDescriptors List:\t{1}".format(descriptor_name, characteristic_descriptors_list)
                             print_and_log(output_log_string, LOG__DEBUG)
                         # Examine the Properties of the current Descriptor 
                         descriptor_properties_array = self.find_and_get__all_descriptor_properties(descriptor_properties)
                         # Process and Pretty Print Descriptor Information for UUID
-                        #descriptor_uuid = descriptor_properties_array['UUID']
                         descriptor_uuid = self.grab__properties_array__value(descriptor_properties_array, 'UUID')
                         if dbg != 0:
-                            #print("\t\tDescriptor UUID:\t{0}\t\t-\t\t{1}".format(descriptor_uuid, bluetooth_utils.get_name_from_uuid(descriptor_uuid)))
                             output_log_string = "\t\tDescriptor UUID:\t{0}\t\t-\t\t{1}".format(descriptor_uuid, bluetooth_utils.get_name_from_uuid(descriptor_uuid))
                             print_and_log(output_log_string, LOG__DEBUG)
-                        #descriptor_value = descriptor_properties_array['Value']
                         descriptor_value = self.grab__properties_array__value(descriptor_properties_array, 'Value')
                         if dbg != 0:
-                            #print("\t\tDescriptor Value:\t{0}".format(descriptor_value))
                             output_log_string = "\t\tDescriptor Value:\t{0}".format(descriptor_value)
                             print_and_log(output_log_string, LOG__DEBUG)
                         # Prepare all the descriptor variables for adding to the map
@@ -2282,7 +2090,6 @@ class system_dbus__bluez_device__low_energy:
                     except Exception as e:
                         self.understand_and_handle__dbus_errors(e)
                         if dbg != 0:
-                            #print("\t\t[-] Descriptor Access Error")
                             output_log_string = "\t\t[-] Descriptor Access Error"
                             print_and_log(output_log_string, LOG__DEBUG)
                     # Update the current descriptor map
@@ -2305,7 +2112,6 @@ class system_dbus__bluez_device__low_energy:
             device__service__map["Includes"] = service_includes
             # Update the device map
             device__internals__map["Services"][service_name] = device__service__map
-        ## TODO: Add check for differences between the old device map and the current device internals map
         # Return the mapping that was generated
         return device__internals__map
 
@@ -2336,35 +2142,29 @@ class system_dbus__bluez_device__low_energy:
             print_and_log(output_log_string)
             output_log_string = "\n[+] Device services resolved!"
             print_and_log(output_log_string)
-            #print_and_log(output_log_string, LOG__ENUM)
         else:
             output_log_string = "\n[-] Device services not resolved"
             print_and_log(output_log_string)
-            #print_and_log(output_log_String, LOG__ENUM)
 
     ## Internal Functions for Exploring a Device Internals Map
 
     # Internal Function for Returning a List of Mapped Services
     def find_and_return__internal_map__services_list(self, device__internals_map):
-        #print("[*] Finding and Returing the List of Services from Internals Map")
         output_log_string = "[*] Finding and Returing the List of Services from Internals Map"
         print_and_log(output_log_string)
         services_list = []
         # Loop through the Device Internals Map and Build the List of Services
         for service_name in device__internals_map["Services"]:
             if dbg != 0:
-                #print("\tService Name Found:\t{0}".format(service_name))
                 output_log_string = "\tService Name Found:\t{0}".format(service_name)
                 print_and_log(output_log_string, LOG__DEBUG)
             services_list.append(service_name)
-        #print("[+] Returing Found List of Services")
         output_log_string = "[+] Returing Found List of Services"
         print_and_log(output_log_string)
         return services_list
 
     # Internal Function for Returning a List of Mapped Characteristics
     def find_and_return__internal_map__characteristics_list(self, device__internals_map):
-        #print("[*] Finding and Returning the List of Characteristics from Internals Map")
         output_log_string = "[*] Finding and Returning the List of Characteristics from Internals Map"
         print_and_log(output_log_string)
         characteristics_list = []
@@ -2376,14 +2176,12 @@ class system_dbus__bluez_device__low_energy:
                     output_log_string = "\tCharacteristic Name Found:\t{0}".format(characteristic_name)
                     print_and_log(output_log_string, LOG__DEBUG)
                 characteristics_list.append(characteristic_name)
-        #print("[+] Returning Found List of Characteristics")
         output_log_string = "[+] Returning Found List of Characteristics"
         print_and_log(output_log_string)
         return characteristics_list
 
     # Internal Function for Returning a List of Mapped Descriptors
     def find_and_return__internal_map__descriptors_list(self, device__internals_map):
-        #print("[*] Finding and Returning the List of Descriptors from Intnernals Map")
         output_log_string = "[*] Finding and Returning the List of Descriptors from Intnernals Map"
         print_and_log(output_log_string)
         descriptors_list = []
@@ -2392,11 +2190,9 @@ class system_dbus__bluez_device__low_energy:
             for characteristic_name in device__internals_map["Services"][service_name]["Characteristics"]:
                 for descriptor_name in device__internals_map["Services"][service_name]["Characteristics"][characteristic_name]["Descriptors"]:
                     if dbg != 0:
-                        #print("\tDescriptor Name Found:\t{0}")
                         output_log_string = "\tDescriptor Name Found:\t{0}"
                         print_and_log(output_log_string, LOG__DEBUG)
                     descriptors_list.append(descriptor_name)
-        #print("[+] Returning Found List of Descriptors")
         output_log_string = "[+] Returning Found List of Descriptors"
         print_and_log(output_log_string)
         return descriptors_list
@@ -2404,14 +2200,12 @@ class system_dbus__bluez_device__low_energy:
     # Internal Function for Returning Detailed Information of a Mapped Service
     def find_and_return__internal_map__detailed_service(self, device__internals_map, specific_service):
         if dbg != 0:
-            #print("[*] Find and Return Detailed Information of a Specific Services from Internals Map")
             output_log_string = "[*] Find and Return Detailed Information of a Specific Services from Internals Map"
             print_and_log(output_log_string, LOG__DEBUG)
         detailed_service_information = None
         for service_name in device__internals_map["Services"]:
             if service_name == specific_service:
                 if dbg != 0:
-                    #print("[+] Found the desired service [ {0} ]".format(specific_service))
                     output_log_string = "[+] Found the desired service [ {0} ]".format(specific_service)
                     print_and_log(output_log_string, LOG__DEBUG)
                 # Collect detailed information of the service
@@ -2420,7 +2214,6 @@ class system_dbus__bluez_device__low_energy:
         if detailed_service_information:
             return detailed_service_information
         else:
-            #print("[-] Desired Service NOT FOUND")
             output_log_string = "[-] Desired Service NOT FOUND"
             print_and_log(output_log_string)
             return None
@@ -2428,7 +2221,6 @@ class system_dbus__bluez_device__low_energy:
     # Internal Function for Returning Detailed Information of a Mapped Characteristic
     def find_and_return__internal_map__detailed_characteristic(self, device__internals_map, specific_characteristic):
         if dbg != 0:
-            #print("[*] Find and Return Detailed Information of a Specific Characteristic from Internals Map")
             output_log_string = "[*] Find and Return Detailed Information of a Specific Characteristic from Internals Map"
             print_and_log(output_log_string, LOG__DEBUG)
         detailed_characteristic_information = None
@@ -2436,7 +2228,6 @@ class system_dbus__bluez_device__low_energy:
             for characteristic_name in device__internals_map["Services"][service_name]["Characteristics"]:
                 if characteristic_name == specific_characteristic:
                     if dbg != 0:
-                        #print("[+] Found the desired characteristc [ {0} ]".format(specific_characteristic))
                         output_log_string = "[+] Found the desired characteristc [ {0} ]".format(specific_characteristic)
                         print_and_log(output_log_string, LOG__DEBUG)
                     # Collect detailed information of the characteristic
@@ -2445,7 +2236,6 @@ class system_dbus__bluez_device__low_energy:
         if detailed_characteristic_information:
             return detailed_characteristic_information
         else:
-            #print("[-] Desired Characteristic NOT FOUND")
             output_log_string = "[-] Desired Characteristic NOT FOUND"
             print_and_log(output_log_string)
             return None
@@ -2453,7 +2243,6 @@ class system_dbus__bluez_device__low_energy:
     # Internal Function for Returning Detailed Information of a Mapped Descriptor
     def find_and_return__internal_map__detailed_descriptor(self, device__internals_map, specific_descriptor):
         if dbg != 0:
-            #print("[*] Find and Return Detailed Information of a Specific Descriptor from Intnerals Map")
             output_log_string = "[*] Find and Return Detailed Information of a Specific Descriptor from Intnerals Map"
             print_and_log(output_log_string, LOG__DEBUG)
         detailed_descriptor_information = None
@@ -2462,7 +2251,6 @@ class system_dbus__bluez_device__low_energy:
                 for descriptor_name in device__internals_map["Services"][service_name]["Characteristics"][characteristic_name]["Descriptors"]:
                     if descriptor_name == specific_descriptor:
                         if dbg != 0:
-                            #print("[+] Found the desired descriptor [ {0} ]".format(specific_descriptor))
                             output_log_string = "[+] Found the desired descriptor [ {0} ]".format(specific_descriptor)
                             print_and_log(output_log_string, LOG__DEBUG)
                         # Collect detailed information of the descriptor
@@ -2481,7 +2269,6 @@ class system_dbus__bluez_device__low_energy:
     def find_and_return__characteristic__gatt_inspection_set(self, characteristic_name):
         # Generate the Internals Map
         user_device__internals_map = self.enumerate_and_print__device__all_internals()
-        #characteristic_name = "char0008"
         # Extract the information from the Internals Map based on the Characteristic's Name
         detailed_characteristic = self.find_and_return__internal_map__detailed_characteristic(user_device__internals_map, characteristic_name)
         # Extract the Characteristic's Service Path
@@ -2492,102 +2279,79 @@ class system_dbus__bluez_device__low_energy:
         return characteristic_path, characteristic_object, characteristic_interface, characteristic_properties, characteristic_introspection
    
     # Internal Function for Pretty Printing Detailed Information of a Service
-    def pretty_print__gatt__service__detailed_information(self, service__detailed_information):
-        #print("----------\t Start of Detailed Pretty Print of Service Information Provided")
+    def pretty_print__gatt__service__detailed_information(self, service__detailed_information, log_type=LOG__GENERAL):
         output_log_string = "----------\t Start of Detailed Pretty Print of Service Information Provided"
         print_and_log(output_log_string)
         for service_property in service__detailed_information:
             if service_property in GATT__SERVICE__PROPERTIES:
                 if dbg != 0:
-                    #print("[!] The property [ {0} ] is in the GATT__SERVICE__PROPERTIES".format(service_property))
                     output_log_string = "[!] The property [ {0} ] is in the GATT__SERVICE__PROPERTIES".format(service_property)
                     print_and_log(output_log_string, LOG__DEBUG)
                 if len(service_property) < PRETTY_PRINT__GATT__FORMAT_LEN:
-                    #print("\t{0}:\t\t\t{1}".format(service_property, service__detailed_information[service_property]))
                     output_log_string = "\t{0}:\t\t\t{1}".format(service_property, service__detailed_information[service_property])
-                    print_and_log(output_log_string, LOG__DEBUG)
+                    print_and_log(output_log_string, log_type)
                 else:
-                    #print("\t{0}:\t\t{1}".format(service_property, service__detailed_information[service_property]))
                     output_log_string = "\t{0}:\t\t{1}".format(service_property, service__detailed_information[service_property])
-                    print_and_log(output_log_string)
+                    print_and_log(output_log_string, log_type)
             else:
-                #print("[!] The property [ {0} ] is NOT an expected GATT__SERVICE__PROPERTIES".format(service_property))
                 output_log_string = "[!] The property [ {0} ] is NOT an expected GATT__SERVICE__PROPERTIES\n\t{0}:\t\t\t{1}".format(service_property, service__detailed_information[service_property])
-                print_and_log(output_log_string)
-        #print("---\tEnd of Service Detailed Information")
+                print_and_log(output_log_string, log_type)
         output_log_string = "---\tEnd of Service Detailed Information"
-        print_and_log(output_log_string)
+        print_and_log(output_log_string, log_type)
             
     # Internal Function for Pretty Printing Detailed Information of a Characteristic
-    def pretty_print__gatt__characteristic__detailed_information(self, characteristic__detailed_information):
-        #print("----------\t Start of Detailed Pretty Print of Characteristic Information Provided")
+    def pretty_print__gatt__characteristic__detailed_information(self, characteristic__detailed_information, log_type=LOG__GENERAL):
         output_log_string = "----------\t Start of Detailed Pretty Print of Characteristic Information Provided"
         print_and_log(output_log_string)
         for characteristic_property in characteristic__detailed_information:
             if characteristic_property in GATT__CHARACTERISTIC__PROPERTIES:
                 if dbg != 0:
-                    #print("[!] The property [ {0} ] is in the GATT__CHARACTERISTIC__PROPERTIES".format(characteristic_property))
                     output_log_string = "[!] The property [ {0} ] is in the GATT__CHARACTERISTIC__PROPERTIES".format(characteristic_property)
                     print_and_log(output_log_string, LOG__DEBUG)
                 # NOTE: This is not where to translate D-Bus Arrays into ASCii strings?  
                 read_value = characteristic__detailed_information[characteristic_property]
                 if len(characteristic_property) < PRETTY_PRINT__GATT__FORMAT_LEN:
                     if characteristic_property == "Value":
-                        #print("\t{0}:\t\t\t{1}".format(characteristic_property, self.dbus_read_value__to__ascii_string(read_value)))
                         output_log_string = "\t{0}:\t\t\t{1}".format(characteristic_property, self.dbus_read_value__to__ascii_string(read_value))
-                        print_and_log(output_log_string)
+                        print_and_log(output_log_string, log_type)
                     else:
-                        #print("\t{0}:\t\t\t{1}".format(characteristic_property, characteristic__detailed_information[characteristic_property]))
                         output_log_string = "\t{0}:\t\t\t{1}".format(characteristic_property, characteristic__detailed_information[characteristic_property])
-                        print_and_log(output_log_string)
+                        print_and_log(output_log_string, log_type)
                 else:
-                    #print("\t{0}:\t\t{1}".format(characteristic_property, characteristic__detailed_information[characteristic_property]))
                     output_log_string = "\t{0}:\t\t{1}".format(characteristic_property, characteristic__detailed_information[characteristic_property])
-                    print_and_log(output_log_string)
+                    print_and_log(output_log_string, log_type)
             else:
-                #print("[!] The property [ {0} ] is NOT an expected GATT__CHARACTERISTIC__PROPERTIES\n\t{0}:\t\t\t{1}".format(characteristic_property, characteristic__detailed_information[characteristic_property]))
                 output_log_string = "[!] The property [ {0} ] is NOT an expected GATT__CHARACTERISTIC__PROPERTIES\n\t{0}:\t\t\t{1}".format(characteristic_property, characteristic__detailed_information[characteristic_property])
-                print_and_log(output_log_string)
-        #print("---\tEnd of Characteristic Detailed Infomration")
+                print_and_log(output_log_string, log_type)
         output_log_string = "---\tEnd of Characteristic Detailed Infomration"
-        print_and_log(output_log_string)
+        print_and_log(output_log_string, log_type)
 
     # Internal Function for Pretty Printing Detailed Information of a Descriptor
-    def pretty_print__gatt__descriptor__detailed_information(self, descriptor__detailed_information):
-        #print("----------\t Start of Detailed Pretty Print of Descriptor Information Provided")
+    def pretty_print__gatt__descriptor__detailed_information(self, descriptor__detailed_information, log_type=LOG__GENERAL):
         output_log_string = "----------\t Start of Detailed Pretty Print of Descriptor Information Provided"
         print_and_log(output_log_string)
         for descriptor_property in descriptor__detailed_information:
             if descriptor_property in GATT__DESCRIPTOR__PROPERTIES:
                 if dbg != 0:
-                    #print("[!] The property [ {0} ] is in the GATT__DESCRIPTOR__PROPERTIES".format(descriptor_property))
                     output_log_string = "[!] The property [ {0} ] is in the GATT__DESCRIPTOR__PROPERTIES".format(descriptor_property)
                     print_and_log(output_log_string, LOG__DEBUG)
                 if len(descriptor_property) < PRETTY_PRINT__GATT__FORMAT_LEN:
-                    #print("\t{0}:\t\t\t{1}".format(descriptor_property, descriptor__detailed_information[descriptor_property]))
                     output_log_string = "\t{0}:\t\t\t{1}".format(descriptor_property, descriptor__detailed_information[descriptor_property])
-                    print_and_log(output_log_string)
+                    print_and_log(output_log_string, log_type)
                 else:
-                    #print("\t{0}:\t\t{1}".format(descriptor_property, descriptor__detailed_information[descriptor_property]))
                     output_log_string = "\t{0}:\t\t{1}".format(descriptor_property, descriptor__detailed_information[descriptor_property])
-                    print_and_log(output_log_string)
+                    print_and_log(output_log_string, log_type)
             else:
-                #print("[!] The property [ {0} ] is NOT an expected GATT__DESCRIPTOR__PROPERTIES\n\t{0}:\t\t\t{1}".format(descriptor_property, descriptor__detailed_information[descriptor_property]))
                 output_log_string = "[!] The property [ {0} ] is NOT an expected GATT__DESCRIPTOR__PROPERTIES\n\t{0}:\t\t\t{1}".format(descriptor_property, descriptor__detailed_information[descriptor_property])
-                print_and_log(output_log_string)
-        #print("---\tEnd of Descriptor Detailed Inofrmation")
+                print_and_log(output_log_string, log_type)
         output_log_string = "---\tEnd of Descriptor Detailed Inofrmation"
-        print_and_log(output_log_string)
+        print_and_log(output_log_string, log_type)
 
-    ## TODO: Write functions for simplfiying the output for Characteristics and Descriptors when pretty printing the S/C/D
     # Function for translating D-Bus Array made of D-Bus Bytes to ASCii string
     def dbus_read_value__to__ascii_string(self, dbus_read_value):
         if dbg != 0:
-            #print("[*] Converting D-Bus Array into ASCii String")
             output_log_string = "[*] Converting D-Bus Array into ASCii String"
             print_and_log(output_log_string)
-        #characteristic_value__hex_array = ble_device.find_and_get__characteristic_property(characteristic_properties, 'Value')
-        #characteristic_value__ascii_string = convert__hex_to_ascii(characteristic_value__hex_array)
         # Add try statement for error handling improvement
         try:
             ascii_string = convert__hex_to_ascii(dbus_read_value)
@@ -2607,12 +2371,10 @@ class system_dbus__bluez_device__low_energy:
     # Function for translating D-Bus Array made if D-Bus Bytes to a Hex string
     def dbus_read_value__to__hex_string(self, dbus_read_value):
         if dbg != 0:
-            #print("[*] Converting D-Bus Array into Hex String")
             output_log_string = "[*] Converting D-Bus Array into Hex String"
             print_and_log(output_log_string)
         hex_string = convert__dbus_to_hex(dbus_read_value)
         if dbg != 0:
-            #print("[+] Converted D-Bus Array into ASCii string")
             output_log_string = "[+] Converted D-Bus Array into ASCii string"
             print(output_log_string)
         return hex_string
@@ -2621,11 +2383,8 @@ class system_dbus__bluez_device__low_energy:
     #   - Note: This function uses UTF-8 encoding
     def ascii_string__to__dbus_value(self, ascii_string):
         if dbg != 0:
-            #print("[*] Converting ASCii string into D-Bus Array of D-Bus Bytes")
             output_log_string = "[*] Converting ASCii string into D-Bus Array of D-Bus Bytes"
             print_and_log(output_log_string, LOG__DEBUG)
-        # Encode the provided ASCii string as UTF-8
-        #encoded__ascii_string = ascii_string.encode('utf-8')
         # Encode the provided string as ASCii
         encoded__ascii_string = ascii_string.encode('ascii')
         # Convert encoded string into hex
@@ -2635,17 +2394,14 @@ class system_dbus__bluez_device__low_energy:
         # Loop for Creating the array of ASCii int values
         for character_item in encoded__ascii_string:
             if dbg != 0:
-                #print("ASCii Character:\t{0}".format(character_item))
                 output_log_string = "ASCii Character:\t{0}".format(character_item)
                 print_and_log(output_log_string, LOG__DEBUG)
             temp_array.append(character_item)
         # Create the final ASCii int array
         dbus_value = temp_array
         if dbg != 0:
-            #print("[+] Completed conversion of ASCii string to D-Bus Write Value")
             output_log_string = "[+] Completed conversion of ASCii string to D-Bus Write Value"
             print_and_log(output_log_string, LOG__DEBUG)
-        ## TODO: Add a signature the the created D-Bus Array
         return dbus_value
 
     ## Internal Functions for Debugging
@@ -2653,19 +2409,14 @@ class system_dbus__bluez_device__low_energy:
     # Function for Blind/Test Printing of Variables from the D-Bus
     def debug_print__dbus__read_value(self, string__source_name, dbus__read_value):
         if dbg != 0:
-            #print("[*] Attempting to print D-Bus Read [ {0} ] from Source named [ {1} ]".format(dbus__read_value, string__source_name))
             output_log_string = "[*] Attempting to print D-Bus Read [ {0} ] from Source named [ {1} ]".format(dbus__read_value, string__source_name)
             print_and_log(output_log_string, LOG__DEBUG)
         print("\t{0} Value".format(string__source_name), end=" ")
-        #output_log_string = "\t{0} Value".format(string__source_name), end=" "
-        #print_and_log(output_log_string)
         # Testing for the type of the variable
         if isinstance(dbus__read_value, dbus.Array):
-            #print("(ASCii | Hex):\t{0}\t|\t{1}".format(self.dbus_read_value__to__ascii_string(dbus__read_value), self.dbus_read_value__to__hex_string(dbus__read_value)))
             output_log_string = "(ASCii | Hex):\t{0}\t|\t{1}".format(self.dbus_read_value__to__ascii_string(dbus__read_value), self.dbus_read_value__to__hex_string(dbus__read_value))
             print_and_log(output_log_string)
         else:
-            #print("(Raw):\t{0}".format(dbus__read_value))
             output_log_string = "(Raw):\t{0}".format(dbus__read_value)
             print_and_log(output_log_string)
 
@@ -2673,9 +2424,10 @@ class system_dbus__bluez_device__low_energy:
 
     # Function for Checking if a Provided Entry Exists within a Provided Map (i.e. Map with elements Services, Characteristics, Descriptors, and In-Review)
     def device_map__entry_check(self, map_to_check, reference_entry):
-        out_log_string = "[*] device_map__entry_check::Examining Map [ {0} ] for Entry [ {1} ]".format(map_to_check, reference_entry)
-        print_and_log(out_log_string)
-        print_and_log(out_log_string, LOG__DEBUG)
+        if dbg != 0:
+            out_log_string = "[*] device_map__entry_check::Examining Map [ {0} ] for Entry [ {1} ]".format(map_to_check, reference_entry)
+            print_and_log(out_log_string)
+            print_and_log(out_log_string, LOG__DEBUG)
         # Enumerate the map searching for the reference_entry
         for map_category in map_to_check:
             if reference_entry in map_to_check[map_category]:
@@ -2685,41 +2437,47 @@ class system_dbus__bluez_device__low_energy:
 
     # Function for Cleaning up a Provided Map (i.e. Map with elements Services, Characteristics, Descriptors, and In-Review)
     def device_map__clean_map(self, map_to_clean):
-        out_log_string = "[*] device_map__clean_map::Cleaning Map [ {0} ]".format(map_to_clean)
-        print_and_log(out_log_string)
-        print_and_log(out_log_string, LOG__DEBUG)
+        if dbg != 0:
+            out_log_string = "[*] device_map__clean_map::Cleaning Map [ {0} ]".format(map_to_clean)
+            print_and_log(out_log_string)
+            print_and_log(out_log_string, LOG__DEBUG)
         # Iterate through the In-Review category of the map
         for in_review_item in map_to_clean["In-Review"]:
-            out_log_string = "[*] device_map__clean_map::In-Review Item [ {0} ]".format(in_review_item)
-            print_and_log(out_log_string, LOG__DEBUG)
+            if dbg != 0:
+                out_log_string = "[*] device_map__clean_map::In-Review Item [ {0} ]".format(in_review_item)
+                print_and_log(out_log_string, LOG__DEBUG)
             # Check if the In-Review item exists in any of the other categories
             if ( in_review_item in map_to_clean["Services"] ) or ( in_review_item in map_to_clean["Characteristics"] ) or ( in_review_item in map_to_clean["Descriptors"] ):
-                out_log_string = "[*] device_map__clean_map::Removing Item [ {0} ] from In-Review".format(in_review_item)
-                print_and_log(out_log_string, LOG__DEBUG)
+                if dbg != 0:
+                    out_log_string = "[*] device_map__clean_map::Removing Item [ {0} ] from In-Review".format(in_review_item)
+                    print_and_log(out_log_string, LOG__DEBUG)
                 # Remove duplicates from In-Review
                 map_to_clean["In-Review"].remove(in_review_item)
         return map_to_clean
 
     # Function for Moving Provided Entry from In-Review to the Associated Service/Characteristic/Descriptor
     def device_map__set_from_in_review(self, map_to_update, reference_entry, associated_category):
-        out_log_string = "[*] device_map__set_from_in_review::Moving Item [ {0} ] to Category [ {1} ] in Map [ {2} ]".format(reference_entry, associated_category, map_to_update)
-        print_and_log(out_log_string)
-        print_and_log(out_log_string, LOG__DEBUG)
+        if dbg != 0:
+            out_log_string = "[*] device_map__set_from_in_review::Moving Item [ {0} ] to Category [ {1} ] in Map [ {2} ]".format(reference_entry, associated_category, map_to_update)
+            print_and_log(out_log_string)
+            print_and_log(out_log_string, LOG__DEBUG)
         # Verify that the reference_entry exists in the In-Review category
         if reference_entry in map_to_update["In-Review"]:
             # Verify that the entry is not ALREADY in the associated_category
             if (reference_entry not in map_to_update[associated_category]) and (associated_category != "In-Review"):
-                out_log_string = "[*] device_map__set_from_in_review::Reference entry [ {0} ] to be added to the category [ {1} ]".format(reference_entry, associated_category)
-                print_and_log(out_log_string, LOG__DEBUG)
+                if dbg != 0:
+                    out_log_string = "[*] device_map__set_from_in_review::Reference entry [ {0} ] to be added to the category [ {1} ]".format(reference_entry, associated_category)
+                    print_and_log(out_log_string, LOG__DEBUG)
                 # Add the reference_entry to the associated_category
                 map_to_update[associated_category].append(reference_entry)
-                # ??? Maybe perform a clean-up ???
             else:
-                out_log_string = "[*] device_map__set_from_in_review::Reference entry [ {0} ] already present in [ {1} ]".format(reference_entry, associated_category)
-                print_and_log(out_log_string, LOG__DEBUG)
+                if dbg != 0:
+                    out_log_string = "[*] device_map__set_from_in_review::Reference entry [ {0} ] already present in [ {1} ]".format(reference_entry, associated_category)
+                    print_and_log(out_log_string, LOG__DEBUG)
         else:
-            out_log_string = "[*] device_map__set_from_in_review::Reference entry [ {0} ] was NOT In-Review... No Action Taken".format(reference_entry)
-            print_and_log(out_log_string, LOG__DEBUG)
+            if dbg != 0:
+                out_log_string = "[*] device_map__set_from_in_review::Reference entry [ {0} ] was NOT In-Review... No Action Taken".format(reference_entry)
+                print_and_log(out_log_string, LOG__DEBUG)
         # Return the map_to_update
         return map_to_update
 
@@ -2729,11 +2487,11 @@ class system_dbus__bluez_device__low_energy:
         if reference_entry not in map_to_update["In-Review"]:
             # Update the In-Review section of the Mine Map
             map_to_update["In-Review"].append(reference_entry)
-            if dbg != 1:
+            if dbg != 0:
                 output_log_string = "[+] device_map__update_in_review::Reference Entry [ {0} ] being placed In-Review".format(reference_entry)
                 print_and_log(output_log_string, LOG__DEBUG)
         else:
-            if dbg != 1:
+            if dbg != 0:
                 output_log_string = "[*] device_map__update_in_review::Reference Entry [ {0} ] already under review".format(reference_entry)
                 print_and_log(output_log_string, LOG__DEBUG)
         # Return the updated Map
@@ -3223,32 +2981,26 @@ class bluetooth__le__device:
 ##  - Note: This function converts a D-Bus Array into Hex, then translates the hex into ASCii
 def convert__hex_to_ascii(string_byte_array):
     if dbg != 0:
-        #print("[*] Converting string byte array to ascii string")
         output_log_string = "[*] Converting string byte array to ascii string"
         print_and_log(output_log_string)
     if not string_byte_array:
         if dbg != 0:
-            #print("[-] convert__hex_to_ascii::Provided string byte array is empty")
             output_log_string = "[-] convert__hex_to_ascii::Provided string byte array is empty"
             print_and_log(output_log_string)
-        #return None
         return UNKNOWN_VALUE                 # "-=!=- UNKNOWN -=!=-"            # Test to see if this will allow more clear testing of ASCii translation attempts
     byte_array__hex_string = bluetooth_utils.byteArrayToHexString(string_byte_array)
     try:
         byte_array__ascii_string = bytes.fromhex(byte_array__hex_string).decode("ASCII")
     except Exception as e:
         if dbg != 0:
-            #print("[-] ASCii decode went wrong.... Attempting without .decode() call\n\t{0}".format(e))
             output_log_string = "[-] ASCii decode went wrong.... Attempting without .decode() call\n\t{0}".format(e)
             print_and_log(output_log_string, LOG__DEBUG)
         try:
             byte_array__ascii_string = bytes.fromhex(byte_array__hex_string)
         except Exception as e_internal:
-            #print("[-] Nothing worked.....\n\t{0}".format(e_internal))
             output_log_string = "[-] Nothing worked.....\n\t{0}".format(e_internal)
             print_and_log(output_log_string)
     if dbg != 0:
-        #print("[+] Converted [ {0} ] to [ {1} ]".format(string_byte_array, byte_array__ascii_string))
         output_log_string = "[+] Converted [ {0} ] to [ {1} ]".format(string_byte_array, byte_array__ascii_string)
         print_and_log(output_log_string, LOG__DEBUG)
     return byte_array__ascii_string
@@ -3256,50 +3008,37 @@ def convert__hex_to_ascii(string_byte_array):
 # Function for converting a String Byte Array (e.g. D-Bus Array of D-Bus Bytes) into a Hex string
 def convert__dbus_to_hex(string_byte_array):
     if dbg != 0:
-        #print("[*] Converting string byte array to hex string")
         output_log_string = "[*] Converting string byte array to hex string"
         print_and_log(output_log_string, LOG__DEBUG)
     if not string_byte_array:
-        #print("[-] convert__dbus_to_hex::Provided string byte array is empty")
         output_log_string = "[-] convert__dbus_to_hex::Provided string byte array is empty"
         print_and_log(output_log_string)
         return None
     try:
         byte_array__hex_string = bluetooth_utils.byteArrayToHexString(string_byte_array)
     except Exception as e:
-        #print("[-] Byte Array to Hex String\t-\t[ FAILED ]")
         output_log_string = "[-] Byte Array to Hex String\t-\t[ FAILED ]"
         print_and_log(output_log_string)
     if dbg != 0:
-        #print("[+] Converted [ {0} ] to [ {1} ]".format(string_byte_array, byte_array__hex_string))
         output_log_string = "[+] Converted [ {0} ] to [ {1} ]".format(string_byte_array, byte_array__hex_string)
         print_and_log(output_log_string, LOG__DEBUG)
     return byte_array__hex_string
 
 # Function for converting the returned Class of Device Information (i.e. 'Class') into a meaningful array
-#   - TODO: Shift into an internal function for the BLE Class
-#   - TODO: Incorporate the YAML file information; Can do math as int__mdc & 2 to get an AND operation of bits (e.g. bin(3 & 2) => bin(2) => 0b10; 0b11 & 0b10 => 0b10)
 def decode__class_of_device(class__dbus_uint):
     output_log_string = "[*] Decoding Class of Device"
     print_and_log(output_log_string)
-    # TODO: Expand the code below to always extend the provided value to a 24 len array
     if class__dbus_uint.bit_length() != 23:
-        #print("[-] Class Device bits are not of expected length (23-0); Number of bits is...", end="")
         output_log_string = "[-] Class Device bits are not of expected length (23-0); Number of bits is..."
         if class__dbus_uint.bit_length() > 23:
-            #print("More", end="")
             output_log_string += "More"
         elif class__dbus_uint.bit_length() < 23:
-            #print("Less", end="")
             output_log_string += "Less"
         else:
-            #print("Unknown", end="")
             output_log_string += "Unknown"
             output_log_string += "\t-\t{0}".format(class__dbus_uint.bit_length())
-            #print("\t-\t{0}".format(class__dbus_uint.bit_length()))
         print_and_log(output_log_string)
     else:
-        #print("[+] Class Device bits are of expected length (23-0); Number of bits is...\t-\t{0}".format(class__dbus_uint.bit_length()))
         output_log_string = "[+] Class Device bits are of expected length (23-0); Number of bits is...\t-\t{0}".format(class__dbus_uint.bit_length())
         print_and_log(output_log_string)
     # Setting the variables to use for bit extraction
@@ -3311,23 +3050,17 @@ def decode__class_of_device(class__dbus_uint):
     end__minor_device_class = start__minor_device_class + (7 - 2)           # Bits 7 to 2 (7 - 2 = 5; +1 = 6); 6 bits total (17 to 22)
     start__fixed_value_bits = end__minor_device_class + 1                   # Startig at the 1st bit (21 in the python array)
     end__fixed_value_bits = start__fixed_value_bits + (1 - 0)               # Bits 1 to 0 (1 - 0 = 1; +1 = 2); 2 bits total (21 to 23)
-    #print("[*] Extracting out the Class of Device information")
     output_log_string = "[*] Extracting out the Class of Device information"
     print_and_log(output_log_string)
     # Create string of only the binary information
-    #class__binary_string = bin(class__dbus_uint)[2:]        # Note: The [2:] removes the leading '0b'
     class__binary_string = format(class__dbus_uint, 'b').zfill(24)      # Note: Extending the length of the dbus.UInt32 value to len 24 (0 to 23 bits; 24 total)
     # Extract the Major Service Classes
-    #major_service_classes = class__binary_string[0:(23-13)]
     major_service_classes = class__binary_string[start__major_service_classes:end__major_service_classes + 1]
     # Extract the Major Device Class
-    #major_device_class = class__binary_string[(23-13):(12-8)]
     major_device_class = class__binary_string[start__major_device_class:end__major_device_class + 1]
     # Extract the Minor Device Class
-    #minor_device_class = class__binary_string[(23-13)+(12-8):(7-2)]
     minor_device_class = class__binary_string[start__minor_device_class:end__minor_device_class + 1]
     # Extract the Fixed Value (Note: Should always be 0b00)
-    #fixed_value_bits = class__binary_string[(23-13)+(12-8)+(7-2):]
     fixed_value_bits = class__binary_string[start__fixed_value_bits:end__fixed_value_bits + 1]
     if dbg != 0:
         print("[?] Extraction Check:\n\tFull Binary String:\t{0}\n\tMajor Service Classes:\t{1}\n\tMajor Device Class:\t{2}\n\tMinor Device Class:\t{3}\n\tFixed Bits Data:\t{4}".format(class__binary_string, major_service_classes, major_device_class, minor_device_class, fixed_value_bits))
@@ -3613,7 +3346,6 @@ def decode__class_of_device(class__dbus_uint):
         fixed_bits_check = True     # Expected 0x00 bits
     ## Printing the Collected information
     if dbg != 0:
-        #print("[?] Extracted Information:\n\tMajor Service Classes:\t{0}\n\tMajor Device Classes:\t{1}\n\tMinor Device Class:\t{2}\n\tFixed Bits Check:\t{3}".format(list__major_service_classes, list__major_device_class, list__minor_device_class, fixed_bits_check))
         output_log_string = "[?] Extracted Information:\n\tMajor Service Classes:\t{0}\n\tMajor Device Classes:\t{1}\n\tMinor Device Class:\t{2}\n\tFixed Bits Check:\t{3}".format(list__major_service_classes, list__major_device_class, list__minor_device_class, fixed_bits_check)
         print_and_log(output_log_string, LOG__DEBUG)
 
@@ -3624,43 +3356,34 @@ def decode__class_of_device(class__dbus_uint):
 
 # Function for decending into an introspection - Debug intended for human inspection
 def debug__enumeration_of_introspection_tree(provided_introspection):
-    #print("[*]")
     introspection_tree = ET.fromstring(provided_introspection)
     for child in introspection_tree:
-        #print("Child Tag:\t\t{0}\n\tAttribs:\t{1}".format(child.tag, child.attrib))
         output_log_string = "Child Tag:\t\t{0}\n\tAttribs:\t{1}".format(child.tag, child.attrib)
         print_and_log(output_log_string)
-    #print("[+]")
     output_log_string = "[+]"
     print_and_log(output_log_string)
 
 # Function for pretty printing the GATT device JSON
 def pretty_print__gatt__dive_json(device_object, complete_device_map):
-    #print("Pretty Print JSON")
     output_log_string = "Pretty Print JSON"
     print_and_log(output_log_string)
     print_and_log(output_log_string, LOG__ENUM)
-    #print("[ DEVICE\t-\t{0} ]".format(device_object.device_address))
     output_log_string = "[ DEVICE\t-\t{0} ]".format(device_object.device_address)
     print_and_log(output_log_string)
     print_and_log(output_log_string, LOG__ENUM)
     for ble_gatt__service in complete_device_map["Services"]:
-        #print("Service\t-\t{0}".format(ble_gatt__service))
         output_log_string = "Service\t-\t{0}".format(ble_gatt__service)
         print_and_log(output_log_string)
         print_and_log(output_log_string, LOG__ENUM)
         service_handle = complete_device_map["Services"][ble_gatt__service]["Handle"]
         service_uuid = complete_device_map["Services"][ble_gatt__service]["UUID"]
-        #print("-\tHandle:\t\t\t{0}".format(service_handle))
         output_log_string = "-\tHandle:\t\t\t{0}".format(service_handle)
         print_and_log(output_log_string)
         print_and_log(output_log_string, LOG__ENUM)
-        #print("-\tUUID:\t\t\t{0}".format(service_uuid))
         output_log_string = "-\tUUID:\t\t\t{0}".format(service_uuid)
         print_and_log(output_log_string)
         print_and_log(output_log_string, LOG__ENUM)
         for ble_gatt__characteristic in complete_device_map["Services"][ble_gatt__service]["Characteristics"]:
-              #print("\tCharacteristic\t-\t{0}".format(ble_gatt__characteristic))
               output_log_string = "\tCharacteristic\t-\t{0}".format(ble_gatt__characteristic)
               print_and_log(output_log_string)
               print_and_log(output_log_string, LOG__ENUM)
@@ -3668,19 +3391,15 @@ def pretty_print__gatt__dive_json(device_object, complete_device_map):
               characteristic_handle = complete_device_map["Services"][ble_gatt__service]["Characteristics"][ble_gatt__characteristic]["Handle"] 
               characteristic_flags = complete_device_map["Services"][ble_gatt__service]["Characteristics"][ble_gatt__characteristic]["Flags"]
               characteristic_value = complete_device_map["Services"][ble_gatt__service]["Characteristics"][ble_gatt__characteristic]["Value"]
-              #print("\t-\tUUID:\t\t\t{0}".format(characteristic_uuid))
               output_log_string = "\t-\tUUID:\t\t\t{0}".format(characteristic_uuid)
               print_and_log(output_log_string)
               print_and_log(output_log_string, LOG__ENUM)
-              #print("\t-\tHandle:\t\t\t{0}".format(characteristic_handle))
               output_log_string = "\t-\tHandle:\t\t\t{0}".format(characteristic_handle)
               print_and_log(output_log_string)
               print_and_log(output_log_string, LOG__ENUM)
-              #print("\t-\tFlags:\t\t\t{0}".format(characteristic_flags))
               output_log_string = "\t-\tFlags:\t\t\t{0}".format(characteristic_flags)
               print_and_log(output_log_string)
               print_and_log(output_log_string, LOG__ENUM)
-              #print("\t-\tValue:\t\t\t{0}".format(characteristic_value))
               output_log_string = "\t-\tValue:\t\t\t{0}".format(characteristic_value)
               print_and_log(output_log_string)
               print_and_log(output_log_string, LOG__ENUM)
@@ -3688,28 +3407,21 @@ def pretty_print__gatt__dive_json(device_object, complete_device_map):
               print_and_log(output_log_string)
               print_and_log(output_log_string, LOG__ENUM)
               for ble_gatt__descriptor in complete_device_map["Services"][ble_gatt__service]["Characteristics"][ble_gatt__characteristic]["Descriptors"]:
-                #print("\t\tDescriptor\t-\t\t\t{0}".format(ble_gatt__descriptor))
                 output_log_string = "\t\tDescriptor\t-\t\t\t{0}".format(ble_gatt__descriptor)
                 print_and_log(output_log_string)
                 print_and_log(output_log_string, LOG__ENUM)
                 descriptor_flags = complete_device_map["Services"][ble_gatt__service]["Characteristics"][ble_gatt__characteristic]["Descriptors"][ble_gatt__descriptor]["Flags"]
                 descriptor_uuid = complete_device_map["Services"][ble_gatt__service]["Characteristics"][ble_gatt__characteristic]["Descriptors"][ble_gatt__descriptor]["UUID"]
                 descriptor_value = complete_device_map["Services"][ble_gatt__service]["Characteristics"][ble_gatt__characteristic]["Descriptors"][ble_gatt__descriptor]["Value"]
-                #print("\t\t-\tUUID:\t\t\t{0}".format(descriptor_uuid))
                 output_log_string = "\t\t-\tUUID:\t\t\t{0}".format(descriptor_uuid)
                 print_and_log(output_log_string)
                 print_and_log(output_log_string, LOG__ENUM)
-                #print("\t\t-\tFlags:\t\t\t{0}".format(descriptor_flags))
                 output_log_string = "\t\t-\tFlags:\t\t\t{0}".format(descriptor_flags)
                 print_and_log(output_log_string)
                 print_and_log(output_log_string, LOG__ENUM)
-                #print("\t\t-\tValue:\t\t\t{0}".format(descriptor_value))
                 output_log_string = "\t\t-\tValue:\t\t\t{0}".format(descriptor_value)
                 print_and_log(output_log_string)
                 print_and_log(output_log_string, LOG__ENUM)
-
-        #characteristic_value__hex_array = device_object.find_and_get__characteristic_property(characteristic_properties, 'Value')
-        #characteristic_value__ascii_string = convert__hex_to_ascii(characteristic_value__hex_array)
 
 # Function for writing output to the Debug Log
 def logging__debug_log(string_to_log):
@@ -3764,13 +3476,13 @@ def logging__log_event(log_type, string_to_log):
 # Function for Debugging Any D-Bus Signals
 #   - Note: When performing basic testing the intial string is detected 
 #   - Added printing of function varaibles for further debugging
+#   -> Expectation is that a notification (and indication?) signal is ALWAYS made of three aguments (outlined above)
+#       - Found that this is ONLY true for "PropertiesChanged"(?); b/c found that "InterfacesAdded" returns 2
 def debugging__dbus_signals__catchall(*args, **kwargs):        # Original debugging input function definition; NOTE: Using this version ALL of the signal information is passed via the *args variable             <---- Best inclusive function definition(?)
     dbus_signal_catchall__start_string = "[!] Received Signal! Debugging Signal\t-\tCatchall"
-    # Add a ridiculous amount of debugging information into the debug logging file; all of which is USELESS
     logging__log_event(LOG__DEBUG, dbus_signal_catchall__start_string)
     if dbg != 0:
         print(dbus_signal_catchall__start_string)
-    ## Odd testing of initial data received by the signal catcher; ONLY works for keyword based call of the function?
     ## Examining '*args' received by the Debug Signal Catching Function
     dbus_signal_catchall__args__start_string = "Args:"
     logging__log_event(LOG__DEBUG, dbus_signal_catchall__args__start_string)
@@ -3845,12 +3557,10 @@ def enumerate_and_return__bluez_to_gatt_map__characteristics(bluetooth_device_ad
     ## Add in a termination action if the gatttool return does NOT find/get/return anything
     #   - Done via a 'timeout' command preceeding the gatttool command
     if dbg != 0:
-        #print("Command Response:\t{0}".format(command_response))
         output_log_string = "Command Response:\t{0}".format(command_response)
         print_and_log(output_log_string, LOG__DEBUG)
     # Examination of the Command Response; check what the response is
     if "Device or resource busy (16)" in command_response:
-        #print("[-] Unable to access device\t\t-\tDue to too many connected devices")
         output_log_string = "[-] Unable to access device\t\t-\tDue to too many connected devices"
         print_and_log(output_log_string)
         return None
@@ -3866,7 +3576,6 @@ def enumerate_and_return__bluez_to_gatt_map__characteristics(bluetooth_device_ad
         uuid_value = characteristic_item.split(',')[3].split('=')[1].strip()
         # Debug output to test the extraction of individual pieces from the gatttool command response
         if dbg != 0:
-            #print("Handle:\t{0}\t\t-\tChar Value Handle:\t{1}\t\t-\tUUID:\t{2}".format(handle_value, char_value_handle, uuid_value))
             output_log_string = "Handle:\t{0}\t\t-\tChar Value Handle:\t{1}\t\t-\tUUID:\t{2}".format(handle_value, char_value_handle, uuid_value)
             print_and_log(output_log_string, LOG__DEBUG)
         # Add the entry into the bluetooth device's handle map
@@ -3909,7 +3618,6 @@ def gatttool__write_request_and_listen(bluetooth_device_address, characteristic_
     expected_handle = conversion_map[bluetooth_device_address][f'{characteristic_handle}']['Char Value Handle']
     # Setup the command to run
     #   - Note: Added a leading 'timeout' command to prevent hanging due to the listening
-    #command__listen_test = f"timeout 5 gatttool -b {bluetooth_device_address} --char-write-req -a {conversion_map[ble_ctf__addr][f'0x{handle_hex}']['Char Value Handle']} -n 0100 --listen"
     command__listen_test = f"timeout 5 gatttool -b {bluetooth_device_address} --char-write-req -a {expected_handle} -n 0100 --listen"
     # Run the command
     command_response = subprocess.getoutput(command__listen_test)
@@ -3956,7 +3664,6 @@ def pretty_print__uuid_2_handle_map(ble_uuid_json):
         uuid_name = ble_uuid_json[uuid_entry]["Name"]
         uuid_path = ble_uuid_json[uuid_entry]["Path"]
         uuid_type = ble_uuid_json[uuid_entry]["Type"]
-        #print("UUID:\t\t{0}\n\tHandle:\t{1}\n\tName:\t{2}\n\tPath:\t{3}\n\tType:\t{4}".format(uuid_entry, uuid_handle, uuid_name, uuid_path, uuid_type))
         output_log_string = "UUID:\t\t{0}\n\tHandle:\t{1}\n\tName:\t{2}\n\tPath:\t{3}\n\tType:\t{4}".format(uuid_entry, uuid_handle, uuid_name, uuid_path, uuid_type)
         print_and_log(output_log_string)
 
@@ -3967,7 +3674,6 @@ def enumerate_and_return__introspection_interface_tree(provided_introspection, s
     child_node_return_list = []
     introspection_tree = ET.fromstring(provided_introspection)
     for child in introspection_tree:
-        #print("Child Tag:\t\t{0}\n\tAttribs:\t{1}".format(child.tag, child.attrib))
         if child.tag == 'node' and search_string in child.attrib['name']:
             child_node_return_list.append(child.attrib['name'])
     return child_node_return_list
@@ -3975,7 +3681,6 @@ def enumerate_and_return__introspection_interface_tree(provided_introspection, s
 # Generic Function for Creating and Returning the ``Next Level Down'' set of D-Bus Interfaces, Object, and sub-elements (e.g. Characteristics, Descriptors)
 #   - Note: Utilizes the 'enumerate_and_return__introspection_interface_tree()' function
 def enumerate_and_return__ble__next_level_of_gatt_information(current_level_object_path, next_level_object_path_name, search_string, system_bus=dbus.SystemBus()):
-    #print("[*]")
     ## Variables
     interface_type = None
     ## Check which type of D-Bus Interface is being search for in the sub-level
@@ -3987,7 +3692,6 @@ def enumerate_and_return__ble__next_level_of_gatt_information(current_level_obje
         interface_type = bluetooth_constants.GATT_DESCRIPTOR_INTERFACE
     else:
         if dbg != 0:
-            #print("[-] Error: Unknown BLE search_string passed to this function.... Aborting and returning nothing")
             output_log_string = "[-] Error: Unknown BLE search_string passed to this function.... Aborting and returning nothing"
             print_and_log(output_log_string, LOG__DEBUG)
         return None
@@ -3997,12 +3701,10 @@ def enumerate_and_return__ble__next_level_of_gatt_information(current_level_obje
     next_level_object_interface = dbus.Interface(next_level_object, interface_type)       ## Note: This will NEED to depend on the 'search_string', because if the wrong interface name is given, then things WILL NOT WORK
     next_level_object_properties = dbus.Interface(next_level_object, bluetooth_constants.DBUS_PROPERTIES)
     if dbg != 0:
-        #print("Object Information for [ {0} ]".format(next_level_object_path))
         output_log_string = "Object Information for [ {0} ]".format(next_level_object_path)
         print_and_log(output_log_string, LOG__DEBUG)
         next_level_object_properties_array = bluetooth_utils.dbus_to_python(next_level_object_properties.GetAll(interface_type))
         for next_level_object_prop in next_level_object_properties_array:
-            #print("\tProperty:\t\t{0}\n\t\tValue:\t\t{1}".format(bluetooth_utils.dbus_to_python(next_level_object_prop), bluetooth_utils.dbus_to_python(next_level_object_properties_array[next_level_object_prop])))
             output_log_string = "\tProperty:\t\t{0}\n\t\tValue:\t\t{1}".format(bluetooth_utils.dbus_to_python(next_level_object_prop), bluetooth_utils.dbus_to_python(next_level_object_properties_array[next_level_object_prop]))
             print_and_log(output_log_string)
     introspection__next_level_object_interface = next_level_object_interface.Introspect(dbus_interface=INTROSPECT_INTERFACE)
@@ -4015,89 +3717,74 @@ def enumerate_and_return__ble__next_level_of_gatt_information(current_level_obje
     # If not, then return None; cleans up later use for brute force enumeration
     else:
         return None
-    # TODO: Include return of the paths (maybe even objects or interfaces?)
-    #print("[+]")
 
 # Function for interating through a device's services (i.e. BLE GATT Services, Characteristics, and Descriptors)
 def enumerate__gatt__brute_force_enumeration(device_path, device_services_list):
-    #print("[*] Beginning the Brute Force Enumeration of a BLE Device's Services, Characteristics, and Descriptors")
     output_log_string = "[*] Beginning the Brute Force Enumeration of a BLE Device's Services, Characteristics, and Descriptors"
     print_and_log(output_log_string)
     # Iterate through the device services found
     for device_service in device_services_list:
         if dbg != 1:        # ~!~
-            #print("Device Service [ {0} ]".format(device_service))
             output_log_string = "Device Service [ {0} ]".format(device_service)
             print_and_log(output_log_string)
         # Obtain the list of Device Service Introspection
         device_service_introspection_list = enumerate_and_return__ble__next_level_of_gatt_information(device_path, device_service, 'service')
         if dbg != 1:        # ~!~
-            #print("\tService List [ {0} ]".format(device_service_introspection_list))
             output_log_string = "\tService List [ {0} ]".format(device_service_introspection_list)
             print_and_log(output_log_string)
         # Check if there was a service list returned
         if not device_service_introspection_list:
             if dbg != 1:    # ~!~
-                #print("\tNo Services Found")
                 output_log_string = "\tNo Services Found"
                 print_and_log(output_log_string)
             # Continue through the loop of Services
             continue
         else:
             if dbg != 0:
-                #print("\tServices List Found")
                 output_log_string = "\tServices List Found"
                 print_and_log(output_log_string)
             # Iterate through the list of Service Characteristics for an other level deep examination
             for service_characteristic in device_service_introspection_list:
                 if dbg != 1:    # ~!~
-                    #print("\tCharacteristic:\t\t{0}".format(service_characteristic))
                     output_log_string = "\tCharacteristic:\t\t{0}".format(service_characteristic)
                     print_and_log(output_log_string)
                 device_service_path = device_path + "/" + device_service
                 # Obtain the list of Device Service Characteristic Introspection
                 device_service_characteristic_introspection_list = enumerate_and_return__ble__next_level_of_gatt_information(device_service_path, service_characteristic, 'char')
                 if dbg != 1:    # ~!~
-                    #print("\tCharacteristic List [ {0} ]".format(device_service_characteristic_introspection_list))
                     output_log_string = "\tCharacteristic List [ {0} ]".format(device_service_characteristic_introspection_list)
                     print_and_log(output_log_string)
                 # Check if there was a characteristic list returned
                 if not device_service_characteristic_introspection_list:
                     if dbg != 1:
-                        #print("\tNo Characteristic Found")
                         output_log_string = "\tNo Characteristic Found"
                         print_and_log(output_log_string)
                     # Continue through the loop of Characteristics
                     continue
                 else:
                     if dbg != 0:
-                        #print("\tCharacteristic List Found")
                         output_log_string = "\tCharacteristic List Found"
                         print_and_log(output_log_string)
                     # Iterate through the list of Service Characteristic Descriptor for another level deep examination
                     for characteristic_descriptor in device_service_characteristic_introspection_list:
                         if dbg != 1:    # ~!~
-                            #print("\t\tDescriptor:\t\t{0}".format(characteristic_descriptor))
                             output_log_string = "\t\tDescriptor:\t\t{0}".format(characteristic_descriptor)
                             print_and_log(output_log_string)
                         device_service_characteristic_path = device_service_path + "/" + service_characteristic
                         # Obtain the list of Device Service Characteristic Descriptor Introspection
                         device_service_characteristic_descriptor_introspection_list = enumerate_and_return__ble__next_level_of_gatt_information(device_service_characteristic_path, 'desc')
                         if dbg != 1:    # ~!~
-                            #print("\t\tDescriptor List [ {0} ]".format(device_service_characteristic_descriptor_introspection_list))
                             output_log_string = "\t\tDescriptor List [ {0} ]".format(device_service_characteristic_descriptor_introspection_list)
                             print_and_log(output_log_string)
                         # Check if there was a descriptor list returned
                         if not device_service_characteristic_descriptor_introspection_list:
                             if dbg != 1:    # ~!~
-                                #print("\t\tNo Descriptor Found")
                                 output_log_string = "\t\tNo Descriptor Found"
                                 print_and_log(output_log_string)
                             # Continue looping thorugh Descriptors
                             continue
                         else:
                             if dbg != 0:
-                                #print("\t\tDescriptor List Found")
                                 output_log_string = "\t\tDescriptor List Found"
                                 print_and_log(output_log_string)
     
@@ -4143,8 +3830,6 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
         while not device_class_object.find_and_get__device_property("ServicesResolved"):     # TODO: Add in timeout here too; NOTE: This may be causing an issue?? Maybe not?? Need to flesh out when device is enumerated versus when connection is confirmed
             # Hang and wait to make sure that the services are resolved
             time.sleep(time_sleep__seconds)     # Sleep to give time for Services to Resolve
-            #if dbg != 1:    # ~!~
-            #    print(".", end='')
             out_log_string += "."
             # Check for abandoning "ServicesResolved"
             if total_time_passed__seconds > timeout_limit__in_seconds:
@@ -4153,6 +3838,8 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
                 print_and_log(output_log_string)
                 print_and_log(output_log_string, LOG__DEBUG)
                 print_and_log(output_log_string, LOG__ENUM)
+                # Exit the function
+                break
             # Add to the timeout counter
             total_time_passed__seconds += time_sleep__seconds
         print_and_log(out_log_string, LOG__DEBUG)
@@ -4181,7 +3868,6 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
         finally:
             out_log_string = "[*] attempt__device_enumerate::Completed attempt to enumerate device object"
             print_and_log(out_log_string, LOG__DEBUG)
-        # TODO: Determine if necessary return/error handling
 
     # Function for Attempting to Generate a Provided Device Class Object's Service List
     def attempt__generate_list__device_services(device_class_object):
@@ -4234,8 +3920,6 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
         else:
             out_log_string = "[*] perform__fix_error::Error of Unknown Type and Solution Happened\t-\t[ {0} ]".format(device_class_object.error_buffer)
             print_and_log(out_log_string, LOG__DEBUG)
-        # Assume error handled ??
-        #device_class_object.reset__error_buffer()
 
     # Function for Evaluating the Device Class Object Error Buffer
     def evaluate__device_error_buffer(device_class_object):
@@ -4261,7 +3945,7 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
             out_log_string = "[+] evaluate__device_error_buffer::No error in buffer"
             print_and_log(out_log_string, LOG__DEBUG)
 
-    # Function for Evaluating if a given Characteristic Name is present in Known Maps (e.g. Mine, Permission); TODO: Decide if to split into two functions (one Mine and one Map)
+    # Function for Evaluating if a given Characteristic Name is present in Known Maps (e.g. Mine, Permission)
     def evaluate__known_mine_check(device_class_object, reference_entry, mine_mapping, permission_mapping):
         out_log_string = "[*] evaluate__known_mine_check::Checking if the Reference Entry [ {0} ] exists in Mine Map [ {1} ] or Perm Map [ {2} ]".format(reference_entry, mine_mapping, permission_mapping)
         print_and_log(out_log_string, LOG__DEBUG)
@@ -4278,12 +3962,13 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
 
     ## Start of main function Code
     if dbg != 0:
-        #print("[=] Warning! Connection to target device and initial enumeration ONLY produces a SKELETON of the device.  Reads will need to be performed against the device (e.g. populate descriptor fields)")
         output_log_string = "[=] Warning! Connection to target device and initial enumeration ONLY produces a SKELETON of the device.  Reads will need to be performed against the device (e.g. populate descriptor fields)"
         print_and_log(output_log_string)
         print_and_log(output_log_string, LOG__ENUM)
+    out_log_string = "[*] ----====[ Beginning Connect and Enumeration of the Target [ {0} ] Bluetooth Low Energy Device ]====----"
+    print_and_log(out_log_string, LOG__ENUM)
     # Debugging 
-    if dbg != 1:
+    if dbg != 0:
         output_log_string = "[=] ----====[ Beginning Connect and Enumeration of the Target [ {0} ] Bluetooth Low Energy Device ]====----\n\tMine Map:\t\t[ {1} ]\n\tSecurity Map:\t\t[ {2} ]".format(target_bt_addr, landmine_mapping, security_mapping)
         print_and_log(output_log_string, LOG__DEBUG)
     ## Creating the Objects and Structures for Enumeration
@@ -4301,10 +3986,8 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
     out_log_string = "[*] Device Services Resolved:\t[ {0} ]".format(resolved_flag)
     print_and_log(out_log_string, LOG__DEBUG)
     ## Continue the enumeration of the device
-    #ble_device.identify_and_set__device_properties(ble_device.find_and_get__all_device_properties())        # Note: The call to find and get all device properties can print out high level device information
     # Identify and Set Device Properties
     attempt__device_enumerate(ble_device)
-    #ble_device_services_list = ble_device.find_and_get__device_introspection__services()
     # Generate a Device Services List
     ble_device_services_list = attempt__generate_list__device_services(ble_device)
     # Create the JSON structure that is used for tracking the various services, characteristics, and descriptors from the GATT
@@ -4329,7 +4012,6 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
         # Internal JSON mapping
         device__service__map = create_and_return__gatt__service_json()
         if dbg != 1:
-            #print("[*] BLE service\t-\t{0}".format(ble_service))
             output_log_string = "[*] connect_and_enumerate__bluetooth__low_energy::BLE service\t-\t{0}".format(ble_service)
             print_and_log(output_log_string, LOG__DEBUG)
         # Create the characteristic variables that we will work with
@@ -4344,26 +4026,21 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
             characteristic_path, characteristic_object, characteristic_interface, characteristic_properties, characteristic_introspection = ble_device.create_and_return__characteristic__gatt_inspection_set(service_path, ble_service_characteristic)
             # Check the Read/Write Flag(s) for the Characteristic interface
             characteristic_flags = ble_device.find_and_get__characteristic_property(characteristic_properties, 'Flags')
-            if dbg != 1:    # ~!~
-                print("[*] Characteristic [ {0} ] Flags:\t{1}".format(characteristic_path, characteristic_flags))
+            if dbg != 0:    # ~!~
                 output_log_string = "[*] connect_and_enumerate__bluetooth__low_energy::Characteristic [ {0} ] Flags:\t{1}".format(characteristic_path, characteristic_flags)
                 print_and_log(output_log_string, LOG__DEBUG)
-            ## Attempt to Read the value from the Characteristic (NOTE: AFTER checking if there is a read/write flag; TODO: Use the results from the ReadValue() function call to create the input for the WriteValue() function call
             ## Added return_error variable for error tracking
             return_error = None
             # Nota Bene:  In making use of the Pre-Read and Post-Read debugging can cause the "double read" necessary to populate the GATT server buffer
             if dbg != 0:
-                #print("[!] Pre-Read Test:\tCharacteristic Value:\t-\t{0}".format(ble_device.find_and_get__characteristic_property(characteristic_properties, 'Value')))
                 output_log_string = "[!] connect_and_enumerate__bluetooth__low_energy::Pre-Read Test:\tCharacteristic Value:\t-\t{0}".format(ble_device.find_and_get__characteristic_property(characteristic_properties, 'Value'))
                 print_and_log(output_log_string, LOG__DEBUG)
                 #print_and_log(output_log_string, LOG__ENUM)
             ## Check if there is a 'read' in the flags      <-------- TODO: Re-write this section to be an attempt-while read
             if 'read' in characteristic_flags or 'write' in characteristic_flags:      # NOTE: Even if 'write' is the only thing present, it can have a value name
                 if dbg != 1:
-                    #print("[*] Attempt to read from Characteristic [ {0} ] due to Flags [ {1} ]".format(characteristic_path, characteristic_flags))
                     output_log_string = "[*] connect_and_enumerate__bluetooth__low_energy::Attempt to read from Characteristic [ {0} ] due to Flags [ {1} ]".format(characteristic_path, characteristic_flags)
                     print_and_log(output_log_string, LOG__DEBUG)
-                    #print_and_log(output_log_string, LOG__ENUM)
                 output_log_string = "[?] connect_and_enumerate__bluetooth__low_energy::Variable Test:\n\tService Characteristic:\t\t[ {0} ]\n\tMine Map:\t\t[ {1} ]\n\tSecurity Map:\t\t[ {2} ]".format(ble_service_characteristic, ble_device__mine_mapping, ble_device__permission_mapping)
                 print_and_log(output_log_string, LOG__DEBUG)
                 # Variable for tracking read attempts
@@ -4377,7 +4054,6 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
                 if ble_service_characteristic not in ble_device__mine_mapping['Characteristics']:
                     output_log_string = "[*] connect_and_enumerate__bluetooth__low_energy::Attempting Read of Characteristic [ {0} ]".format(ble_service_characteristic)
                     print_and_log(output_log_string, LOG__DEBUG)
-                    #print_and_log(output_log_string, LOG__ENUM)
                     output_log_string = "[*] connect_and_enumerate__bluetooth__low_energy::Checking Connectivity to Target"
                     print_and_log(output_log_string, LOG__DEBUG)
                     # Test connectivity to ensure read is possible
@@ -4396,7 +4072,6 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
 
                         ble_device.read__device__characteristic(characteristic_interface)       # Implementation using the Class function
                         # NOTE: ALWAYS perform the above action (with embedded error handling? Or just tracking) and then TRY the read of the property value; but maybe ALWAYS do this?
-                        ## Error handling and determining if the read operation was successsful
                         # Error Handling via Error Buffer Evaluation
                         evaluate__device_error_buffer(ble_device)
                         # Determine read_success based on errors and Update the Maps' In-Review
@@ -4436,7 +4111,6 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
                             read_success = True
                             out_log_string = "[*] connect_and_enumerate__bluetooth__low_energy::Read was a Success\t-\tError Buffer:\t[ {0} ]".format(ble_device.error_buffer)
                             print_and_log(out_log_string, LOG__DEBUG)
-                        # TODO: Add in map updating, temp read, final read, and device char map update
                         # Increase read attempt incrementer
                         read_try_count += 1
                         # Debugging
@@ -4462,7 +4136,6 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
                 output_log_string = "[!] connect_and_enumerate__bluetooth__low_energy::Post-Read Test:\tCharacteristic Value:\t-\t{0}".format(ble_device.find_and_get__characteristic_property(characteristic_properties, 'Value'))
                 print_and_log(output_log_string, LOG__DEBUG)
                 print_and_log(output_log_string, LOG__ENUM)
-            ## Alter the characteristic_value__hex_array based on error(s)
             # Read the value from characteristic properties
             characteristic_value__hex_array = ble_device.find_and_get__characteristic_property(characteristic_properties, 'Value')
             out_log_string = "[*] Checking value of Hex Array Read AGAIN:\t[ {0} ]".format(characteristic_value__hex_array)
@@ -4483,16 +4156,12 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
                 ble_device.understand_and_handle__dbus_errors(e)
                 characteristic_value__ascii_string = None
             if dbg != 1:
-                #print("\tCharacteristic Value:\t{0}\n\t\tRaw:\t{1}".format(characteristic_value__ascii_string, characteristic_value__hex_array))
                 output_log_string = "\tconnect_and_enumerate__bluetooth__low_energy::Characteristic Value:\t{0}\n\t\tRaw:\t{1}".format(characteristic_value__ascii_string, characteristic_value__hex_array)
                 print_and_log(output_log_string, LOG__DEBUG)
-                #print("\tValue\t-\t{0}".format(characteristic_value__ascii_string))
                 output_log_string = "\tconnect_and_enumerate__bluetooth__low_energy::Value\t-\t{0}".format(characteristic_value__ascii_string)
                 print_and_log(output_log_string, LOG__DEBUG)
-                #print("\tHandle\t-\t{0}".format(ble_device.find_and_get__characteristic_property(characteristic_properties, 'Handle')))
                 output_log_string = "\tconnect_and_enumerate__bluetooth__low_energy::Handle\t-\t{0}".format(ble_device.find_and_get__characteristic_property(characteristic_properties, 'Handle'))
                 print_and_log(output_log_string, LOG__DEBUG)
-                #print("\tUUID\t-\t{0}".format(ble_device.find_and_get__characteristic_property(characteristic_properties, 'UUID')))
                 output_log_string = "\tconnect_and_enumerate__bluetooth__low_energy::UUID\t-\t{0}".format(ble_device.find_and_get__characteristic_property(characteristic_properties, 'UUID'))
                 print_and_log(output_log_string, LOG__DEBUG)
             # Setting the variables to be added into the JSON map for the device
@@ -4512,7 +4181,6 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
                 # Check the Read/Write Flag(s) for the Descriptor interface
                 descriptor_flags = ble_device.find_and_get__descriptor_property(descriptor_properties, 'Flags')        # Note: Descriptor may NOT have a Flags property
                 if dbg != 1:    # ~!~
-                    #print("[*] Descriptor [ {0} ] Flags:\t{1}".format(descriptor_path, descriptor_flags))
                     output_log_string = "[*] connect_and_enumerate__bluetooth__low_energy::Descriptor [ {0} ] Flags:\t{1}".format(descriptor_path, descriptor_flags)
                     print_and_log(output_log_string, LOG__DEBUG)
                 ## Attempt to Read/Write the value from the Descriptor; Note: Same structure as for Characteristics
@@ -4553,9 +4221,12 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
         print_and_log(output_log_string, LOG__DEBUG)
     # Output for Enumeration
     output_log_string = "[+] Landmine Map Produced:\t\t[ {0} ]".format(ble_device__mine_mapping)
-    print_and_log(output_log_string)
+    print_and_log(output_log_string, LOG__ENUM)
     output_log_string = "[+] Security Map Produced:\t\t[ {0} ]".format(ble_device__permission_mapping)
-    print_and_log(output_log_string)
+    print_and_log(output_log_string, LOG__ENUM)
+    # End of function printout
+    out_log_string = "[+] ----====[ Completed Connect and Enumeration of the Target [ {0} ] Bluetooth Low Energy Device ]====----"
+    print_and_log(out_log_string, LOG__ENUM)
     # Return the device object, enumeration mapping, landmine map, and security map of the BLE device
     return ble_device, ble_device__mapping, ble_device__mine_mapping, ble_device__permission_mapping
 
@@ -4571,7 +4242,6 @@ def find_and_get__gatt_aspect(ble_device, gatt_aspect_name, gatt_properties_obje
     elif gatt_aspect_name == 'Descriptor':
         return_value = ble_device.find_and_get__descriptor_property(gatt_properties_object, gatt_property_name)
     else:
-        #print("[-] Well... do not know how to process that GATT aspect")
         output_log_string = "[-] Well... do not know how to process that GATT aspect"
         print_and_log(output_log_string)
         return_value = None
@@ -4581,17 +4251,14 @@ def find_and_get__gatt_aspect(ble_device, gatt_aspect_name, gatt_properties_obje
 
 # Function for creating and returning the default system Bluetooth Adapter Object, Interface, and Properties
 def create_and_return__system_adapter_dbus_elements(system_bus=dbus.SystemBus()):
-    #print("[*]")
     # Create the Object for the Adapter Interface
     system_adapter_object = system_bus.get_object(bluetooth_constants. BLUEZ_SERVICE_NAME, bluetooth_constants.BLUEZ_NAMESPACE + bluetooth_constants.ADAPTER_NAME)
     system_adapter_interface = dbus.Interface(system_adapter_object, bluetooth_constants.ADAPTER_INTERFACE)
     system_adapter_properties = dbus.Interface(system_adapter_object, bluetooth_constants.DBUS_PROPERTIES)
-    #print("[+]")
     return system_adapter_object, system_adapter_interface, system_adapter_properties
 
 # Function for creating and returning the specific system Bluetooth Adapter Object, Interface, and Properties
 def create_and_return__system_adapter_dbus_elements__specific_hci(bluetooth_adapter=bluetooth_constants.ADAPTER_NAME, system_bus=dbus.SystemBus()):
-    #print("[*]")
     # Create the Object for the Adapter Interface
     try:        # Attempt to create the D-Bus object; check that one exists
         system_adapter_object = system_bus.get_object(bluetooth_constants. BLUEZ_SERVICE_NAME, bluetooth_constants.BLUEZ_NAMESPACE + bluetooth_constants.ADAPTER_NAME)
@@ -4601,17 +4268,14 @@ def create_and_return__system_adapter_dbus_elements__specific_hci(bluetooth_adap
     except dbus.exceptions.DBusException:
         print("[-] No Bluetooth Adapter found.... Raising errors ALL THE WAY TO THE TOP!!")
         raise dbus.exceptions.DBusException
-    #print("[+]")
 
 # Function for creating an Object Manager and returning a list of potential devices found from Discovery()
 #   - Note: Only searching for Device1 profile interfaces
 #   - Does NOT need adding the ADAPTER INTERFACE to this function
 #def create_and_return__discovered_managed_objects(bluetooth_adapter=bluetooth_constants.ADAPTER_INTERFACE, system_bus=dbus.SystemBus()):
 def create_and_return__discovered_managed_objects(system_bus=dbus.SystemBus()):
-    #print("[*]")
     # Create Variables for tracking
     devices_found = []
-    #device_names = []
     device_address, device_name = None, None
     # Create an Object Manager and associated Interface
     system_object_manager_object = system_bus.get_object(bluetooth_constants.BLUEZ_SERVICE_NAME, "/")
@@ -4628,31 +4292,25 @@ def create_and_return__discovered_managed_objects(system_bus=dbus.SystemBus()):
             if iface_name == bluetooth_constants.DEVICE_INTERFACE:
                 # Note: Built-in assumption is that there is ALWAYS a Bluetooth Address, but only sometimes a Bluetooth Name (hence the if-else statement)
                 if dbg != 0:
-                    #print("---------------------------\nDevice Path:\t\t{0}".format(path))
                     output_log_string = "---------------------------\nDevice Path:\t\t{0}".format(path)
                     print_and_log(output_log_string, LOG__DEBUG)
                 item_device_properties = ifaces[bluetooth_constants.DEVICE_INTERFACE]
                 # Tracking the addresses of devices seen
                 if 'Address' in item_device_properties:
                     if dbg != 0:
-                        #print("\tDevice BT ADDR:\t{0}".format(bluetooth_utils.dbus_to_python(item_device_properties['Address'])))
                         output_log_string = "\tDevice BT ADDR:\t{0}".format(bluetooth_utils.dbus_to_python(item_device_properties['Address']))
                         print_and_log(output_log_string, LOG__DEBUG)
-                    #devices_found.append(bluetooth_utils.dbus_to_python(item_device_properties['Address']))
                     device_address = bluetooth_utils.dbus_to_python(item_device_properties['Address'])
                 # Tracking the name of the devices seen
                 if 'Name' in item_device_properties:
                     if dbg != 0:
                         output_log_string = "\tDevice BT Name:\t{0}".format(bluetooth_utils.dbus_to_python(item_device_properties['Name']))
                         print_and_log(output_log_string, LOG__DEBUG)
-                    #device_names.append(bluetooth_utils.dbus_to_python(item_device_properties['Name']))
                     device_name = bluetooth_utils.dbus_to_python(item_device_properties['Name'])
                 # Debugging of the entire device properties array
                 if dbg != 0:
-                    #print("\tDevice Properties:\t\t{0}".format(item_device_properties))
                     output_log_string = "\tDevice Properties:\t\t{0}".format(item_device_properties)
                     print_and_log(output_log_string, LOG__DEBUG)
-                    #print("---------------------------")
                     output_log_string = "---------------------------"
                     print_and_log(output_log_string, LOG__DEBUG)
                 # Combine the information found into a tuple for tracking devices_found
@@ -4661,13 +4319,11 @@ def create_and_return__discovered_managed_objects(system_bus=dbus.SystemBus()):
                 devices_found.append(device_info)
                 # Reset the variables for the next round
                 device_address, device_name = None, None
-    #print("[+]")
     # Return the list of device addresses found
     return devices_found
 
 # Function for creating a Device Object Path, Object, Interface, and Properties for a given Device (via BT_ADDR)
 def create_and_return__device_dbus_elements(bluetooth_address, system_bus=dbus.SystemBus()):
-    #print("[*]")
     # Convert the bluetooth_address from the ':' separated form into the D-Bus '_' sepearated form (using bluetooth_utils) for the device object path
     device_path = bluetooth_utils.device_address_to_path(bluetooth_address, bluetooth_constants.BLUEZ_NAMESPACE + bluetooth_constants.ADAPTER_NAME)
     # Create the device Object
@@ -4680,12 +4336,10 @@ def create_and_return__device_dbus_elements(bluetooth_address, system_bus=dbus.S
     if dbg != 0:
         device_properties_array = bluetooth_utils.dbus_to_python(device_properties.GetAll(bluetooth_constants.DEVICE_INTERFACE))
         for device_prop in device_properties_array:
-            #print("Device Property:\t\t{0}\n\tValue:\t\t{1}".format(bluetooth_utils.dbus_to_python(device_prop), bluetooth_utils.dbus_to_python(device_properties_array[device_prop])))
             output_log_string = "Device Property:\t\t{0}\n\tValue:\t\t{1}".format(bluetooth_utils.dbus_to_python(device_prop), bluetooth_utils.dbus_to_python(device_properties_array[device_prop]))
             print_and_log(output_log_string, LOG__DEBUG)
             if device_prop == 'UUIDs':
                 for uuid_entry in bluetooth_utils.dbus_to_python(device_properties_array[device_prop]):
-                    #print("\t\tUUID:\t\t{0}\n\t\tValue:\t\t{1}".format(uuid_entry, bluetooth_utils.get_name_from_uuid(uuid_entry)))
                     output_log_string = "\t\tUUID:\t\t{0}\n\t\tValue:\t\t{1}".format(uuid_entry, bluetooth_utils.get_name_from_uuid(uuid_entry))
                     print_and_log(output_log_string, LOG__DEBUG)
     # Create the device Introspection
@@ -4696,18 +4350,15 @@ def create_and_return__device_dbus_elements(bluetooth_address, system_bus=dbus.S
     device_services_list = []
     for child in device_tree:
         if dbg != 0:
-            #print("Child Tag:\t\t{0}\n\tAttribs:\t\t{1}".format(child.tag, child.attrib))
             output_log_string = "Child Tag:\t\t{0}\n\tAttribs:\t\t{1}".format(child.tag, child.attrib)
             print_and_log(output_log_string, LOG__DEBUG)
         # Check for the expected 'service' information
         if child.tag == 'node' and 'service' in child.attrib['name']:
             if dbg != 0:
-                #print("\tAttrib:\t{0}\n\t\tValue:\t{1}".format(child.attrib, child.attrib['name']))
                 output_log_string = "\tAttrib:\t{0}\n\t\tValue:\t{1}".format(child.attrib, child.attrib['name'])
                 print_and_log(output_log_string, LOG__DEBUG)
             device_services_list.append(child.attrib['name'])
     # Now return the findings from this dive into the Device Interface
-    #print("[+]")
     return device_object, device_interface, device_properties, device_introspection, device_services_list
 
 # Function for generating and returning a generic GATT service JSON
@@ -4802,12 +4453,10 @@ def create_and_return__bluetooth_scan__discovered_devices__specific_adapter(blue
     test_adapter.set_discovery_filter(custom_discovery_filter_test)
     
     # Scan for devices via the adapter class object                                                             (Step 2ii)
-    #test_adapter.run_scan()
     test_adapter.run_scan__timed()
     # Note: Changed above to run a FIVE SECOND scan by default
     
     # Show the device that were found using the adapter class objcet run_scan() method call                     (Step 2iii)
-    #test_adapter.devices_found
     if dbg != 0:
         print("[+] List of Devices Found:\t{0}".format(test_adapter.devices_found))
     return test_adapter.devices_found
@@ -4829,7 +4478,6 @@ def search_for_device(target_device, max_searches=3):
             if target_device not in discovered_device:
                 out_log_string = "[!] Unable to find device [ {0} ]".format(target_device)
                 print_and_log(out_log_string)
-                #return None
             else:
                 out_log_string = "[+] Able to find device [ {0} ]".format(target_device)
                 print_and_log(out_log_string)
@@ -4848,7 +4496,6 @@ def search_for_device(target_device, max_searches=3):
 
 # Function for Determining if the desired_bluetooth_device is in the provided list of devices_found
 def check_and_confirm__device_found_from_scan(bluetooth_device_address, devices_found):
-    #print("[*]")
     found_device_flag = False
     if bluetooth_device_address in devices_found:
         print("[+] Recognized the BLE Light Address [ {0} ] in the devices list [ {1} ]".format(bluetooth_device_address, devices_found))
@@ -4859,7 +4506,6 @@ def check_and_confirm__device_found_from_scan(bluetooth_device_address, devices_
         return found_device_flag
     else:
         print("[+] Found the intended device [ {0} ]".format(bluetooth_device_address))
-    #print("[+]")
     return found_device_flag
 
 ## Run and Detect Functions
@@ -4893,15 +4539,11 @@ def run_and_detect__bluetooth_devices__with_provided_filter(discovery_filter={'T
 def run_and_detect__bluetooth_devices__with_provided_filter__with_timeout(discovery_filter={'Transport': 'auto'}, timeout_ms=5000):
     print("[*] Starting Discovery Process with Timing")
 
-    # Local varaibles for setup and tear down of GLib MainLoop scanning
-    #main_loop, timer_id = None, None        # Note: Getting a "race condition" with the timer_id since below it is being passed to the function and being generated by the creation of the timeout_add() function
-
     ## Internal Functions for configuring timeout to the GLib MainLoop()
 
     # Function for setting a timeout time for device discovery
     #   - Used as a callback function for the code (automatically on the backend?)
     def discovery_timeout(adapter_interface, mainloop, timer_id):
-        # To get the .source_remove() call to work one has to (1) track the timer_id as a class property (or global) variable, (2) Add the newly created 'timer_id' to this variable, (3) when the callback function gets called, pull the information from the Class object
         GLib.source_remove(timer_id)
         mainloop.quit()
         adapter_interface.StopDiscovery()
@@ -4941,9 +4583,6 @@ def run_and_detect__bluetooth_devices__with_provided_filter__with_timeout(discov
 def run_and_detect__bluetooth_devices__with_provided_adapter_and_provided_filter__with_timeout(bluetooth_adapter=bluetooth_constants.ADAPTER_NAME, discovery_filter={'Transport': 'auto'}, timeout_ms=5000):
     print("[*] Starting Discovery Process with Timing")
 
-    # Local varaibles for setup and tear down of GLib MainLoop scanning
-    #main_loop, timer_id = None, None        # Note: Getting a "race condition" with the timer_id since below it is being passed to the function and being generated by the creation of the timeout_add() function
-
     ## Internal Functions for configuring timeout to the GLib MainLoop()
 
     # Function for setting a timeout time for device discovery
@@ -4958,7 +4597,6 @@ def run_and_detect__bluetooth_devices__with_provided_adapter_and_provided_filter
 
     ## Setup the Device Discovery
     # Create the Object for the Adapter Interface;
-    #adapter_object, adapter_interface, adapter_properties = create_and_return__system_adapter_dbus_elements()
     adapter_object, adapter_interface, adapter_properties = create_and_return__system_adapter_dbus_elements__specific_hci(bluetooth_adapter)
     
     # Configure the Scanning for Devices
@@ -5004,7 +4642,6 @@ def user_interaction__find_and_return__pick_device():
         user_input_check = check_and_validate__user_selection(user_selection, itemNumber)
     if dbg != 0:
         print("[!] User has selected device [ {0} ]".format(user_selection))
-    #user_selected_device = discovered_devices[int(user_selection)-1]
     user_selected_device = discovered_devices[int(user_input_check)-1]
     return user_selected_device
 
@@ -5023,7 +4660,6 @@ def user_interaction__find_and_return__pick_device__specific_adapter(bluetooth_a
         user_input_check = check_and_validate__user_selection(user_selection, itemNumber)
     if dbg != 0:
         print("[!] User has selected device [ {0} ]".format(user_selection))
-    #user_selected_device = discovered_devices[int(user_selection)-1]
     user_selected_device = discovered_devices[int(user_input_check)-1]
     return user_selected_device
 
@@ -5032,17 +4668,10 @@ def ble_ctf__main():
     print("[*] Start BLE CTF Main()")
 
     print("[*] Running Python DBus Interface...")
-    # Setup adapter interface, mainloop, timer_id, and other properties
-    #adapter_interface = None
-    #mainloop = None
-    #timer_id = None     # Keep as 'None'..... How does this work for the example script?
-    # NOTE: The above three variables may not even be needed
     # Device findings and tracking variables
     devices = {}
     managed_objects_found = 0
     ble_ctf_device = None
-    #print("[*] Testing Discovery Scanning")
-    #bluetooth_dbus__discovery_scan(devices, managed_objects_found)
     # Testing structure and class building
     print("[*] Creating a BLE Device Manager object and scan for devices")
     adapter_name = bluetooth_constants.ADAPTER_NAME
@@ -5051,7 +4680,6 @@ def ble_ctf__main():
     device_manager.start_discovery()
     # Run the loop
     device_manager.run()
-    ## TODO: Fix this issue with the run() getting stuck....
     # Stop the loop
     device_manager.stop()
     # Turn off discovery
@@ -5081,11 +4709,6 @@ def proof_of_concept__ble_device_enumeration():
     
     device_manager = dbus.Interface(device_object, bluetooth_constants.DEVICE_INTERFACE)        # Similar to structure seen in busctl to access the Device1 profile
     device_properties = dbus.Interface(device_object, bluetooth_constants.DBUS_PROPERTIES)
-    
-    # Testing
-    #device_manager.object_path
-    #device_manager.Connect()
-    #device_manager.Disconnect()
     
     ## Creating an adapter object, interface, and properties and using it directly
     adapter_object = system_bus.get_object(bluetooth_constants.BLUEZ_SERVICE_NAME, bluetooth_constants.BLUEZ_NAMESPACE + bluetooth_constants.ADAPTER_NAME)
@@ -5123,7 +4746,6 @@ def proof_of_concept__ble_device_enumeration():
                 print("\tDevice Properties:\t\t{0}".format(item_device_properties))
                 print("---------------------------")
     ## Note: Did not see the BLE CTF in this set.... perhaps need to run the mainloop for much longer?
-    #   - TODO: Add in the time-limit to scanning; will require the creation of a Class.....
     
     ## Connecting to the 'Light Orb'
     device_path = bluetooth_utils.device_address_to_path("F0:98:7D:0A:05:07", bluetooth_constants.BLUEZ_NAMESPACE + bluetooth_constants.ADAPTER_NAME)
@@ -5295,6 +4917,21 @@ def ble_ctf__scan_and_enumeration():
     ble_services_list = ble_ctf.find_and_get__device_introspection__services()
     # JSON for tracking the various services, characteristics, and descriptors from the GATT
     ble_ctf__mapping = { "Services" : {} }
+    '''
+    Map of JSON Mapping:
+        BDADDR : {
+            Service001 : {
+                Characteristic001 : {
+                    Descriptor001 : {
+                        descriptor_info_key : descriptor_info_value
+                        },
+                    characteristics_info_key : characteristic_info_value
+                    },
+                service_info_key : service_info_value
+            }
+    
+    
+    '''
     ## Code - Complete Enumeration through a BLE Device's Services, Characteristics, and Descriptors
     # Now do an iteration through the 'Services' to enumerate all the characteristics
     for ble_service in ble_services_list:
@@ -5306,7 +4943,6 @@ def ble_ctf__scan_and_enumeration():
         service_path, service_object, service_interface, service_properties, service_introspection = ble_ctf.create_and_return__service__gatt_inspection_set(ble_service)
         # Generate the sub-list of Service Characteristics
         service_characteristics_list = ble_ctf.find_and_get__device__etree_details(service_introspection, 'char')       # Nota Bene: This only does the conversion of the eTree into something meaningful that can be enumerated for the Characteristic names; SAME THING as the line below
-        #ble_chars_list = ble_ctf.find_and_get__device_introspection__characteristics(service_path, service_characteristics_list)
         # Now do an iteration through the 'Characteristics' of the current Service
         for ble_service_characteristic in service_characteristics_list:
             # Internal JSON mapping
@@ -5316,7 +4952,6 @@ def ble_ctf__scan_and_enumeration():
             # Check the Read/Write Flag(s) for the Characteristic interface
             characteristic_flags = ble_ctf.find_and_get__characteristic_property(characteristic_properties, 'Flags')
             if dbg != 0:    # ~!~
-                #print("[*] Characteristic [ {0} ] Flags:\t{1}".format(ble_ctf.find_and_get__characteristic_property(characteristic_properties, 'Service'), characteristic_flags))
                 print("[*] Characteristic [ {0} ] Flags:\t{1}".format(characteristic_path, characteristic_flags))
             ## Attempt to Read the value from the Characteristic (NOTE: AFTER checking if there is a read/write flag; TODO: Use the results from the ReadValue() function call to create the input for the WriteValue() function call
             if dbg != 0:
@@ -5384,7 +5019,6 @@ def ble_ctf__scan_and_enumeration():
 
     ## Pretty print the BLE CTF device mapping
     print("JSON Print of the Enumeration")
-    #print(ble_ctf__mapping)
     pretty_print__gatt__dive_json(ble_ctf, ble_ctf__mapping)
     print("===============================================================================================\n\t[+] COMPLETED BLE CTF DEVICE ENUMERATION [+]\n===============================================================================================")
     return ble_ctf, ble_ctf__mapping
@@ -5393,7 +5027,6 @@ def ble_ctf__scan_and_enumeration():
 def ble_ctf__read_characteristic(characteristic_name, user_device, user_device__internals_map):
     # Create structures for reading characteristic
     detailed_characteristic = user_device.find_and_return__internal_map__detailed_characteristic(user_device__internals_map, characteristic_name)
-    #print("Detailed Char:\n{0}".format(detailed_characteristic))
     # First check if that characteristic allows for reading
     if "read" not in detailed_characteristic["Flags"]:
         if dbg != 0:
@@ -5403,7 +5036,6 @@ def ble_ctf__read_characteristic(characteristic_name, user_device, user_device__
             logging__log_event(LOG__GENERAL, read_characteristic__response_string)
         return None
     characteristic_service_path = detailed_characteristic["Service"]
-    #print("Characteristic Service Path:\t{0}".format(characteristic_service_path))
     characteristic_path, characteristic_object, characteristic_interface, characteristic_properties, characteristic_introspection = user_device.create_and_return__characteristic__gatt_inspection_set(characteristic_service_path, characteristic_name)
     # Grab the DBus Array (i.e. raw) data
     read_raw = user_device.read__device__characteristic(characteristic_interface)
@@ -5438,11 +5070,6 @@ def ble_ctf__write_characteristic(write_value, characteristic_name, user_device,
         return None
     characteristic_service_path = detailed_characteristic["Service"]
     characteristic_path, characteristic_object, characteristic_interface, characteristic_properties, characteristic_introspection = user_device.create_and_return__characteristic__gatt_inspection_set(characteristic_service_path, characteristic_name)
-    #write_value = input("What should be written to the Characteristic: ")
-    ## TODO: Have method of telling what the signature/info-type is expected by the Write       <---- DETERMINE WHICH ONE GIVES THE FLAG!
-    #user_device.write__device__characteristic(characteristic_interface, write_value)
-    # Function call to write the entire user input string to the characteristic
-    #user_device.write__device__characteristic__one_byte_at_a_time(characteristic_interface, write_value)        # NOTE: This function call converts the value first to ASCii encoding and then passes the data
     # Trying a new Class write function
     user_device.write__device__characteristic(characteristic_interface, write_value)
 
@@ -5514,7 +5141,6 @@ def ble_ctf__write_flag(write_value, user_device, user_device__internals_map):
 
 # Function for Performing the Entire BLE CTF
 #   - Nota Bene:    ALL FLAGS are JUST the FIRST 20 CHARS of th values produced
-#   [ ] Add logging to this function; with logging__log_event() function using LOG__GENERAL
 def ble_ctf__perform_device_completion():
     print("===============================================================================================\n\tCOMPLETE BLE CTF DEVICE COMPLETION\n===============================================================================================")
     # TODO: Add in general scan to identify the BLE CTF device (on the DBus side)
@@ -5588,8 +5214,7 @@ def ble_ctf__perform_device_completion():
     # Read the flag
     ble_ctf__read_characteristic(BLE_CTF__CHARACTERISTIC_FLAGS["Flag-09"], user_device, user_device__internals_map)
     # This flag requires brute forcing the value to write to this flag from 00 to ff
-    # Nota Bene: It was learned during testing that there is a vast difference between HEX and INT and STR representations
-    #   - The following will create a STRING of hex characters
+    ## Use brute-force mapping to perform flag
     ## Flag #10
     read_iteration = 1000
     ## Begin the multi-read
@@ -5627,22 +5252,14 @@ def ble_ctf__perform_device_completion():
     ble_ctf__end_string = "===============================================================================================\n\t[+] COMPLETED BLE CTF DEVICE FLAGS [+]\n===============================================================================================\n"
     logging__log_event(LOG__GENERAL, ble_ctf__end_string)
 
-#
-
-## Running BLE CTF test
-#ble_ctf__scan_and_enumeration()
-
-## Attempt to pair the device
-#device_interface.Pair()     # Fails... Due to 'Authentication Failed'
-
-## Functions for Interacting with and Enumerating Handle Information
-
 ### Back of Envelope Space
 
 # TODO: Fix the user input check below
 def check_and_validate__user_selection(user_selection, itemNumber):
     if dbg != 1:    # ~!~
-        print("User Selection:\t{0}\nItem Number:\t{1}".format(user_selection, itemNumber))
+        #print("User Selection:\t{0}\nItem Number:\t{1}".format(user_selection, itemNumber))
+        out_log_string = "User Selection:\t{0}\nItem Number:\t{1}".format(user_selection, itemNumber)
+        print_and_log(out_log_string, LOG__DEBUG)
     # First attempt to convert the user selection into an int
     try:
         user_selection = int(user_selection)
@@ -5696,7 +5313,10 @@ def find_and_enumerate__bluetooth_device__user_selected():
 
 # Function for searching and exploring a Bluetooth Device selected by the User
 def check_and_explore__bluetooth_device__user_selected():
-    print("===============================================================================================\n\t[*] COMPLETE USER SELECTED DEVICE EXPLORATION\n===============================================================================================")
+    #print("===============================================================================================\n\t[*] COMPLETE USER SELECTED DEVICE EXPLORATION\n===============================================================================================")
+    out_log_string = "===============================================================================================\n\t[*] COMPLETE USER SELECTED DEVICE EXPLORATION\n==============================================================================================="
+    print_and_log(out_log_string, LOG__USER)
+
     # Create variables for functionality
     still_exploring = 0
 
@@ -5734,7 +5354,7 @@ def check_and_explore__bluetooth_device__user_selected():
 
     # Function for printing out the tools (e.g. mapping) Sub-Menu
     def uiet__tools__help_menu():
-        print("Tools Sub-Menu:\n\t- 'print-maps' to print out the Landmine and Security maps")
+        print("Tools Sub-Menu:\n\t- 'print-maps' to print out the Landmine and Security maps\n\t- 'deep-dive' to print out a detailed deep dive delve of the device")
 
     # Function for checking that a given list has been generated (i.e. not NoneType)
     def uiet__check__list(given_list):
@@ -5748,7 +5368,8 @@ def check_and_explore__bluetooth_device__user_selected():
 
     ## Continuing User Interaction Code
     # Search for devices to explore
-    print("[*] Scanning for Discoverable Devices")
+    out_log_string = "[*] Scanning for Discoverable Devices"
+    print_and_log(out_log_string, LOG__USER)
     user_selection = user_interaction__find_and_return__pick_device()
     user_selected_device = user_selection[0]        # The 0th item is the Bluetooth Address and the 1st item is the Bluetooth Name
     # Wrapped in a try statement for robustness
@@ -5758,39 +5379,39 @@ def check_and_explore__bluetooth_device__user_selected():
     except Exception as e:
         # TODO: Add handlers for other types of errors (take a look at the understanding and handling errors function from BLE Class)
         output_log_string = "[!] Error occurred while connecting to the device"
-        print_and_log(output_log_string)
+        print_and_log(output_log_string, LOG__USER)
         # Actions to perform if a D-Bus related error is thrown; includes BlueZ errors
         if isinstance(e, dbus.exceptions.DBusException):
             if e.get_dbus_name() == 'org.freedesktop.DBus.Error.NoReply':
                 output_log_string = "[-] Got No Reply while Attempting to Connect"
-                print_and_log(output_log_string)
+                print_and_log(output_log_string, LOG__USER)
                 #return None
                 return bluetooth_constants.RESULT_ERR_NO_REPLY
             elif e.get_dbus_name() == 'org.bluez.Error.Failed':
                 output_log_string = "[-] May be connection issue of BR/EDR vs BLE device"
-                print_and_log(output_log_string)
+                print_and_log(output_log_string, LOG__USER)
                 return bluetooth_constants.RESULT_ERR_NO_BR_CONNECT
             elif e.get_dbus_name() == 'org.freedesktop.DBus.Error.UnknownObject':
                 output_log_string = "[-] Device no longer exists within D-Bus knowledge / memory"
-                print_and_log(output_log_string)
+                print_and_log(output_log_string, LOG__USER)
                 return bluetooth_constants.RESULT_ERR_DEVICE_FORGOTTEN
             elif e.get_dbus_name() == 'org.bluez.Error.NotPermitted':
                 output_log_string = "[-] Device refusing permission to perform I/O"
-                print_and_log(output_log_string)
+                print_and_log(output_log_string, LOG__USER)
                 return bluetooth_constants.RESULT_ERR_READ_NOT_PERMITTED
             elif e.get_dbus_name() == 'org.bluez.Error.InProgress':
                 output_log_string = "[-] Device already has action In Progress"
-                print_and_log(output_log_string)
+                print_and_log(output_log_string, LOG__USER)
                 return bluetooth_constants.RESULT_ERR_ACTION_IN_PROGRESS
             elif e.get_dbus_name() == 'org.freedesktop.DBus.Error.ServiceUnknown':
                 output_log_string = "[-] Device does not have Service with the provided name"
-                print_and_log(output_log_string)
+                print_and_log(output_log_string, LOG__USER)
                 return bluetooth_constants.RESULT_ERR_UNKNOWN_SERVCE
             else:
                 output_log_string = "[!] check_and_explore__bluetooth_device__user_selected::Unknown D-Bus Error has Occured when Attempting a Connection"      # TODO: Add handling for when attempting to pair to a device; currently fails while pairing continues
                 if dbg != 1:
                     output_log_string += "\n\tError:\t{0}\n\tD-Bus Name:\t{1}\n\tAll Error Args:\t{2}".format(e, e.get_dbus_name, e.args)
-                print_and_log(output_log_string)
+                print_and_log(output_log_string, LOG__USER)
                 return None
         else:
             output_log_string = "[!] check_and_explore__bluetooth_device__user_selected::Unknown Error has Occured when Attempting a Connection"
@@ -5802,7 +5423,7 @@ def check_and_explore__bluetooth_device__user_selected():
     # Santiy check from the abover try statement
     if not user_device:
         output_log_string = "[-] Unable to generate the necessary User Device Class Object.... Exiting...."
-        print_and_log(output_log_string)
+        print_and_log(output_log_string, LOG__USER)
         return None
     # Collect and return a mapping of the services and characteristics (NOTE: Can be done either through the collceted information OR via D-Bus records)
     user_device__internals_map = user_device.enumerate_and_print__device__all_internals()
@@ -5827,7 +5448,9 @@ def check_and_explore__bluetooth_device__user_selected():
             pretty_print__gatt__dive_json(user_device, user_device__internals_map)
             ## TODO: Add switch to the above allow for ASCii/Hex/Array output for collected data
         elif user_input == "info":
-            print("\tAddress:\t{0}".format(user_device.device_address))
+            #print("\tAddress:\t{0}".format(user_device.device_address))
+            out_log_string = "\tAddress:\t{0}".format(user_device.device_address)
+            print_and_log(out_log_string, LOG__USER)
             user_device.find_and_get__all_device_properties()
             # Note: The above call will produce verbose information about the device properties
         elif user_input == "generate":
@@ -5840,9 +5463,13 @@ def check_and_explore__bluetooth_device__user_selected():
             elif user_input__sub_menu == "descriptors":
                 descriptors_list = user_device.find_and_return__internal_map__descriptors_list(user_device__internals_map)
             else:
-                print("\tDid not understand Sub-Menu User Input")
+                #print("\tDid not understand Sub-Menu User Input")
+                out_log_string = "\tDid not understand Sub-Menu User Input"
+                print_and_log(out_log_string, LOG__USER)
         elif user_input == "generate-all":
-            print("[*] Generating all internal lists")
+            #print("[*] Generating all internal lists")
+            out_log_string = "[*] Generating all internal lists"
+            print_and_log(out_log_string, LOG__USER)
             services_list = user_device.find_and_return__internal_map__services_list(user_device__internals_map)
             characteristics_list = user_device.find_and_return__internal_map__characteristics_list(user_device__internals_map)
             descriptors_list = user_device.find_and_return__internal_map__descriptors_list(user_device__internals_map)
@@ -5856,7 +5483,8 @@ def check_and_explore__bluetooth_device__user_selected():
                 if not uiet__check__list(services_list):
                     break
                 for service_item in services_list:
-                    print("\t{0}".format(service_item))
+                    out_log_string = "\t{0}".format(service_item)
+                    print_and_log(out_log_string, LOG__USER)
                 service_name = input("Select a Service to Explore: ")
                 detailed_service = user_device.find_and_return__internal_map__detailed_service(user_device__internals_map, service_name)
                 user_device.pretty_print__gatt__service__detailed_information(detailed_service)
@@ -5868,7 +5496,8 @@ def check_and_explore__bluetooth_device__user_selected():
                     break
                 while not acceptable_choice:
                     for characteristic_item in characteristics_list:
-                        print("\t{0}".format(characteristic_item))
+                        out_log_string = "\t{0}".format(characteristic_item)
+                        print_and_log(out_log_string, LOG__USER)
                     characteristic_name = input("Select a Characteristic to Explore: ")
                     # Check that the response made sense
                     if characteristic_name in characteristics_list:
@@ -5881,12 +5510,14 @@ def check_and_explore__bluetooth_device__user_selected():
                 if not uiet__check__list(descriptors_list):
                     break
                 for descriptor_item in descriptors_list:
-                    print("\t{0}".format(descriptor_item))
+                    out_log_string = "\t{0}".format(descriptor_item)
+                    print_and_log(out_log_string, LOG__USER)
                 descriptor_name = input("Select a Descriptor to Explore: ")
                 detailed_descriptor = user_device.find_and_return__internal_map__detailed_descriptor(user_device__internals_map, descriptor_name)
                 user_device.pretty_print__gatt__descriptor__detailed_information(detailed_descriptor)
             else:
-                print("\tDid not understand Sub-Menu User Input")
+                out_log_string = "\tDid not understand Sub-Menu User Input"
+                print_and_log(out_log_string, LOG__USER)
         elif user_input == "read":
             # NOTE: Having an issue of 'NoneType' object is not iterable in Python
             uiet__read__help_menu()
@@ -5896,51 +5527,57 @@ def check_and_explore__bluetooth_device__user_selected():
                 if not uiet__check__list(characteristics_list):
                     break
                 for characteristic_item in characteristics_list:
-                    print("\t{0}".format(characteristic_item))
+                    out_log_string = "\t{0}".format(characteristic_item)
+                    print_and_log(out_log_string, LOG__USER)
                 characteristic_name = input("Select a Characteristic to Read: ")
                 # Create structures for reading characteristic
                 detailed_characteristic = user_device.find_and_return__internal_map__detailed_characteristic(user_device__internals_map, characteristic_name)
                 # First check if that characteristic allows for reading
                 if "read" not in detailed_characteristic["Flags"]:
-                    print("[-] No 'read' capability with characteristic [ {0} ]".format(characteristic_name))
+                    out_log_string = "[-] No 'read' capability with characteristic [ {0} ]".format(characteristic_name)
+                    print_and_log(out_log_string, LOG__USER)
                     continue
                 characteristic_service_path = detailed_characteristic["Service"]
                 characteristic_path, characteristic_object, characteristic_interface, characteristic_properties, characteristic_introspection = user_device.create_and_return__characteristic__gatt_inspection_set(characteristic_service_path, characteristic_name)
                 read_value = user_device.read__device__characteristic__with_signature(characteristic_interface)
-                #read_value = user_device.find_and_get__characteristic_property(characteristic_properties, 'Value')
                 if isinstance(read_value, dbus.Array):
-                    print("\tCharacteristic Value (ASCii | Hex):\t{0}\t\t|\t\t{1}".format(user_device.dbus_read_value__to__ascii_string(read_value), user_device.dbus_read_value__to__hex_string(read_value)))
+                    out_log_string = "\tCharacteristic Value (ASCii | Hex):\t{0}\t\t|\t\t{1}".format(user_device.dbus_read_value__to__ascii_string(read_value), user_device.dbus_read_value__to__hex_string(read_value))
+                    print_and_log(out_log_string, LOG__USER)
                 else:
-                    print("\tCharaceristic Value:\t{0}".format(read_value))
+                    out_log_string = "\tCharaceristic Value:\t{0}".format(read_value)
+                    print_and_log(out_log_string, LOG__USER)
             elif user_input__sub_menu == "descriptor":
                 descriptor_name = None
                 if not uiet__check__list(descriptors_list):
-                    print("[-] Missing Descriptors List.  Please generate")
+                    out_log_string = "[-] Missing Descriptors List.  Please generate"
+                    print_and_log(out_log_string, LOG__USER)
                     continue
                 for descriptor_item in descriptors_list:
-                    print("\t{0}".format(descriptor_item))
+                    out_log_string = "\t{0}".format(descriptor_item)
+                    print_and_log(out_log_string, LOG__USER)
                 descriptor_name = input("Select a Descriptor to Read: ")
                 # Create structures for reading descriptor
                 detailed_descriptor = user_device.find_and_return__internal_map__detailed_descriptor(user_device__internals_map, descriptor_name)
-                #print("[?] Type for details:\t{0}\n\t{1}".format(type(detailed_descriptor), detailed_descriptor))
                 # Check first that something was returned
                 if not detailed_descriptor:
-                    print("[!] Error: Descriptor present in map but NOTHING was read....")
+                    out_log_string = "[!] Error: Descriptor present in map but NOTHING was read...."
+                    print_and_log(out_log_string, LOG__USER)
                     break
-                # Check if the flags exist 
-                ## NOTE: Ignore the search for flags; just make the read regardless!
                 # Create the necessary structures and read from the provided descriptor     | WORKS!
                 descriptor_characteristic_path = detailed_descriptor["Characteristic"]
                 descriptor_path, descriptor_object, descriptor_interface, descriptor_properties, descriptor_introspection = user_device.create_and_return__descriptor__gatt_inspection_set(descriptor_characteristic_path, descriptor_name)
                 read_value = user_device.read__device__descriptor(descriptor_interface)
                 if isinstance(read_value, dbus.Array):
-                    print("\tDescriptor Value (ASCii | Hex):\t{0}\t\t\t|\t\t{1}".format(user_device.dbus_read_value__to__ascii_string(read_value), user_device.dbus_read_value__to__hex_string(read_value)))
+                    out_log_stirng = "\tDescriptor Value (ASCii | Hex):\t{0}\t\t\t|\t\t{1}".format(user_device.dbus_read_value__to__ascii_string(read_value), user_device.dbus_read_value__to__hex_string(read_value))
+                    print_and_log(out_log_string, LOG__USER)
                 else:
-                    print("\tDescriptor Value:\t{0}".format(read_value))
+                    out_log_stirng = "\tDescriptor Value:\t{0}".format(read_value)
+                    print_and_log(out_log_string, LOG__USER)
             elif user_input__sub_menu == "all-descriptors":
                 descriptor_name = None
                 if not uiet__check__list(descriptors_list):
-                    print("[-] Missing Descriptors List. Please generate")
+                    out_log_string = "[-] Missing Descriptors List. Please generate"
+                    print_and_log(out_log_string, LOG__USER)
                     continue
                 # Loop for reading from EVERY Descriptor in the Descriptors List
                 for descriptor_name in descriptors_list:
@@ -5952,22 +5589,27 @@ def check_and_explore__bluetooth_device__user_selected():
                     read_value = user_device.read__device__descriptor(descriptor_interface)
                     if dbg != 0:
                         print("-----\n[?]\tRead Value:\t{0}\n\tDesc Name:\t{1}\n-----".format(read_value, descriptor_name))
+                        out_log_stirng = "-----\n[?]\tRead Value:\t{0}\n\tDesc Name:\t{1}\n-----".format(read_value, descriptor_name)
+                        print_and_log(out_log_string, LOG__USER)
                     # Testing Class debug print
                     user_device.debug_print__dbus__read_value("Descriptor", read_value)
             elif user_input__sub_menu == "multi-read":
                 ## Performing multiple reads of a provided Characteristic; comes from BLE CTF flag (char003d)
                 characteristic_name = None
                 if not uiet__check__list(characteristics_list):
-                    print("[-] Missing Characteristics List. Please generate")
+                    out_log_string = "[-] Missing Characteristics List. Please generate"
+                    print_and_log(out_log_stirng, LOG__USER)
                     break
                 for characteristic_item in characteristics_list:
-                    print("\t{0}".format(characteristic_item))
+                    out_log_string = "\t{0}".format(characteristic_item)
+                    print_and_log(out_log_string, LOG__USER)
                 characteristic_name = input("Select a Characteristic to Read: ")
                 # Create structures for reading characteristic
                 detailed_characteristic = user_device.find_and_return__internal_map__detailed_characteristic(user_device__internals_map, characteristic_name)
                 # First check if that characteristic allows for reading
                 if "read" not in detailed_characteristic["Flags"]:
-                    print("[-] No 'read' capability with characteristic [ {0} ]".format(characteristic_name))
+                    out_log_string = "[-] No 'read' capability with characteristic [ {0} ]".format(characteristic_name)
+                    print_and_log(out_log_string, LOG__USER)
                     continue
                 ## Confirmed that this characteristic CAN be read from; now create the structures for reading the exact characteristic
                 characteristic_service_path = detailed_characteristic["Service"]
@@ -5976,23 +5618,28 @@ def check_and_explore__bluetooth_device__user_selected():
                 user_input__read_count = None
                 while not isinstance(user_input__read_count,int):
                     user_input__read_count = int(input("Provide the number of reads to perform: "))
-                print("[?] User requested [ {0} ] reads against Characteristic [ {1} ]".format(user_input__read_count, characteristic_name))
+                if dbg != 0:
+                    out_log_string = "[?] User requested [ {0} ] reads against Characteristic [ {1} ]".format(user_input__read_count, characteristic_name)
+                    print_and_log(out_log_string, LOG__USER)
                 ## Begin the multi-read
                 print("[*] Reading: ", end="")
                 for read_iteration in range(0, user_input__read_count):
                     read_value = user_device.read__device__characteristic__with_signature(characteristic_interface)
-                    #read_value = user_device.find_and_get__characteristic_property(characteristic_properties, 'Value')
                     print(".", end="")
                 print("+")
                 if isinstance(read_value, dbus.Array):
-                    print("\tCharacteristic Value (ASCii | Hex):\t{0}\t\t|\t\t{1}".format(user_device.dbus_read_value__to__ascii_string(read_value), user_device.dbus_read_value__to__hex_string(read_value)))
+                    out_log_string = "\tCharacteristic Value (ASCii | Hex):\t{0}\t\t|\t\t{1}".format(user_device.dbus_read_value__to__ascii_string(read_value), user_device.dbus_read_value__to__hex_string(read_value))
+                    print_and_log(out_log_string, LOG__USER)
                 else:
-                    print("\tCharaceristic Value:\t{0}".format(read_value))
+                    out_log_string = "\tCharaceristic Value:\t{0}".format(read_value)
+                    print_and_log(out_log_string, LOG__USER)
             else:
-                print("\tDid not understand Sub-Menu User Input")
+                out_log_string = "\tDid not understand Sub-Menu User Input"
+                print_and_log(out_log_string, LOG__USER)
         elif user_input == "write":
             uiet__write__help_menu()
-            print("[!] Note: Writes for BLE only pass the first 21 characters passed; BLE might expect 20 + terminator (e.g. 0x00)")
+            out_log_string = "[!] Note: Writes for BLE only pass the first 21 characters passed; BLE might expect 20 + terminator (e.g. 0x00)"
+            print_and_log(out_log_string, LOG__USER)
             user_input__sub_menu = input("Select a Sub-Action to Take: ")
             if user_input__sub_menu == "characteristic":
                 characteristic_name = None
@@ -6005,19 +5652,19 @@ def check_and_explore__bluetooth_device__user_selected():
                 detailed_characteristic = user_device.find_and_return__internal_map__detailed_characteristic(user_device__internals_map, characteristic_name)
                 # First check if that characteristic allows for writing
                 if "write" not in detailed_characteristic["Flags"]:
-                    print("[-] No 'write' capability with characteristic [ {0} ]".format(characteristic_name))
+                    out_log_stirng = "[-] No 'write' capability with characteristic [ {0} ]".format(characteristic_name)
+                    print_and_log(out_log_string, LOG__USER)
                     break
                 characteristic_service_path = detailed_characteristic["Service"]
                 characteristic_path, characteristic_object, characteristic_interface, characteristic_properties, characteristic_introspection = user_device.create_and_return__characteristic__gatt_inspection_set(characteristic_service_path, characteristic_name)
                 user_input__write_value = input("What should be written to the Characteristic: ")
-                ## NOTE: The above does multiple writes.  This has been commented out to just call the 'write__device__characteristc' function since it has built it type detection for writing
                 if user_input__write_value.startswith('0x'):
                     out_log_string = "[*] Write identified as intended hex value [ {0} ]".format(user_input__write_value)
-                    print_and_log(out_log_string, LOG__DEBUG)
+                    print_and_log(out_log_string, LOG__USER)
                     user_input__write_value = int(user_input__write_value, 16)
                 else:
                     out_log_string = "[*] Write identified as intended string value [ {0} ]".format(user_input__write_value)
-                    print_and_log(out_log_string, LOG__DEBUG)
+                    print_and_log(out_log_string, LOG__USER)
                 # Perform call to Write
                 user_device.write__device__characteristic(characteristic_interface, user_input__write_value)
             elif user_input__sub_menu == "descriptor":
@@ -6025,13 +5672,15 @@ def check_and_explore__bluetooth_device__user_selected():
                 if not uiet__check__list(descriptors_list):
                     break
                 for descriptor_item in descriptors_list:
-                    print("\t{0}".format(descriptor_item))
+                    out_log_stirng = "\t{0}".format(descriptor_item)
+                    print_and_log(out_log_string, LOG__USER)
                 descriptor_name = input("Select a Descriptor to Write: ")
                 # Create structures for writing to descriptor
                 detailed_descriptor = user_device.find_and_return__internal_map__detailed_descriptor(user_device__internals_map, descriptor_name)
                 # First check if the descriptor allows for writing
                 if "write" not in detailed_descriptor["Flags"]:
-                    print("[-] No 'write' capability with descriptor [ {0} ]".format(descriptor_name))
+                    out_log_stirng = "[-] No 'write' capability with descriptor [ {0} ]".format(descriptor_name)
+                    print_and_log(out_log_string, LOG__USER)
                     break
                 descriptor_characteristic_path = detailed_descriptor["Descriptor"]
                 descriptor_path, descriptor_object, descriptor_interface, descriptor_properties, descriptor_introspection = self.create_and_return__descriptor__gatt_inspection_set(descriptor_characteristic_path, descriptor_name)
@@ -6041,16 +5690,19 @@ def check_and_explore__bluetooth_device__user_selected():
                 ## Perform a brute force write to a specified Characteristic; Note: Writing will be (ASCii?) strings (e.g. copy and paste ASCii string flag response to write flag characteristic)
                 characteristic_name = None
                 if not uiet__check__list(characteristics_list):
-                    print("[-] Characteristics list is missing. Pleaes generate")
+                    out_log_string = "[-] Characteristics list is missing. Pleaes generate"
+                    print_and_log(out_log_string, LOG__USER)
                     break
                 for characteristic_item in characteristics_list:
-                    print("\t{0}".format(characteristic_item))
+                    out_log_string = "\t{0}".format(characteristic_item)
+                    print_and_log(out_log_string, LOG__USER)
                 characteristic_name = input("Select a Characteristic to Write: ")
                 # Create structures for writing to characteristic
                 detailed_characteristic = user_device.find_and_return__internal_map__detailed_characteristic(user_device__internals_map, characteristic_name)
                 # First check if that characteristic allows for writing
                 if "write" not in detailed_characteristic["Flags"]:
-                    print("[-] No 'write' capability with characteristic [ {0} ]".format(characteristic_name))
+                    out_log_string = "[-] No 'write' capability with characteristic [ {0} ]".format(characteristic_name)
+                    print_and_log(out_log_string, LOG__USER)
                     break
                 ## Good to create the structures used for performing the write
                 characteristic_service_path = detailed_characteristic["Service"]
@@ -6061,28 +5713,32 @@ def check_and_explore__bluetooth_device__user_selected():
                 while not isinstance(user_input__hex_length,int):
                     user_input__hex_length = int(input("What is the length of the hex bits to brute force: "))
                 out_log_string = "[?] User requested [ {0} ] length hex brute force against Characteristic [ {1} ]".format(user_input__hex_length, characteristic_name)
-                print_and_log(out_log_string, LOG__DEBUG)
+                print_and_log(out_log_string, LOG__USER)
                 ## Create the map of all Hex values to brute force
                 from itertools import product
                 brute_force_map = map(''.join, product('0123456789ABCDEF', repeat=user_input__hex_length))
-                out_log_string = "[*] check_and_explore__bluetooth_device__user_selected::brute_force_map\t-\t[ {0} ]".format(brute_force_map)
-                print_and_log(out_log_string, LOG__DEBUG)
+                if dbg != 0:
+                    out_log_string = "[*] check_and_explore__bluetooth_device__user_selected::brute_force_map\t-\t[ {0} ]".format(brute_force_map)
+                    print_and_log(out_log_string, LOG__DEBUG)
                 print("Brute Force Writing: ", end="")
                 for brute_force_string in brute_force_map:
                     print(".", end="")
                     # Converting string to hex
                     brute_force_int = int(brute_force_string, 16)
-                    #brute_force_string = hex(brute_force_int)      # NOTE: This will convert an int into a string (formatted to look like hex)
                     brute_force_string = brute_force_int            # NOTE: This works for writing "hex" even though it is JUST passing an int
-                    out_log_string = "[*] check_and_explore__bluetooth_device__user_selected::brute_force_string\t-\t[ {0} ]\t\tbrute_force_int\t-\t[ {1} ]".format(brute_force_string, brute_force_int)
-                    print_and_log(out_log_string, LOG__DEBUG)
+                    if dbg != 0:
+                        out_log_string = "[*] check_and_explore__bluetooth_device__user_selected::brute_force_string\t-\t[ {0} ]\t\tbrute_force_int\t-\t[ {1} ]".format(brute_force_string, brute_force_int)
+                        print_and_log(out_log_string, LOG__DEBUG)
                     user_device.write__device__characteristic(characteristic_interface, brute_force_string)
                 print("+")
             else:
-                print("\tDid not understand Sub-Menu User Input")
+                out_log_string = "\tDid not understand Sub-Menu User Input"
+                print_and_log(out_log_string, LOG__USER)
         elif user_input == "read-all":
-            print("[*] Providing List of All Read Values Associated to known Characteristics")
-            print("\t[ Char Handle ]\t-\t[ Value (ASCii) ]")
+            out_log_string = "[*] Providing List of All Read Values Associated to known Characteristics"
+            print_and_log(out_log_string, LOG__USER)
+            out_log_string = "\t[ Char Handle ]\t-\t[ Value (ASCii) ]"
+            print_and_log(out_log_string, LOG__USER)
             if not uiet__check__list(characteristics_list):
                 continue
             for characteristic_item in characteristics_list:
@@ -6091,45 +5747,39 @@ def check_and_explore__bluetooth_device__user_selected():
                     detailed_characteristic = user_device.find_and_return__internal_map__detailed_characteristic(user_device__internals_map, characteristic_item)
                 except Exception as e:
                     if isinstance(exception_e, dbus.exceptions.DBusException):
-                        print("[!] Got a D-Bus Error when attempting to do things")
+                        out_log_stirng = "[!] Got a D-Bus Error when attempting to do things"
+                        print_and_log(out_log_string, LOG__USER)
                         if user_device.understand_and_handle__dbus_errors(e) == bluetooth_constants.RESULT_ERR_NOT_FOUND:
-                            print("[!] Error: Potentially method not found")
+                            #print("[!] Error: Potentially method not found")
+                            out_log_string = "[!] Error: Potentially method not found"
+                            print_and_log(out_log_string, LOG__USER)
                             # TODO: Do something else to maintain functionality
                     else:
-                        print("[!] Got a non D-Bus Error when attempting to do things")
+                        out_log_string = "[!] Got a non D-Bus Error when attempting to do things"
+                        print_and_log(out_log_string, LOG__USER)
                         return None
                 finally:
-                    if dbg != 1:
+                    if dbg != 0:
                         out_log_string = "[*] Generated detailed characteristic information for [ {0} ]".format(characteristic_item)
-                        print_and_log(out_log_string, LOG__USER)
+                        print_and_log(out_log_string, LOG__DEBUG)
                 characteristic_service_path = detailed_characteristic["Service"]
-                # TODO: Add additional error checking around this statement to aid with 'Method "GetAll" with signature "s" on interface "org.freedesktop.DBus.Properties" doesn't exist' errors; Might need a more universal error handling solution
                 characteristic_path, characteristic_object, characteristic_interface, characteristic_properties, characteristic_introspection = user_device.create_and_return__characteristic__gatt_inspection_set(characteristic_service_path, characteristic_item)
-                #user_device.read__device__characteristic(characteristic_interface)      # Call for Read Method
-                #characteristic__read_value = user_device.find_and_get__characteristic_property(characteristic_properties, 'Value')
                 characteristic__read_value = user_device.read__device__characteristic__with_signature(characteristic_interface)      # Call for Read Method
                 # Convert D-Bus value to ASCii
                 if isinstance(characteristic__read_value, dbus.Array):
-                    #print("\tCharacteristic Value (ASCii):\t{0}".format(user_device.dbus_read_value__to__ascii_string(characteristic__read_value)))
                     characteristic__read_value = user_device.dbus_read_value__to__ascii_string(characteristic__read_value)
-                #else:
-                #    print("\tCharaceristic Value:\t{0}".format(read_value))
-                # Print out this characteristic's line + value
-                print("\t{0}\t-\t{1}".format(characteristic_item, characteristic__read_value))
-                # Secondary grab for debugging
-                #read_test = user_device.read__device__characteristic__with_sig(characteristic_interface)
-                #if isinstance(read_test, dbus.Array):
-                    #print("\tCharacteristic Value (ASCii):\t{0}".format(user_device.dbus_read_value__to__ascii_string(characteristic__read_value)))
-                #    read_test = user_device.dbus_read_value__to__ascii_string(read_test)
-                #if dbg != 1:
-                #    print("\t\tSig Read:\t{0}".format(read_test))
+                out_log_string = "\t{0}\t-\t{1}".format(characteristic_item, characteristic__read_value)
+                print_and_log(out_log_string, LOG__USER)
             if dbg != 1:    # ~!~
-                print("[+] Completed print of all characteristics and values")
+                out_log_string = "[+] Completed print of all characteristics and values"
+                print_and_log(out_log_string, LOG__DEBUG)
         elif user_input == "update-map":
-            print("[*] Updating Device Internals Map")
+            out_log_string = "[*] Updating Device Internals Map"
+            print_and_log(out_log_string, LOG__USER)
             user_device__internals_map = user_device.enumerate_and_update__device__all_internals(user_device__internals_map)
             if dbg != 0:
-                print("[+] Device Internals Map has been updated!")
+                out_log_string = "[+] Device Internals Map has been updated!"
+                print_and_log(out_log_string, LOG__DEBUG)
         elif user_input == "ssh":
             uiet__secret__help_menu()
         elif user_input == "reconnect":
@@ -6137,7 +5787,8 @@ def check_and_explore__bluetooth_device__user_selected():
                 user_device.Reconnect_Check()
             except Exception as e:
                 return_error = user_device.understand_and_handle__dbus_errors(e)
-                print("[?] Return Error:\t{0}".format(return_error))
+                out_log_string = "[?] Return Error:\t{0}".format(return_error)
+                print_and_log(out_log_string, LOG__DEBUG)
                 # Produce error log
                 if return_error == bluetooth_constants.RESULT_ERR_NOT_FOUND:
                     output_log_string = "[-] Unable to query the device property.... Most likely due to device no longer being connected and within the D-Bus device list/memory"
@@ -6146,15 +5797,45 @@ def check_and_explore__bluetooth_device__user_selected():
         elif user_input == "tools":
             uiet__tools__help_menu()
             user_input__sub_menu = input("Select a Sub-Action to Take: ")
+            # Print out the generated Landmin and Security maps
             if user_input__sub_menu == "print-maps":
                 out_log_string = "[*] Printing out of generated maps\n\tLandmine Map:\t\t-[ {0} ]-\n\tSecurity Map:\t\t-[ {1} ]-".format(landmine_map, security_map)
                 print_and_log(out_log_string, LOG__USER)
+            # Print out detailed delve exploration of all the device "layers"
+            elif user_input__sub_menu == "deep-dive":
+                out_log_string = "[*] Printing out the deep dive delve of the complete device"
+                print_and_log(out_log_string, LOG__USER)
+                # Check if the required structures are prepared
+                if (services_list is None) or (characteristics_list is None) or (descriptors_list is None):
+                    out_log_string = "[-] Required structures have not been created, please generate all"
+                    print_and_log(out_log_string, LOG__USER)
+                    continue
+                # Explore the Services
+                for service_entry in services_list:
+                    out_log_string = "[*] Service to be Explored [ {0} ]".format(service_entry)
+                    print_and_log(out_log_string, LOG__USER)
+                    detailed_service = user_device.find_and_return__internal_map__detailed_service(user_device__internals_map, service_entry)
+                    user_device.pretty_print__gatt__service__detailed_information(detailed_service)
+                # Explore the Characteristics
+                for characteristic_entry in characteristics_list:
+                    out_log_string = "[*] Characteristc to be Explored [ {0} ]".format(characteristic_entry)
+                    print_and_log(out_log_string, LOG__USER)
+                    detailed_characteristic = user_device.find_and_return__internal_map__detailed_characteristic(user_device__internals_map, characteristic_entry)
+                    user_device.pretty_print__gatt__characteristic__detailed_information(detailed_characteristic)
+                # Explore the Descriptors
+                for descriptor_entry in descriptors_list:
+                    out_log_string = "[*] Descriptor to be Explored [ {0} ]".format(descriptor_entry)
+                    print_and_log(out_log_string, LOG__USER)
+                    detailed_descriptor = user_device.find_and_return__internal_map__detailed_descriptor(user_device__internals_map, descriptor_entry)
+                    user_device.pretty_print__gatt__descriptor__detailed_information(detailed_descriptor)
             else:
                 out_log_string = "\tDid not understand Sub-Menu User Input"
                 print_and_log(out_log_string, LOG__USER)
         else:
-            print("\tDid not understand User Input")
-    print("===============================================================================================\n\t[+] COMPLETED USER SELECTED DEVICE EXPLORATION [+]\n===============================================================================================")
+            out_log_string = "\tDid not understand User Input"
+            print_and_log(out_log_string, LOG__USER)
+    out_log_string = "===============================================================================================\n\t[+] COMPLETED USER SELECTED DEVICE EXPLORATION [+]\n==============================================================================================="
+    print_and_log(out_log_string, LOG__USER)
 
 ## Functions for Debugging the D-Bus Interfaces
 
@@ -6188,9 +5869,6 @@ def enumerate_and_return__dbus__method__single_argument_map(raw__method__argumen
 def enumerate_and_return__dbus__method__multi_argument_map(raw__method__argument_list):
     if dbg != 0:
         print("[*] Returning [ Single Method Argument Map ] from Provided Data [ {0} ]".format(raw__method__argument_list))
-    ## TODO: Finish cleaning up this code for the dictionary scenario
-    # Create variable for a single argument
-    #method_argument_map = {}
     # Create variable for the Method's List of Arguments
     list_of_arguments = []
     # Loop through the Method Arguments
@@ -6233,7 +5911,6 @@ def enumerate_and_return__dbus__single_method_map(raw__method_dict):
                 list_of_arguments.append(method_argument_map)
             elif isinstance(raw__method_dict[raw__method_attribute], list):
                 ## Code for Examining a Method Attribute List
-                #print("[!!] This function is NOT configured to deal with LISTs.... Recall with each content of the list")
                 if dbg != 0:
                     print("Arguments are presented as a LIST")
                 # Loop thorugh the List of Arguments Presented
@@ -6244,7 +5921,6 @@ def enumerate_and_return__dbus__single_method_map(raw__method_dict):
                     method_argument_map = enumerate_and_return__dbus__method__single_argument_map(method_argument_entry)
                     # Add Single Argument Map to the List of Arguments
                     list_of_arguments.append(method_argument_map)
-                #list_of_arguments = enumerate_and_return__dbus__method__multi_argument_map(raw__method_dict[raw__method_attribute])
             else:
                 print("[!] Unknown Method Attribute:\t{0}".format(raw__method_dict[raw__method_attribute]))
             # Add the generated List of Arguments to the Single Method Map
@@ -6265,8 +5941,6 @@ def enumerate_and_return__dbus__single_property_map(raw__property_dict):
         if raw__property_attribute == "@name":
             if dbg != 0:
                 print("\t\t\t\tSub-Interface Property Name:\t{0}".format(raw__property_dict[raw__property_attribute]))
-            # Add name of property to the List of Properties
-            #list_of_properties.append(raw__property_dict[raw__property_attribute])
             # Add name of the property to the Single Property Map
             single_property_map["Name"] = raw__property_dict[raw__property_attribute]
         elif raw__property_attribute == "@type":
@@ -6302,7 +5976,6 @@ def pretty_print__introspect__dict(introspect_xml__dict):
     for introspected_object in introspect_xml__dict:
         if dbg != 0:
             print("Introspected Object (Root Node):\t{0}".format(introspected_object))
-        ## TODO: Update code to capture the D-Bus Introspected Object Node's Name (IF IT EXISTS)
         for sub_element__object in introspect_xml__dict[introspected_object]:
             if dbg != 0:
                 print("\tSub-Element Object:\t{0}".format(sub_element__object))
@@ -6334,8 +6007,6 @@ def pretty_print__introspect__dict(introspect_xml__dict):
                         if sub_element__interface__attribute == "@name":
                             if dbg != 0:
                                 print("\t\tSub-Interface Name:\t{0}".format(sub_element__interface[sub_element__interface__attribute]))
-                            # Add the names of the interfaces to the List of Interfaces     | NOTE: Ideally this should be done so that EACH appended interface is a FULL MAP of that specific interface
-                            #list_of_interfaces.append(sub_element__interface[sub_element__interface__attribute])
                             # Add the name of the Interface to the Single Interface Map
                             single_interface_map["Name"] = sub_element__interface[sub_element__interface__attribute]
                         # Case where the D-Bus Interface has a Method Type attribute
@@ -6386,8 +6057,6 @@ def pretty_print__introspect__dict(introspect_xml__dict):
                             # NOTE: The code below MAY need to be updated due to how the "signal" attribute is handled (e.g. one element vs. a list; assumed one element)
                             if dbg != 0:
                                 print("\t\t\tSub-Interface Signal:\t{0}".format(sub_element__interface[sub_element__interface__attribute]))
-                            # Create variable for tracking the List of Signals
-                            #list_of_signals = []
                             # Create variable for a single signal
                             single_signal_map = {}
                             for sub_element__interface__signal_attribute in sub_element__interface[sub_element__interface__attribute]:
@@ -6421,7 +6090,6 @@ def pretty_print__introspect__dict(introspect_xml__dict):
                                                 # Add name to the Single Signal Map
                                                 single_argument_map["Name"] = sub_element__interface__signal__arg[sub_element__interface__signal__arg_attribute]
                                             # Signal Argument Signature
-                                            # NOTE: This is the "D-BUS SIGNATURE" that represents the type of data that one should receive from the given D-BUS INTERFACE SIGNAL
                                             elif sub_element__interface__signal__arg_attribute == "@type":
                                                 if dbg != 0:
                                                     print("\t\t\t\t\tSub-Interface Signal Argument Element Type (Signature):\t{0}".format(sub_element__interface__signal__arg[sub_element__interface__signal__arg_attribute]))
@@ -6451,7 +6119,6 @@ def pretty_print__introspect__dict(introspect_xml__dict):
                         if list_of_methods != []:
                             # Add the List of Methods to the Single Interface Map
                             single_interface_map["Methods"] = list_of_methods
-                    ## TODO: Add the single interface map to the List of Interfaces
                     list_of_interfaces.append(single_interface_map)
                 interface__map = {"Interfaces": list_of_interfaces}
                 if dbg != 0:
@@ -6497,9 +6164,6 @@ def pretty_print__introspect__dict(introspect_xml__dict):
                 print("Sub-Information:\t{0}".format(introspect_xml__dict[introspected_object][sub_element__object]))
             # Update entry in map for the Nodes
             introspected_object__map.update(node__map)
-        # Update the top level Introspected Object Map
-        #introspected_object__map.update(interface__map)
-        #introspected_object__map.update(node__map)
     if dbg != 0:
         print("-------------------------------------------------------")
     if dbg != 0:
@@ -6631,7 +6295,6 @@ def find_and_return__introspection_map__high_level_map(device_object):
                 interface_list.append(interface_name)
             # Add the new list of interfaces to the high-level map
             high_level_map["Interfaces"] = interface_list
-            ## TODO: Create system for putting the Interfaces into the High Level Map
         # Gather the Services information for the current introspection map
         elif introspection_map__section == "Nodes":
             node_list = []
@@ -6639,7 +6302,6 @@ def find_and_return__introspection_map__high_level_map(device_object):
                 node_list.append(node_element)
             # Add the new list of nodes (services?) to the high-level map
             high_level_map["Services"] = node_list
-            ## TODO: Create system for putting the Nodes into the High Level Map
     ## Service enumerating section of code
     for service_name in introspection_map__device["Nodes"]:
         # Create variables for diving the services
@@ -6663,9 +6325,7 @@ def find_and_return__introspection_map__high_level_map(device_object):
                     for characteristic_map__section in introspection_map__characteristics:
                         # Gather the Descriptors information for the current introspection map
                         if characteristic_map__section == "Nodes":
-                            #print("[!] Found a Characteristic Nodes Section")
                             if introspection_map__characteristics[characteristic_map__section]:
-                                #print("\tSection:\t[ {0} ]".format(introspection_map__characteristics[characteristic_map__section]))
                                 for node_element in introspection_map__characteristics[characteristic_map__section]:
                                     descriptors_list.append(node_element)
                                     if dbg != 1:
@@ -6740,10 +6400,6 @@ def find_and_return__introspection_map__deep_dive__named_node(device_object, nam
             print("[-] Named Node was NOT located... Returning Nothing")
         return None
 
-    ## Use lists created above + existing function(s) to generate greater detail on Node info; then create list(s) of information for _ii_
-
-    ## Use data from all the previous steps to create the pretty print output (to a given output path?); thus creating the information for _iii_
-
     # Determine if the "Named Node" is a Service/Characteristic/Descriptor
     if named_node__name in list_of_services:
         if dbg != 0:
@@ -6761,10 +6417,6 @@ def find_and_return__introspection_map__deep_dive__named_node(device_object, nam
         if dbg != 0:
             print("[-] Named Node was NOT located... Returning Nothing")
         return None
-
-    ## Use lists created above + existing function(s) to generate greater detail on Node info; then create list(s) of information for _ii_
-
-    ## Use data from all the previous steps to create the pretty print output (to a given output path?); thus creating the information for _iii_
 
 # Function for Enumerating and Creating a List of All Methods for an Interface
 def enumerate_and_create__introspection_map__interface__list_of_methods(introspection_map, interface_name):
@@ -7048,6 +6700,21 @@ def ble_device__scan_and_enumeration(ble_device__address=None):
     # JSON for tracking the various services, characteristics, and descriptors from the GATT
     ble_device__mapping = { "Services" : {} }
     # JSON for tracking the landmine services, characteristics, and descriptors discovered during GATT enumeration
+    '''
+    Map of JSON Mapping:
+        BDADDR : {
+            Service001 : {
+                Characteristic001 : {
+                    Descriptor001 : {
+                        descriptor_info_key : descriptor_info_value
+                        },
+                    characteristics_info_key : characteristic_info_value
+                    },
+                service_info_key : service_info_value
+            }
+    
+    
+    '''
     ## Code - Complete Enumeration through a BLE Device's Services, Characteristics, and Descriptors
     # Now do an iteration through the 'Services' to enumerate all the characteristics
     for ble_service in ble_services_list:
@@ -7061,7 +6728,6 @@ def ble_device__scan_and_enumeration(ble_device__address=None):
         service_path, service_object, service_interface, service_properties, service_introspection = ble_device.create_and_return__service__gatt_inspection_set(ble_service)
         # Generate the sub-list of Service Characteristics
         service_characteristics_list = ble_device.find_and_get__device__etree_details(service_introspection, 'char')       # Nota Bene: This only does the conversion of the eTree into something meaningful that can be enumerated for the Characteristic names; SAME THING as the line below
-        #ble_chars_list = ble_device.find_and_get__device_introspection__characteristics(service_path, service_characteristics_list)
         # Now do an iteration through the 'Characteristics' of the current Service
         for ble_service_characteristic in service_characteristics_list:
             # Internal JSON mapping
@@ -7071,7 +6737,6 @@ def ble_device__scan_and_enumeration(ble_device__address=None):
             # Check the Read/Write Flag(s) for the Characteristic interface
             characteristic_flags = ble_device.find_and_get__characteristic_property(characteristic_properties, 'Flags')
             if dbg != 0:    # ~!~
-                #print("[*] Characteristic [ {0} ] Flags:\t{1}".format(ble_device.find_and_get__characteristic_property(characteristic_properties, 'Service'), characteristic_flags))
                 print("[*] Characteristic [ {0} ] Flags:\t{1}".format(characteristic_path, characteristic_flags))
             ble__scan_enumerate__characteristic_string = "[*] Characteristic [ {0} ] Flags:\t{1}\n".format(characteristic_path, characteristic_flags)
             logging__log_event(LOG__GENERAL, ble__scan_enumerate__characteristic_string)
@@ -7090,13 +6755,10 @@ def ble_device__scan_and_enumeration(ble_device__address=None):
                     characteristic_interface.ReadValue({})
                     if dbg != 0:
                         print("[+] Able to perform ReadValue()\t-\tCharacteristic")
-                    #logging__log_event(LOG__GENERAL, ble__scan_enumerate__characteristic_read_string)
                 except Exception as e:
                     if dbg != 0:
                         print("[-] Unable to perform ReadValue()\t-\tCharacteristic")
                     # Add this "problem" to the mine map
-                    #ble_device__mine_mapping["Characteristics"].extend(ble_service_characteristic)
-                    #logging__log_event(LOG__GENERAL, ble__scan_enumerate__characteristic_read_string)
                     ble_device.understand_and_handle__dbus_errors(e)
             if dbg != 0:
                 print("[!] Post-Read Test:\tCharacteristic Value:\t-\t{0}".format(ble_device.find_and_get__characteristic_property(characteristic_properties, 'Value')))
@@ -7160,8 +6822,6 @@ def ble_device__scan_and_enumeration(ble_device__address=None):
 
     ## Pretty print the BLE CTF device mapping
     print("JSON Print of the Enumeration")
-    #print(ble_device__mapping)
-    # TODO: Capture the output from below and place into logging file
     pretty_print__gatt__dive_json(ble_device, ble_device__mapping)
     # Logging
     ble__scan_enumerate__end_string = "[+] Completed BLE Scan and Enumeration of [{0}]\n".format(ble_device__address)
@@ -7198,7 +6858,6 @@ def debug__testing__pico_w():
 
     ## Definitions for Notification catching using GLib MainLoop
     # Function for adding a timeout to the user_device's bus property; Take in a timeout in milliseconds and a function to call once timesd out
-    #   - TODO: [ ] Get timeout functionality working on this
     def mainloop__configure__add_timeout(timeout_ms, callback_function):
 
         # Create a GLib MainLoop Object (cause it's needed?)
@@ -7206,10 +6865,6 @@ def debug__testing__pico_w():
 
         # Adding a timeout to the GLib MainLoop
         timer_id = GLib.timeout_add(timeout_ms, callback_function)
-
-    #characteristic_interface.StartNotify(reply_handler=notify_catch, error_handler=notify_error, dbus_interface=bluetooth_constants.GATT_CHARACTERISTIC_INTERFACE)
-
-    ## More testing using the Signal Receiving and Notify Callbacks
 
     # Structure creation and function call to replicate the code above
     test_signal = system_dbus__bluez_signals()
@@ -7248,7 +6903,6 @@ def debug__pretty_print__device_interface__interfaces(introspect__map__interface
                 ## Attempt to check for "Arguments" related to the current METHOD
                 try:
                     for method_argument in method_item["Arguments"]:
-                        #print("\t\t[ {0} ]\t\tName:\t{1}\t\tType(signature):\t{2}".format(method_argument["Direction"], method_argument["Name"], method_argument["Type"]))
                         ## Printing 'try' statements for giving a full print of the METHOD ARGUMENTS
                         # Print DIRECTION of the ARGUMENT
                         try:
@@ -7375,19 +7029,22 @@ def print_and_log(output_string, log_type=LOG__GENERAL):
 
 # Function for Extracting Characteristics Information as ASCii
 def extract_and_print__characteristics_list(user_device, user_device__internals_map):
-    out_log_string = "[*] extract_and_print__characteristics_list::Attempting to Generate and Print the Characteristics List"
-    print_and_log(out_log_string, LOG__DEBUG)
+    if dbg != 0:
+        out_log_string = "[*] extract_and_print__characteristics_list::Attempting to Generate and Print the Characteristics List"
+        print_and_log(out_log_string, LOG__DEBUG)
     # Create the characteristics list from the provided user_device
     characteristics_list = user_device.find_and_return__internal_map__characteristics_list(user_device__internals_map)
     # Iterate through the characteristics list
     for characteristic_item in characteristics_list:
-        out_log_string = "[*] extract_and_print__characteristics_list::Building structures for Characteristic [ {0} ]".format(characteristic_item)
-        print_and_log(out_log_string, LOG__DEBUG)
+        if dbg != 0:
+            out_log_string = "[*] extract_and_print__characteristics_list::Building structures for Characteristic [ {0} ]".format(characteristic_item)
+            print_and_log(out_log_string, LOG__DEBUG)
         detailed_characteristic = user_device.find_and_return__internal_map__detailed_characteristic(user_device__internals_map, characteristic_item)
         characteristic_service_path = detailed_characteristic["Service"]
         characteristic_path, characteristic_object, characteristic_interface, characteristic_properties, characteristic_introspection = user_device.create_and_return__characteristic__gatt_inspection_set(characteristic_service_path, characteristic_item)
-        out_log_string = "[*] extract_and_print__characteristics_list::Attempting to call the ReadValue method via the characteristic interface"
-        print_and_log(out_log_string, LOG__DEBUG)
+        if dbg != 0:
+            out_log_string = "[*] extract_and_print__characteristics_list::Attempting to call the ReadValue method via the characteristic interface"
+            print_and_log(out_log_string, LOG__DEBUG)
         # Attempt call to the ReadValue method (via characteristic interface)
         try:
             user_device.read__device__characteristic(characteristic_interface)
@@ -7399,8 +7056,9 @@ def extract_and_print__characteristics_list(user_device, user_device__internals_
             user_device.error_buffer = user_device.understand_and_handle__dbus_errors(e)
             characteristic__read_value = None
         else:
-            out_log_string = "[*] extract_and_print__characteristics_list::Successfully made ReadValue method call wihtout raising an exception"
-            print_and_log(out_log_string, LOG__DEBUG)
+            if dbg != 0:
+                out_log_string = "[*] extract_and_print__characteristics_list::Successfully made ReadValue method call wihtout raising an exception"
+                print_and_log(out_log_string, LOG__DEBUG)
         # Attempt call to read the Value (via properties interface)
         try:
             # Get value
@@ -7409,13 +7067,19 @@ def extract_and_print__characteristics_list(user_device, user_device__internals_
             out_log_string = "[-] extract_and_print__characteristics_list::Attempting to read the Value from the properties interface"
             print_and_log(out_log_string, LOG__DEBUG)
         else:
-            out_log_string = "[*] extract_and_print__characteristics_list::Successfully made read of Value without raising an exception"
-            print_and_log(out_log_string, LOG__DEBUG)
+            if dbg != 0:
+                out_log_string = "[*] extract_and_print__characteristics_list::Successfully made read of Value without raising an exception"
+                print_and_log(out_log_string, LOG__DEBUG)
         output_log_string = "[*] extract_and_print__characteristics_list::Retrieved a read value of  [ {0} ] of type [ {1} ]".format(characteristic__read_value, type(characteristic__read_value))
         print_and_log(output_log_string, LOG__DEBUG)
+        # Check is a dbus.Array was returned
         if isinstance(characteristic__read_value, dbus.Array):
             characteristic__read_value = user_device.dbus_read_value__to__ascii_string(characteristic__read_value)
-        elif characteristic__read_value is None:        ## TODO: Figure out what to do if the data acquired was NOT a dbus.Array
+        # Check if nothing was returned
+        elif characteristic__read_value is None:        
+            characteristic__read_value = convert__hex_to_ascii(characteristic__read_value)
+        # Check if a list (e.g. Array of hex/decimal values) was returned
+        elif isinstance(characteristic__read_value, list):
             characteristic__read_value = convert__hex_to_ascii(characteristic__read_value)
         out_log_string = "\t{0}\t-\t{1}".format(characteristic_item, characteristic__read_value)
         print_and_log(out_log_string)
@@ -7436,7 +7100,6 @@ def post_processing__ble__scan_analysis(user_device, user_device__internals_map,
         print_and_log(out_log_string)
         print_and_log(out_log_string, LOG__ENUM)
     # Characteristics Printed out in ASCii
-    #characteristics_list = user_device.find_and_return__internal_map__characteristics_list(user_device__internals_map)
     out_log_string = "-----\n- Characteristic Fields - ASCii\n-----"
     print_and_log(out_log_string)
     print_and_log(out_log_string, LOG__ENUM)
@@ -7448,11 +7111,11 @@ def post_processing__ble__scan_analysis(user_device, user_device__internals_map,
     pretty_print__gatt__dive_json(user_device, user_device__internals_map)
 
 # Function for Performing a BLE Scan on a Target Device using a Specific Scan Mode; Note: Default is "passive"
+#   - Note: Order of Scan Modes from Quiet to Loud is Passive, Nag, Poke, Bruteforce
 def scanning__ble(target_device, scan_mode="passive"):
     # Variable for tracking all output generated
     out_log_string = "-=!=- Unchanged Log String -=!=-"
     discovered_devices = None
-    #print("[*] Starting BLE Scan of Mode [{0}] on Target Device [{1}]".format(scan_mode, target_device))
     out_log_string = "[*] Starting BLE Scan of Mode [ {0} ] on Target Device [ {1} ]".format(scan_mode, target_device)
     print_and_log(out_log_string)
     print_and_log(out_log_string, LOG__ENUM)
@@ -7519,19 +7182,17 @@ def scanning__ble(target_device, scan_mode="passive"):
     # Passive Scan              # TODO: Remove re-try for the passive scan?? Perhaps less "pushy" landmine check?
     if scan_mode == "passive":
         # Performing Passive Scan of the Target Device
-        #print("[*] Passive Scan being Performed Against Target [{0}]".format(target_device))
         out_log_string = "[*] Passive Scan being Performed Against Target [{0}]".format(target_device)
         print_and_log(out_log_string)
         print_and_log(out_log_string, LOG__ENUM)
         # While loop for attemping connection and enumeration of a target device
         while loop_iteration < search_no_more_times and not device_found_flag:
-            print("[?] Debug: First Test [ {0} ] + Second Test [ {1} ]\n\tLoop Iteration:\t{2}\t\tMax Searches:\t{3}\t\tDevice Found Flag:\t{4}".format(loop_iteration < search_no_more_times, not device_found_flag, loop_iteration, search_no_more_times, device_found_flag))
+            if dbg != 0:
+                print("[?] Debug: First Test [ {0} ] + Second Test [ {1} ]\n\tLoop Iteration:\t{2}\t\tMax Searches:\t{3}\t\tDevice Found Flag:\t{4}".format(loop_iteration < search_no_more_times, not device_found_flag, loop_iteration, search_no_more_times, device_found_flag))
             # Expanded to try statement for improved troubleshooting
             try:
                 # Pass the target_device to the connect and enumerate the device
                 user_device, user_device__mapping, landmine_map, security_map = connect_and_enumerate__bluetooth__low_energy(target_device, landmine_map, security_map)
-                # TODO: Add check here to validate that the device has been found
-                #print("[?] User Device:\t[ {0} ]\n\tUser Dev Map:\t[ {1} ]".format(user_device, user_device__mapping))
                 output_log_string = "[?] User Device:\t[ {0} ]\n\tUser Dev Map:\t[ {1} ]".format(user_device, user_device__mapping)
                 print_and_log(output_log_string, LOG__DEBUG)
                 # Set that the target device was found and enumerated
@@ -7577,11 +7238,9 @@ def scanning__ble(target_device, scan_mode="passive"):
                 out_log_string = "[*] scanning__ble::Generated Device Internals Map"
                 print_and_log(out_log_string)
                 print_and_log(out_log_string, LOG__DEBUG)
-
     # Naggy Scan;   # NOTE: Have this be the first variation of the "land-mine" detecetion for passive
     elif scan_mode == "naggy":
         # Performing Naggy Scan of the Target Device (i.e. verbose passive reads)
-        #print("[*] Nagging Scan being Performed Against Target [{0}]".format(target_device))
         out_log_string = "[*] Nagging Scan being Performed Against Target [{0}]".format(target_device)
         print_and_log(out_log_string)
         print_and_log(out_log_string, LOG__ENUM)
@@ -7603,13 +7262,15 @@ def scanning__ble(target_device, scan_mode="passive"):
                 # Sleep for allowing time
                 time.sleep(5)   # Wait five seconds
             else:
-                out_log_string = "[*] scanning_ble::{0}\t-\tSuccess in Connect and Enumerate without raising an exception"
-                print_and_log(out_log_string, LOG__DEBUG)
+                if dbg != 0:
+                    out_log_string = "[*] scanning_ble::{0}\t-\tSuccess in Connect and Enumerate without raising an exception"
+                    print_and_log(out_log_string, LOG__DEBUG)
             finally:
-                out_log_string = "[*] scanning__ble::{0}\t-\tCompleted Attempt to Connect and Enumerate target [ {1} ]".format(scan_mode, target_device)
-                print_and_log(out_log_string, LOG__DEBUG)
-                out_log_string = "[*] scanning__ble::{0}\t-\tVariable Check:\n\tType Device:\t[ {1} ]\n\tType DMap:\t[ {2} ]\n\tType LMap:\t[ {3} ]\n\tType SMap:\t[ {4} ]".format(scan_mode, user_device, user_device__mapping, landmine_map, security_map)
-                print_and_log(out_log_string, LOG__DEBUG)
+                if dbg != 0:
+                    out_log_string = "[*] scanning__ble::{0}\t-\tCompleted Attempt to Connect and Enumerate target [ {1} ]".format(scan_mode, target_device)
+                    print_and_log(out_log_string, LOG__DEBUG)
+                    out_log_string = "[*] scanning__ble::{0}\t-\tVariable Check:\n\tType Device:\t[ {1} ]\n\tType DMap:\t[ {2} ]\n\tType LMap:\t[ {3} ]\n\tType SMap:\t[ {4} ]".format(scan_mode, user_device, user_device__mapping, landmine_map, security_map)
+                    print_and_log(out_log_string, LOG__DEBUG)
             loop_iteration += 1
         # TODO: Move this functionality to the try-else statment
         if device_found_flag:
@@ -7625,27 +7286,23 @@ def scanning__ble(target_device, scan_mode="passive"):
     # Pokey Scan
     elif scan_mode == "pokey":
         # Performing Pokey Scan of the Target Device (i.e. minimal writes)
-        #print("[*] Poking Scan being Performed Against Target [{0}]".format(target_device))
         out_log_string = "[*] Poking Scan being Performed Against Target [{0}]".format(target_device)
         print_and_log(out_log_string)
         print_and_log(out_log_string, LOG__ENUM)
     # Bruteforce Scan
     elif scan_mode == "bruteforce":
         # Performing Bruteforce Scan of the Target Device (i.e. loud bruteforce writes)
-        #print("[*] Bruteforce Scan being Performed Against Target [{0}]".format(target_device))
         out_log_string = "[*] Bruteforce Scan being Performed Against Target [{0}]".format(target_device)
         print_and_log(out_log_string)
         print_and_log(out_log_string, LOG__ENUM)
     # Unknown/Unrecognized Scan Mode
     else:
-        #print("[!] Unknown Scan Mode [{0}] Passed..... Exiting".format(scan_mode))
         out_log_string = "[!] Unknown Scan Mode [{0}] Passed..... Exiting".format(scan_mode)
         print_and_log(out_log_string)
         print_and_log(out_log_string, LOG__ENUM)
         #exit 1
         return None
     ## Performing Post-Processing 
-    #print("[*] Performing the Post-Processing of Collected Scan Data")
     out_log_string = "[*] Performing the Post-Processing of Collected Scan Data"
     print_and_log(out_log_string)
     print_and_log(out_log_string, LOG__ENUM)
@@ -7689,7 +7346,6 @@ def scanning__ble(target_device, scan_mode="passive"):
         post_processing__ble__scan_analysis(user_device, user_device__internals_map, device_properties_array, scan_mode)
     # Naggy Scan
     elif scan_mode == "naggy":
-        #print("[*] Nag Scan Analysis")
         out_log_string = "[*] Nag Scan Analysis"
         print_and_log(out_log_string)
         print_and_log(out_log_string, LOG__ENUM)
@@ -7701,7 +7357,6 @@ def scanning__ble(target_device, scan_mode="passive"):
         # Full formatted print out of the entire device map
     # Pokey Scan
     elif scan_mode == "pokey":
-        #print("[*] Poke Scan Analysis")
         out_log_string = "[*] Poke Scan Analysis"
         print_and_log(out_log_string)
         print_and_log(out_log_string, LOG__ENUM)
@@ -7710,7 +7365,6 @@ def scanning__ble(target_device, scan_mode="passive"):
         # Full End Map printout
     # Bruteforce Scan
     elif scan_mode == "bruteforce":
-        #print("[*] Bruteforce Scan Analysis")
         out_log_string = "[*] Bruteforce Scan Analysis"
         print_and_log(out_log_string)
         print_and_log(out_log_string, LOG__ENUM)
@@ -7720,15 +7374,12 @@ def scanning__ble(target_device, scan_mode="passive"):
     # Note: No need for an "Unknown Scan Mode" here since if that has occurred then the code will have exited earlier in the function
     # Disconnect from the device
     user_device.Disconnect()
-    #print("[+] Completed BLE Scan of Mode [{0}] on Target Device [{1}]".format(scan_mode, target_device))
     out_log_string = "[+] Completed BLE Scan of Mode [{0}] on Target Device [{1}]".format(scan_mode, target_device)
     print_and_log(out_log_string)
     print_and_log(out_log_string, LOG__ENUM)
 
 # Function for Input-Based Enumeraiton of Targets (Test Space)
 def enumerate__user_targets(input__processed_data):
-    ## Testing taking input of potential targets; TODO: Incorporate into the rest of the larger codebase
-    #import json
 
     # Variables for Usage
     if not input__processed_data:
@@ -7746,7 +7397,6 @@ def enumerate__user_targets(input__processed_data):
 
     # Enumerate the unique name targets
     for unique_name in processed_data:
-        #print("[*] {1}\)\tDevice Name:\t\t[ {0} ]".format(unique_name, item_number__name))
         output_log_string = "{1})\t\tDevice Name:\t\t[ {0} ]".format(unique_name, item_number__name)
         print_and_log(output_log_string)
         item_number__name += 1
@@ -7756,7 +7406,6 @@ def enumerate__user_targets(input__processed_data):
     user_input_check = False
     while not user_input_check:
         user_input_check = check_and_validate__user_selection(user_selection, item_number__name)
-    #print("[*] Examining Device Selection\t[ {0} ]".format(user_selection))
     name_list = list(processed_data)
     user_selected_name = name_list[int(user_selection)-1]
     output_log_string = "[*] Examining Device Selection\t[ {0} ] with Name\t[ {1} ]".format(user_selection, user_selected_name)
@@ -7775,18 +7424,16 @@ def enumerate__assets_of_interest(input__processed_data_files, scan_mode):
     ## Prepare variables for this function
     # Variables for Usage
     if not input__processed_data_files:
-        #input__processed_data = "/tmp/processed_data.txt"
-        print("[-] bleep::enumerate__assets_of_interest - Error: No Input Files provided... Exiting")
+        out_log_string = "[-] bleep::enumerate__assets_of_interest - Error: No Input Files provided... Exiting"
+        print_and_log(out_log_string, LOG__DEBUG)
         exit
     processed_data = None
-    #item_number__name = 1
-    #user_input_check = False
-    output_log_string = ""
-
+    output_log_string = "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< BLEEP - AoI Mode >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+    print_and_log(output_log_string, LOG__ENUM)
 
     ## Iterate through all the provided files; used to examine all provides AoIs in the provided input files
     for input_file in input__processed_data_files:
-        output_log_string = "[*] Enumerating Assets of Interest within Input File [ {0} ]".format(input_file)
+        output_log_string = "[*] Enumerating Assets of Interest within Input File:\t-[ {0} ]-".format(input_file)
         print_and_log(output_log_string)
         print_and_log(output_log_string, LOG__ENUM)
 
@@ -7800,11 +7447,11 @@ def enumerate__assets_of_interest(input__processed_data_files, scan_mode):
         # Debuggin Information
         if dbg != 0:
             output_log_string = "[?] Read in Processed Data:\t\t[ {0} ]".format(processed_data)
-            print_and_log(output_log_string)
+            print_and_log(output_log_string, LOG__DEBUG)
 
         # Enumerate the processed data
         for asset_selection_criteria in processed_data:
-            output_log_string = "[*] Asset of Interest Criteria:\t\t[ {0} ]".format(asset_selection_criteria)
+            output_log_string = "[*] ================================<\tAsset of Interest Criteria:\t\t[ {0} ]\t>================================".format(asset_selection_criteria)
             print_and_log(output_log_string)
             print_and_log(output_log_string, LOG__ENUM)
 
@@ -7814,18 +7461,13 @@ def enumerate__assets_of_interest(input__processed_data_files, scan_mode):
                 print_and_log(output_log_string)
                 print_and_log(output_log_string, LOG__ENUM)
 
-                #try:
                 # Begin the Scanning and Enumeratio Process
                 scanning__ble(asset_of_interest, scan_mode)
-                #except Exception as e:
-                #    output_log_string = "[-] enumerate__assets_of_interest::scanning__ble() function call failed"
-                #    print_and_log(output_log_string)
-                #    print_and_log(output_log_string, LOG__DEBUG)
 
                 # Set in a time wait to allow devices to get ready
                 time.sleep(8)       # Large space to help prevent a race condition?
 
-            output_log_string = "[+] Enumerated All AoI for Criteria [ {0} ]".format(asset_selection_criteria)
+            output_log_string = "[+] ================================<\tEnumerated All AoI for Criteria [ {0} ]\t>================================".format(asset_selection_criteria)
             print_and_log(output_log_string)
             print_and_log(output_log_string, LOG__ENUM)
 
@@ -7854,18 +7496,12 @@ def main(argv):
         opts, args = getopt.getopt(argv, "hm:i:d:", ["mode=","input=","device="])       # Note: Arguments that require an argument should be followed by a colon (:)
     except getopt.GetoptError:
         print('./bleep.py -m <runMode>')
-    #print("Opts: [ {0} ]\nArgs: [ {1} ]".format(opts, args))
     # Parse the arguments passeed to the code/script
     for opt, arg in opts:
         # Check if the help menu is requested
         if opt == '-h':
             print('./bleep.py -m <runMode> [-device=<device_address>] [-i <input_file>]')
             sys.exit()
-        #elif opt in ("-i", "--in-file"):
-        #    inputFile = arg
-        #elif opt in ("-o", "--out-file"):
-        #    outputFile = arg
-        # See what operation mode is requested
         else:
             # Check for the operating mode
             if opt in ("-m", "--mode"):
@@ -7877,7 +7513,6 @@ def main(argv):
             if opt in ("-d", "--device"):
                 if dbg != 1:
                     print("[+] Target Device Passed:\t\t[ {0} ]".format(arg))
-                # TODO: Add a bluetooth address Regex Check that the user supplied address is formatted/valid Bluetooth MAC
                 # Check if a known device is passed
                 if arg == 'lightorb':
                     target_device = 'F0:98:7D:0A:05:07'
@@ -7891,8 +7526,6 @@ def main(argv):
                 if dbg != 0:
                     print("[+] Input File(s) Passed:\t\t[ {0} ]".format(arg))
                 input_files = arg.split(",")
-    #print("Input file is:\t{0}".format(inputFile))
-    #print("Output file is:\t{1}".format(outputFile))
     # Debugging Arguments to the BIP script
     if dbg != 0:    # ~!~
         print("[?] Debugging Arguments:\n\tArgs:\t{0}\n\tOpts:\t{1}\n\tRun Mode:\t{2}\n\tInput File(s):\t{3}".format(args, opts, runMode, input_files))
@@ -7995,7 +7628,6 @@ def main(argv):
             print("[+] Input files provided [ {0} ]".format(input_files))
         # Set the scanning mode
         scan_mode = "passive"
-        ## TODO: Allow for variation in scan type
         # Call the Assets of Interest Enumeration Function
         enumerate__assets_of_interest(input_files, scan_mode)
     else:
@@ -8054,28 +7686,30 @@ def merge_generated_uuid_dicts(main_uuid_dict, supplementary_uuid_dict):
     for subset in main_uuid_dict:
         main_uuid_dict[subset].update(supplementary_uuid_dict[subset])
 
-# Read in the Reference Files
-descriptors_reference = read_reference_yaml(list_of_uuid_files[0])
-characteristic_reference = read_reference_yaml(list_of_uuid_files[1])
-service_reference = read_reference_yaml(list_of_uuid_files[2])
-
-# Variables for Default Bluetooth UUID String Format
-bluetooth_standard__front_uuid = "0000"
-bluetooth_standard__end_uuid = "0000-1000-8000-00805f9b34fb"
-
-# Generate and Combine Generated Dictionaries
-desc_reference_dict = generate_uuid_dict(bluetooth_standard__front_uuid, bluetooth_standard__end_uuid, descriptors_reference)
-char_reference_dict = generate_uuid_dict(bluetooth_standard__front_uuid, bluetooth_standard__end_uuid, characteristic_reference)
-serv_reference_dict = generate_uuid_dict(bluetooth_standard__front_uuid, bluetooth_standard__end_uuid, service_reference)
-#combined_dict = Merge(desc_reference_dict, char_reference_dict, serv_reference_dict)
-total_uuid_dict = { "Services" : {},
-                    "Characteristics" : {},
-                    "Descriptors" : {},
-                    "Unkonwns" : {} }
-#total_uuid_dict.update(desc_reference_dict)
-#total_uuid_dict.update(char_reference_dict)
-#total_uuid_dict.update(serv_reference_dict)
-merge_generated_uuid_dicts(total_uuid_dict, serv_reference_dict)
-merge_generated_uuid_dicts(total_uuid_dict, char_reference_dict)
-merge_generated_uuid_dicts(total_uuid_dict, desc_reference_dict)
+## Scratch Space Code
+# Just run to test scratch space
+def scratch_space():
+    # Read in the Reference Files
+    descriptors_reference = read_reference_yaml(list_of_uuid_files[0])
+    characteristic_reference = read_reference_yaml(list_of_uuid_files[1])
+    service_reference = read_reference_yaml(list_of_uuid_files[2])
+    
+    # Variables for Default Bluetooth UUID String Format
+    bluetooth_standard__front_uuid = "0000"
+    bluetooth_standard__end_uuid = "0000-1000-8000-00805f9b34fb"
+    
+    # Generate and Combine Generated Dictionaries
+    desc_reference_dict = generate_uuid_dict(bluetooth_standard__front_uuid, bluetooth_standard__end_uuid, descriptors_reference)
+    char_reference_dict = generate_uuid_dict(bluetooth_standard__front_uuid, bluetooth_standard__end_uuid, characteristic_reference)
+    serv_reference_dict = generate_uuid_dict(bluetooth_standard__front_uuid, bluetooth_standard__end_uuid, service_reference)
+    total_uuid_dict = { "Services" : {},
+                        "Characteristics" : {},
+                        "Descriptors" : {},
+                        "Unkonwns" : {} }
+    #total_uuid_dict.update(desc_reference_dict)
+    #total_uuid_dict.update(char_reference_dict)
+    #total_uuid_dict.update(serv_reference_dict)
+    merge_generated_uuid_dicts(total_uuid_dict, serv_reference_dict)
+    merge_generated_uuid_dicts(total_uuid_dict, char_reference_dict)
+    merge_generated_uuid_dicts(total_uuid_dict, desc_reference_dict)
 
