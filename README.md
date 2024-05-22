@@ -1,7 +1,7 @@
 # bleep-tool
 Bluetooth Landscape Exploration &amp; Enumeration Platform
 ==========================================================================================
-		Bluetooth Interaction Platform - Usage Documentation
+		bluetooth interaction platform - usage documentation
 ==========================================================================================
 
 ----------------------------------
@@ -71,3 +71,8 @@ Bluetooth Landscape Exploration &amp; Enumeration Platform
     - If encountering issues related to the adapter, attempt to run the 'setup.sh' script to correct them
         - Note: There is an assumption of the Bluetooth adapter being HCI0 (i.e. hardcorded within the script)
 
+==========================================================================================
+		            bleep platform - research / source documentation
+==========================================================================================
+
+Slides presenting D-Bus and Python research + development at CackalackyCon 2024:        https://github.com/Mauddib28/bleep--2024--CackalackyCon-Slides
