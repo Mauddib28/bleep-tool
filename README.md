@@ -71,6 +71,16 @@ Bluetooth Landscape Exploration &amp; Enumeration Platform
     - If encountering issues related to the adapter, attempt to run the 'setup.sh' script to correct them
         - Note: There is an assumption of the Bluetooth adapter being HCI0 (i.e. hardcorded within the script)
 
+    - If encountering issues related to a "Missing Bluetooth Adapter" then follow the steps below:
+        - Check that there exists an attached Bluetooth Device; Look for an "hci0" device in the response
+            - Ex:       hciconfig -a
+            - If there is no hci0 device, then connect the Bluetooth antenna (e.g. Sena UD-100)
+        - If the error persists, then ensure that the Bluetooth Service is enabled and follow with a reboot
+            - Ex:       systemctl enable bluetooth.service
+                        reboot
+        - Check that the BLEEP script can be run
+
+
 ==========================================================================================
 		            bleep platform - research / source documentation
 ==========================================================================================
