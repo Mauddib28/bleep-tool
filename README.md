@@ -65,6 +65,21 @@ Bluetooth Landscape Exploration &amp; Enumeration Platform
 				- Note: The purpose of this print out is to associate the UUID to a Handle value
 					-> Except ALL Handles are printing out the same value
 
+---------------------------------
+- Signal Capture with User Mode -
+---------------------------------
+
+There are specific steps that must be taken when capturing signals using User-Mode
+The steps are:
+1)      Prepare tools
+2)      Set Characteristic
+        - Nota Bene: This has to happen first or will generate an AttributeError
+                - Ex:   'NoneType' object has no attribute 'StartNotify'
+3)      Configure recieve
+4)      Toggle Notify
+5)      Start capture
+
+
 --------------------
 - Troubleshooting: -
 --------------------
@@ -86,3 +101,4 @@ Bluetooth Landscape Exploration &amp; Enumeration Platform
 ==========================================================================================
 
 Slides presenting D-Bus and Python research + development at CackalackyCon 2024:        https://github.com/Mauddib28/bleep--2024--CackalackyCon-Slides
+    - YouTube Recording of the Presentation:                                            https://www.youtube.com/watch?v=kFSlYIJMxOI
