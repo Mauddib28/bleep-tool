@@ -726,7 +726,7 @@ class system_dbus__bluez_signals:
             return passed
         # Check that the services have been resolved
         if not user_device_object.find_and_get__device_property("ServicesResolved"):
-            raise bluetooth_exceptions.StateError(bluetooth_constants.RESULT_ERR_SERVICES_NOT_RESOLVED)
+            raise bluetooth_exceptions.StateError(bluetooth_constants.RESULT_ERR_SERVICES_NOT_RESOLVED)     # TODO: Fix this error reporting
             return passed
         # Step for Creating Characteristic Interfaces based on the provided 'characteristic_name'
         characteristic_path, characteristic_object, characteristic_interface, characteristic_properties, characteristic_introspection = user_device_object.find_and_return__characteristic__gatt_inspection_set(characteristic_name)
@@ -5461,7 +5461,7 @@ def find_and_enumerate__bluetooth_device__user_selected():
     print("===============================================================================================\n\t[+] COMPLETED USER SELECTED DEVICE ENUMERATION [+]\n===============================================================================================")
 
 # Function for searching and exploring a Bluetooth Device selected by the User
-def check_and_explore__bluetooth_device__user_selected():
+def check_and_explore__bluetooth_device__user_selected(target_device=None):         ## TODO: Incorporate target_device ability with user mode
     out_log_string = "===============================================================================================\n\t[*] COMPLETE USER SELECTED DEVICE EXPLORATION\n==============================================================================================="
     print_and_log(out_log_string, LOG__USER)
 
@@ -5529,8 +5529,66 @@ def check_and_explore__bluetooth_device__user_selected():
     # Search for devices to explore
     out_log_string = "[*] Scanning for Discoverable Devices"
     print_and_log(out_log_string, LOG__USER)
-    user_selection = user_interaction__find_and_return__pick_device()
-    user_selected_device = user_selection[0]        # The 0th item is the Bluetooth Address and the 1st item is the Bluetooth Name
+    if target_device is not None:
+        user_selected_device = target_device
+        #### SPECIAL LOOP FOR TARGET DEVICE SEARCH
+        ## Loop for searching for the specific device
+        device_found_flag = False
+        loop_iteration = 0
+        search_no_more_times = 3
+
+        # Search for the device based on a set number of times
+        while device_found_flag == False and loop_iteration < search_no_more_times:
+            ## Initial Scanning of the device
+            try:
+                # Performing a scan for general devices; main scan for devices to populate the linux D-Bus
+                discovered_devices = create_and_return__bluetooth_scan__discovered_devices()
+            except Exception as e:
+                out_log_string = "[-] Error with adapter while attempting to discover devices\n\tError:\t\t[ {0} ]".format(e)
+                print_and_log(out_log_string)
+                print_and_log(out_log_string, LOG__DEBUG)
+                break
+            if discovered_devices is None:
+                print("[-] No devices were found during scan and discovery")
+                break
+            # Iterate through the discovered devices, since working with tuples of (address, name) and not just a list of addresses
+            for discovered_device in discovered_devices:
+                # Sanity check for having found the target device
+                if target_device not in discovered_device:
+                    if dbg != 0:
+                        out_log_string = "[!] Unable to find device [ {0} ]".format(target_device)
+                        print_and_log(out_log_string)
+                        print_and_log(out_log_string, LOG__DEBUG)
+                    if dbg != 0:
+                        out_log_string = "\tDiscovered Devices:\t[ {0} ]".format(discovered_devices)
+                        print_and_log(out_log_string)
+                        print_and_log(out_log_string, LOG__DEBUG)
+                    #return None
+                else:
+                    if dbg != 0:
+                        out_log_string = "[+] Able to find device [ {0} ]".format(target_device)
+                        print_and_log(out_log_string)
+                        print_and_log(out_log_string, LOG__DEBUG)
+                    device_found_flag = True
+                # Increase the interation count
+                loop_iteration += 1
+        if device_found_flag != True:
+            out_log_string = "[-] Device not found with address [ {0} ]".format(target_device)
+            print_and_log(out_log_string)
+            print_and_log(out_log_string, LOG__ENUM)
+            print_and_log(out_log_string, LOG__DEBUG)
+            return None
+        else:
+            out_log_string = "[+] Found the device with address [ {0} ]".format(target_device)
+            print_and_log(out_log_string)
+            print_and_log(out_log_string, LOG__ENUM)
+            print_and_log(out_log_string, LOG__DEBUG)
+    else:
+        user_selection = user_interaction__find_and_return__pick_device()
+        user_selected_device = user_selection[0]        # The 0th item is the Bluetooth Address and the 1st item is the Bluetooth Name
+    #print("User Selected:\t\t[ {0} ]\nTarget Device:\t\t[ {1} ]".format(user_selected_device, target_device))
+    out_log_string = "[*] Searching for Device [ {0} ]".format(user_selected_device)
+    print_and_log(out_log_string, LOG__USER)
     # Wrapped in a try statement for robustness
     try:
         # Create the necessary objects and connect to the device
@@ -5585,6 +5643,8 @@ def check_and_explore__bluetooth_device__user_selected():
         return None
     # Collect and return a mapping of the services and characteristics (NOTE: Can be done either through the collceted information OR via D-Bus records)
     user_device__internals_map = user_device.enumerate_and_print__device__all_internals()
+    out_log_string = "[?] User Device Internals Map:\t\t[ {0} ]".format(user_device__internals_map)
+    print_and_log(out_log_string, LOG__DEBUG)
     if dbg != 0:
         pretty_print__gatt__dive_json(user_device, user_device__internals_map)
     # Test print out of the produced map
@@ -7888,6 +7948,8 @@ def main(argv):
                     target_device = 'F0:98:7D:0A:05:07'
                 elif arg == 'blectf':
                     target_device = 'CC:50:E3:B6:BC:A6'
+                elif arg == 'picow':
+                    target_device = 'D8:3A:DD:2D:9D:66'
                 else:
                     # Configure the target_device to hold the argument
                     target_device = arg
@@ -7904,7 +7966,13 @@ def main(argv):
         # Call the User Interaction Exploration Template
         print("[*] Starting User Interaction Exploration")
         try:
-            check_and_explore__bluetooth_device__user_selected()
+            if target_device is not None:
+                if dbg != 0:
+                    out_log_string = "[*] Calling User Mode with a Target Device of [ {0} ]".format(target_device)
+                    print_and_log(out_log_string, LOG__USER)
+                check_and_explore__bluetooth_device__user_selected(target_device)
+            else:
+                check_and_explore__bluetooth_device__user_selected()
         except dbus.exceptions.DBusException:
             print("[-] D-Bus Error Raised: Likely Due to Missing Bluetooth Adapter")
             print("\tExiting.....")

@@ -102,3 +102,5 @@ The steps are:
 
 Slides presenting D-Bus and Python research + development at CackalackyCon 2024:        https://github.com/Mauddib28/bleep--2024--CackalackyCon-Slides
     - YouTube Recording of the Presentation:                                            https://www.youtube.com/watch?v=kFSlYIJMxOI
+Slides presenting Safari Hunt of Bluetooth Wildlife + Cartography at BSidesLV 2024:     https://github.com/Mauddib28/bleep--2024--BsidesLV-Slides
+Slides presenting technical function and review of BLEEP + mapping at DefCon 32:        https://github.com/Mauddib28/bleep--2024--DefCon-DemoLabs-Slides
