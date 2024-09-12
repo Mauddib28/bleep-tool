@@ -4,6 +4,13 @@ Bluetooth Landscape Exploration &amp; Enumeration Platform
 		bluetooth interaction platform - usage documentation
 ==========================================================================================
 
+Note: The usage documentation is easier to read as a basic text file
+
+-------------------------------------
+- Requirements/Package Installation - 
+-------------------------------------
+    - Python Libraries:     python3 -m pip install xmltodict
+
 ----------------------------------
 - Main Script for Functionality: -
 ----------------------------------
