@@ -1,6 +1,9 @@
 #!/usr/bin/python3
 
-# Last Updated:     Paul A. Wortman     -       2023/12/11
+# Last Updated:     Paul A. Wortman     -       2024/08/29
+
+# Incorporated BLE CTF known flags
+# Included [Mesh] Agent path and interfaces
 
 ADAPTER_NAME = "hci0"
 
@@ -8,6 +11,8 @@ BLUEZ_SERVICE_NAME = "org.bluez"
 BLUEZ_NAMESPACE = "/org/bluez/"
 DBUS_PROPERTIES="org.freedesktop.DBus.Properties"
 DBUS_OM_IFACE = 'org.freedesktop.DBus.ObjectManager'
+AGENT_NAMESPACE = "/test/agent"             # Agent Path (from simple-agent)
+MESH_AGENT_NAMESPACE = "/mesh/test/agent"        # Agent Path (from agent.py)
 
 ADAPTER_INTERFACE = BLUEZ_SERVICE_NAME + ".Adapter1"
 DEVICE_INTERFACE = BLUEZ_SERVICE_NAME + ".Device1"
@@ -17,6 +22,9 @@ GATT_CHARACTERISTIC_INTERFACE = BLUEZ_SERVICE_NAME + ".GattCharacteristic1"
 GATT_DESCRIPTOR_INTERFACE = BLUEZ_SERVICE_NAME + ".GattDescriptor1"
 ADVERTISEMENT_INTERFACE = BLUEZ_SERVICE_NAME + ".LEAdvertisement1"
 ADVERTISING_MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".LEAdvertisingManager1"
+AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".mesh.ProvisioningAgent1"
+MESH_AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".mesh.ProvisioningAgent1"
+MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".AgentManager1"
 
 RESULT_OK = 0
 RESULT_ERR = 1
@@ -70,7 +78,7 @@ UUID_NAMES = {
     "e95d9250-251d-470a-a062-fa1922dfa9a8" : "Temperature",
     "e95d93ee-251d-470a-a062-fa1922dfa9a8" : "LED Text",
     "00002902-0000-1000-8000-00805f9b34fb" : "Client Characteristic Configuration",
-    # BLE CTF UUIDs
+    ## BLE CTF UUIDs
     "000000ff-0000-1000-8000-00805f9b34fb" : "BLE CTF Flags Service",
     "0000ff01-0000-1000-8000-00805f9b34fb" : "BLE CTF Score",
     "0000ff02-0000-1000-8000-00805f9b34fb" : "BLE CTF Flag Submission",
@@ -93,6 +101,7 @@ UUID_NAMES = {
     "0000ff15-0000-1000-8000-00805f9b34fb" : "BLE CTF Flag #018",
     "0000ff16-0000-1000-8000-00805f9b34fb" : "BLE CTF Flag #019",
     "0000ff17-0000-1000-8000-00805f9b34fb" : "BLE CTF Flag #020",
+    ## Encountered UUIDs / From Spec
 }    
 
 DEVICE_INF_SVC_UUID = "0000180a-0000-1000-8000-00805f9b34fb"
