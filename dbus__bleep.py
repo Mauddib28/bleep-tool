@@ -4695,6 +4695,29 @@ def debugging__dbus_signals__catchall(*args, **kwargs):        # Original debugg
     if dbg != 0:
         print(dbus_signal_catchall__end_string)
 
+# Function for Evaluating the Device Class Object Error Buffer
+def evaluate__device_error_buffer(device_class_object):
+    out_log_string = "[*] evaluate__device_error_buffer::Attempting to Evaluate the Device Class Object Error Buffer"
+    print_and_log(out_log_string, LOG__DEBUG)
+    ## Evaluate the Device Class Object's Error Buffer
+    if device_class_object.error_buffer is not None:        # An error exists
+        # Attempt to perform fix of the error
+        try:
+            # Call to perform__fix_error function
+            perform__fix_error(device_class_object)
+        except Exception as e:
+            device_class_object.error_buffer = device_class_object.understand_and_handle__dbus_errors(e)
+            out_log_string = "[-] evaluate__device_error_buffer::Exception Error Occurred\t-\tError Buffer:\t[ {0} ]\n\tError:\t\t[ {1} ]".format(device_class_object.error_buffer, e)
+            print_and_log(out_log_string, LOG__DEBUG)
+        else:
+            out_log_string = "[*] evaluate__device_error_buffer::Alert! Try statement resolved without raising an exception"
+            print_and_log(out_log_string, LOG__DEBUG)
+        finally:
+            out_log_string = "[*] evaluate__device_error_buffer::Completed evaluation of the Device Object Error Buffer\t[ {0} ]".format(device_class_object.error_buffer)
+            print_and_log(out_log_string, LOG__DEBUG)
+    else:       # No error
+        out_log_string = "[+] evaluate__device_error_buffer::No error in buffer"
+
 ## Utility Functions
 
 # Function for Checking for a Substring within a List of Sub-Strings
