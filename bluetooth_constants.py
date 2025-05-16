@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-# Last Updated:     Paul A. Wortman     -       2024/08/29
+# Last Updated:     Paul A. Wortman     -       2025/04/20
 
 # Incorporated BLE CTF known flags
 # Included [Mesh] Agent path and interfaces
@@ -25,6 +25,9 @@ ADVERTISING_MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".LEAdvertisingManager1"
 AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".mesh.ProvisioningAgent1"
 MESH_AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".mesh.ProvisioningAgent1"
 MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".AgentManager1"
+MEDIA_CONTROL_INTERFACE = BLUEZ_SERVICE_NAME + ".MediaControl1"
+MEDIA_ENDPOINT_INTERFACE = BLUEZ_SERVICE_NAME + ".MediaEndpoint1"
+MEDIA_TRANSPORT_INTERFACE = BLUEZ_SERVICE_NAME + ".MediaTransport1"
 
 RESULT_OK = 0
 RESULT_ERR = 1
@@ -104,8 +107,11 @@ UUID_NAMES = {
     "0000ff17-0000-1000-8000-00805f9b34fb" : "BLE CTF Flag #020",
     ## BW-16 UUIDs
     "0000a7e6-0000-1000-8000-00805f9b34fb" : "RealTek BW-16 System Status",
-    "0000a7e7-0000-1000-8000-00805f9b34fb" : "RealTek BW-16 Alert Status"
+    "0000a7e7-0000-1000-8000-00805f9b34fb" : "RealTek BW-16 Alert Status",
     ## Encountered UUIDs / From Spec
+    # Advanced Audio Distribution Profile (A2DP) - Note: Bluetooth Classic and not in BLE
+    "0000110a-0000-1000-8000-00805f9b34fb" : "Advanced Audio Distribution Profile (A2DP) - A2DP Source",        # Generally a Phone
+    "0000110b-0000-1000-8000-00805f9b34fb" : "Advanced Audio Distribution Profile (A2DP) - A2DP Sink"           # Generally a Speaker
 }    
 
 DEVICE_INF_SVC_UUID = "0000180a-0000-1000-8000-00805f9b34fb"
@@ -131,3 +137,6 @@ ARDUINO_BLE__BLE_UUID__MASK = "XXXXXXXX-0000-1000-8000-00805f9b34fb"
 GATT__SERVICE__PROPERTIES = ["UUID", "Primary", "Device", "Includes", "Handle", "Characteristics"]
 GATT__CHARACTERISTIC__PROPERTIES = ["UUID", "Service", "Value", "WriteAcquired", "NotifyAcquired", "Notifying", "Flags", "Handle", "MTU"]
 GATT__DESCRIPTOR__PROPERTIES = ["UUID", "Characteristic", "Value", "Flags", "Handle"]
+
+# Running list for BLE Interfaces that are not a GATT Service, Characteristic, or Descriptor
+BLE__DEVICE_INTERFACES__LIST = ["org.bluez.Device1", "org.bluez.MediaControl1", "org.bluez.Battery1"]
