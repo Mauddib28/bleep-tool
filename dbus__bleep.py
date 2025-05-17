@@ -5279,7 +5279,7 @@ def check_device_type(ble_device, device_enumeration_dictionary):
     else:
         # UNKNOWNS!!
         out_log_string = "[-] Unknown Device Type Observed!\n"
-        out_log_string += "[-] Unknown Configuration of Interfaces and Nodes Discovered.....\n\tInterfaces:\t\t{0}\n\tNodes:\t\t{1}".format(ble_device_enumeration_dictionary['interfaces'], ble_device_enumeration_dictionary['nodes'])
+        out_log_string += "[-] Unknown Configuration of Interfaces and Nodes Discovered.....\n\tInterfaces:\t\t{0}\n\tNodes:\t\t{1}".format(device_enumeration_dictionary['interfaces'], device_enumeration_dictionary['nodes'])
 
     # Print the information to STDOUT and Debugging Logs
     print_and_log(out_log_string)
