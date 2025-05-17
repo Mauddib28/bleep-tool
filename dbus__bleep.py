@@ -5212,7 +5212,6 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
     out_log_string = "[!!] Device Information Dictionary:\t\t[ {0} ]".format(ble_device_enumeration_dictionary)
     print_and_log(out_log_string, LOG__DEBUG)
     ## Nested Enumeration of Device -> Service -> Characteristic -> Descriptor information
-    print("DO STUFF!!!")       ## Where to place the "decision tree" for device enumeration
 
     try:
         device_services_list = ble_device.find_and_get__device_introspection__services()        ## Note: The step gets the 'service' information from the E-Tree dissection
@@ -5237,8 +5236,6 @@ def connect_and_enumerate__bluetooth__low_energy(target_bt_addr, landmine_mappin
         print("UNKNOWN ENUMERATION")
     else:
         print("WTF IS GOING ON?!?!?!")
-
-    print("DONE DOING STUFF!!!")        ## Where to end the "decision tree" for device enumeration
 
     # End of function printout
     out_log_string = "[+] ----====[ Completed Connect and Enumeration of the Target [ {0} ] Bluetooth Low Energy Device ]====----".format(target_bt_addr)
