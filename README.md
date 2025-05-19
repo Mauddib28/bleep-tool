@@ -112,3 +112,4 @@ Slides presenting D-Bus and Python research + development at CackalackyCon 2024:
 Slides presenting Safari Hunt of Bluetooth Wildlife + Cartography at BSidesLV 2024:     https://github.com/Mauddib28/bleep--2024--BsidesLV-Slides
     - YouTube Recording of the Presentation:                                            https://youtu.be/AZ0U3bhRYkA
 Slides presenting technical function and review of BLEEP + mapping at DefCon 32:        https://github.com/Mauddib28/bleep--2024--DefCon-DemoLabs-Slides
+Slides presenting Bluetooth Wildlife dissection at CackalackyCon 2025:                  https://github.com/Mauddib28/bleep--2025--CackalackyCon-Slides
