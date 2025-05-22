@@ -10148,7 +10148,7 @@ def what_is_near_me():
                     if "Address" in interface_properties:
                         addr = interface_properties["Address"]
                     if "SupportedUUIDs" in interface_properties:
-                        print(f"Supported UUIDs:\t{interface_properties["SupportedUUIDs"]}")
+                        print(f"Supported UUIDs:\t{interface_properties['SupportedUUIDs']}")
                     print(f"Path:\t{dbus_path}\t\t\tName:\t{name}\t\t\tAlias:\t{alias}\t\t\tAddress Type:\t{addr_type}\t\t\tAddress:\t{addr}")
                 # Dissecting org.bluez.Media1
                 elif interface_name == "org.bluez.Media1":
