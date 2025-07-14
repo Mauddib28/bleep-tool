@@ -1,0 +1,14 @@
+{
+  "COMPANY": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/company_identifiers/company_identifiers.yaml",
+  "SERV": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/uuids/service_uuids.yaml",
+  "CHAR": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/uuids/characteristic_uuids.yaml",
+  "DESC": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/uuids/descriptors.yaml",
+  "MEMB": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/uuids/member_uuids.yaml",
+  "SDO": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/uuids/sdo_uuids.yaml",
+  "SERV_CLASS": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/uuids/service_class.yaml",
+  "AD_TYPES": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/core/ad_types.yaml",
+  "APPEAR": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/core/appearance_values.yaml",
+  "CODING_FORMAT": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/core/coding_format.yaml",
+  "NAMESPACE": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/core/namespace.yaml",
+  "PSM": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/core/psm.yaml"
+}
