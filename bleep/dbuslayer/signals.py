@@ -376,6 +376,53 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
             # Quit mainloop if running
             if self._mainloop and self._mainloop.is_running():
                 self._mainloop.quit()
+                
+    def capture_and_act__emittion__gatt_characteristic(self, device, characteristic_uuid, callback):
+        """Legacy method for capturing notifications from a characteristic.
+        
+        This method sets up notification capture for a characteristic and calls the provided
+        callback when notifications are received. It's provided for backward compatibility
+        with the legacy monolith implementation.
+        
+        Parameters
+        ----------
+        device
+            The device object containing the characteristic
+        characteristic_uuid
+            The UUID of the characteristic to monitor
+        callback
+            Function to call when notifications are received
+        """
+        print_and_log("[*] Setting up notification capture for characteristic", LOG__DEBUG)
+        
+        # Find the characteristic path
+        char_path = None
+        for svc in getattr(device, "_services", []):
+            for char in getattr(svc, "characteristics", []):
+                if getattr(char, "uuid", "").lower() == characteristic_uuid.lower():
+                    char_path = getattr(char, "path", None)
+                    break
+            if char_path:
+                break
+                
+        if not char_path:
+            print_and_log(f"[-] Characteristic not found: {characteristic_uuid}", LOG__DEBUG)
+            return
+            
+        # Register the callback
+        self.register_notification_callback(char_path, callback)
+        
+        # Start notifications if not already started
+        try:
+            # Get the characteristic object
+            char_obj = self.bus.get_object("org.bluez", char_path)
+            char_iface = dbus.Interface(char_obj, GATT_CHARACTERISTIC_INTERFACE)
+            
+            # Start notifications
+            char_iface.StartNotify()
+            print_and_log(f"[+] Started notifications for {characteristic_uuid}", LOG__DEBUG)
+        except Exception as e:
+            print_and_log(f"[-] Failed to start notifications: {e}", LOG__DEBUG)
 
     # ------------------------------------------------------------------
     # D-Bus wiring

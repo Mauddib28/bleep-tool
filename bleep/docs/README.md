@@ -6,8 +6,11 @@ Welcome to the official documentation hub for **BLEEP – Bluetooth Landscape Ex
 
 - [CLI quick-start](cli_usage.md)
 - [Debug mode](debug_mode.md)
+- [Scan modes](ble_scan_modes.md)
+- [Media mode](media_mode.md)
 - [BLE CTF mode](ble_ctf_mode.md)
 - [User mode](user_mode.md)
+- [Observation database](observation_db.md)
 - [Change log](changelog.md)
 - [Central TODO tracker](todo_tracker.md)
 

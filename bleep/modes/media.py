@@ -18,6 +18,12 @@ from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__USER
 from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy
 from bleep.dbuslayer.media import find_media_devices, MediaPlayer, MediaTransport
 
+# Optional observation DB persistence
+try:
+    from bleep.core import observations as _obs
+except Exception:  # noqa: BLE001
+    _obs = None
+
 
 def find_media_players() -> Dict[str, str]:
     """Find all available media players.
@@ -156,6 +162,17 @@ def control_media_device(mac_address: str, command: str, value: Optional[int] = 
         except Exception as e:
             print_and_log(f"[-] Failed to connect to {mac_address}: {str(e)}", LOG__USER)
             return False
+
+    # snapshot to observation DB after a successful connection
+    if _obs:
+        try:
+            player = device.get_media_player()
+            if player:
+                _obs.snapshot_media_player(player)  # type: ignore[attr-defined]
+            for tr in device.get_media_transports() or []:
+                _obs.snapshot_media_transport(tr)  # type: ignore[attr-defined]
+        except Exception:
+            pass
     
     result = False
     
@@ -248,6 +265,7 @@ def parse_args() -> argparse.Namespace:
     
     # List command
     list_parser = subparsers.add_parser("list", help="List available media devices")
+    list_parser.add_argument("--objects", action="store_true", help="Show full media object tree (players, folders, items)")
     
     # Control command
     control_parser = subparsers.add_parser("control", help="Control a media device")
@@ -336,7 +354,25 @@ def main() -> int:
     args = parse_args()
     
     if args.command == "list":
-        list_media_devices()
+        list_media_devices()  # legacy view
+
+        if args.objects:
+            print_and_log("\n[=] Full media object tree:", LOG__USER)
+            from bleep.dbuslayer.media import find_media_objects  # local import to avoid overhead on normal path
+
+            objs = find_media_objects()
+            # Pretty-print
+            for svc in objs["MediaServices"]:
+                print_and_log(f"  Media1 service: {svc}", LOG__USER)
+
+            for player, info in objs["Players"].items():
+                print_and_log(f"  Player: {player} (Device={info['Device']})", LOG__USER)
+
+            for folder, meta in objs["Folders"].items():
+                print_and_log(f"    Folder: {folder} (Player={meta['Player']})", LOG__DEBUG)
+
+            for item, meta in objs["Items"].items():
+                print_and_log(f"    Item: {item} (Player={meta['Player']})", LOG__DEBUG)
         return 0
     
     elif args.command == "control":

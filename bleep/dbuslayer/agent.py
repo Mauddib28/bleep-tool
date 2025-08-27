@@ -3,6 +3,10 @@ Agent D-Bus Interface
 Provides the system_dbus__bluez_generic_agent and system_dbus__bluez_agent_user_interface classes from the original codebase.
 """
 
+# Ensure type annotations that reference classes defined later do not fail at
+# import-time.  (Python 3.11 does *not* enable PEP 563 by default.)
+from __future__ import annotations
+
 import time
 import threading
 from typing import Optional, Dict, Any, Callable
@@ -33,7 +37,43 @@ __all__ = [
     "PairingAgent",
     "TrustManager",
     "create_agent",
+    "ensure_default_pairing_agent",
 ]
+
+# ---------------------------------------------------------------------------
+# Lazy default agent helper (used by both LE and Classic helpers)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_AGENT: PairingAgent | None = None
+
+
+def ensure_default_pairing_agent(*, capabilities: str = "KeyboardDisplay", auto_accept: bool = True) -> None:
+    """Register a global PairingAgent once per process.
+
+    Intended to be called by connection helpers when they detect an
+    AuthenticationRequired / NotAuthorized error.  If an agent is already
+    registered the call is a cheap no-op.
+
+    Disable by setting environment variable *BLEEP_NO_AUTO_PAIR* to any value
+    other than "0" / "false".
+    """
+    import os, dbus
+
+    if os.getenv("BLEEP_NO_AUTO_PAIR", "0") not in {"0", "false", "False", ""}:
+        return
+
+    global _DEFAULT_AGENT
+    if _DEFAULT_AGENT is not None and _DEFAULT_AGENT.is_registered():
+        return
+
+    _DEFAULT_AGENT = create_agent(
+        dbus.SystemBus(),
+        agent_type="pairing",
+        capabilities=capabilities,
+        default=True,
+        auto_accept=auto_accept,
+    )
+    print_and_log("[*] Default pairing agent registered", LOG__DEBUG)
 
 
 class BlueZAgent(dbus.service.Object):

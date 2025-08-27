@@ -25,8 +25,9 @@ from typing import Dict, List, Any, Optional, Tuple
 import struct
 from xml.dom import minidom
 import json
+import datetime
 
-from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
+from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__ENUM
 from bleep.dbuslayer.adapter import system_dbus__bluez_adapter
 from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy
 from bleep.ble_ops.scan import passive_scan
@@ -35,6 +36,8 @@ from bleep.core.errors import map_dbus_error, BLEEPError
 from bleep.bt_ref.utils import get_name_from_uuid
 from bleep.ble_ops.uuid_utils import identify_uuid
 from bleep.ble_ops.conversion import format_device_class, decode_appearance
+from bleep.ble_ops.enum_helpers import multi_read_all, small_write_probe, build_payload_iterator, brute_write_range
+from bleep.analysis.aoi_analyser import AOIAnalyser, analyse_aoi_data
 
 try:
     import gi
@@ -55,8 +58,9 @@ _PROMPT = "BLEEP-DEBUG> "
 _DEVICE_PROMPT = "BLEEP-DEBUG[{}]> "
 
 # Global state
-_current_device = None
-_current_mapping = None
+_current_device = None  # BLE or Classic device wrapper
+_current_mapping = None  # BLE: svc→chars map, Classic: service→channel map
+_current_mode = "ble"   # "ble" or "classic" – helps commands adapt output
 _current_path = None    # Current D-Bus object path
 _monitoring = False
 _monitor_thread = None
@@ -65,6 +69,10 @@ _notification_handlers = {}
 _detailed_view = False  # Flag to control detailed view mode
 _path_history = []      # Stack of previously visited paths
 _path_cache = {}        # Cache of introspection results by path
+
+# Enumeration state (for later inspection)
+_current_mine_map = None  # landmine mapping
+_current_perm_map = None  # permission mapping
 
 
 def _print_detailed_dbus_error(exc: Exception) -> None:
@@ -389,9 +397,15 @@ def _cmd_help(_: List[str]) -> None:
     """Display available commands."""
     print("\nAvailable commands:")
     print("  help                       - Show this help")
-    print("  scan                       - Scan for BLE devices")
+    print("  scan                       - Passive BLE scan (10 s)")
+    print("  scann                      - Naggy scan (DuplicateData off)")
+    print("  scanp <MAC>                - Pokey scan (spam active 1-s scans)")
+    print("  scanb                      - Brute scan (BR/EDR + LE)")
+    print("  cscan                      - Classic (BR/EDR) passive scan")
     print("  connect <mac>              - Connect to a device")
+    print("  cconnect <mac>             - Connect to a Classic device & enumerate RFCOMM")
     print("  disconnect                 - Disconnect from current device")
+    print("  cservices                  - List RFCOMM service→channel map for Classic device")
     print("  info                       - Show device information")
     print("  interfaces                 - List available D-Bus interfaces")
     print("  props [interface]          - List properties for an interface")
@@ -407,6 +421,11 @@ def _cmd_help(_: List[str]) -> None:
     print("  write <char_uuid|handle> <value> - Write to characteristic")
     print("  notify <char_uuid|handle> [on|off] - Subscribe/unsubscribe to notifications")
     print("  detailed [on|off]          - Toggle detailed view mode with UUID decoding")
+    print("  enum <MAC>                - Passive enumeration (no writes)")
+    print("  enumn <MAC>               - Naggy enumeration (multi-read only)")
+    print("  enump <MAC> [--rounds N] [--verify]    - Pokey enumeration with 0/1 write probes")
+    print("  enumb <MAC> <CHAR_UUID> [--range a-b] [--patterns ascii,inc,alt,repeat:<byte>:<len>,hex:<hex>] [--payload-file FILE] [--force] [--verify]   - Brute enumeration")
+    print("  aoi [--save] [MAC]        - Assets-of-Interest analysis and reporting")
     print("\nNavigation commands:")
     print("  ls [path]                  - List objects at current or specified path")
     print("  cd <path>                  - Change to specified D-Bus path")
@@ -422,6 +441,278 @@ def _cmd_scan(_: List[str]) -> None:
     print_and_log("[*] Scanning for devices...", LOG__GENERAL)
     passive_scan(timeout=10)
 
+# New variants -------------------------------------------------------------
+
+def _cmd_scann(_: List[str]) -> None:
+    from bleep.ble_ops.scan import naggy_scan
+    print_and_log("[*] Naggy scan (active) …", LOG__GENERAL)
+    naggy_scan(timeout=10)
+
+
+def _cmd_scanp(args: List[str]) -> None:
+    from bleep.ble_ops.scan import pokey_scan
+    if not args:
+        print("Usage: scanp <MAC>")
+        return
+    pokey_scan(args[0], timeout=10)
+
+
+def _cmd_scanb(_: List[str]) -> None:
+    from bleep.ble_ops.scan import brute_scan
+    print_and_log("[*] Brute scan …", LOG__GENERAL)
+    brute_scan(timeout=20)
+
+# ---------------------------------------------------------------------------
+# Enumeration dispatcher (D-2) ---------------------------------------------
+# ---------------------------------------------------------------------------
+
+
+def _enum_common(mac: str, variant: str, **opts) -> None:
+    """Run enumeration variant and update debug-shell context."""
+
+    global _current_device, _current_mapping, _current_mode, _current_path
+
+    try:
+        device, mapping, mine_map, perm_map = _connect_enum(mac)
+    except Exception as exc:
+        _print_detailed_dbus_error(exc)
+        return
+
+    # Variant-specific extras ----------------------------------------------------
+    if variant == "naggy":
+        multi_read_all(device, mapping=mapping, rounds=3)
+    elif variant == "pokey":
+        rounds = int(opts.get("rounds", 3))
+        for _ in range(rounds):
+            small_write_probe(device, mapping, verify=opts.get("verify", False))
+    elif variant == "brute":
+        char_uuid = opts.get("char")
+        if not char_uuid:
+            print("enumb <MAC> <CHAR_UUID> [flags]")
+            return
+        value_range = opts.get("range")  # tuple[int,int] | None
+        patterns = opts.get("patterns")  # list[str] | None
+        file_bytes = opts.get("file_bytes")  # bytes | None
+
+        # Fall back to minimal 0x00–0x02 when nothing specified
+        if not any([value_range, patterns, file_bytes]):
+            value_range = (0x00, 0x02)
+
+        payloads = build_payload_iterator(
+            value_range=value_range,
+            patterns=patterns,
+            file_bytes=file_bytes,
+        )
+        brute_write_range(
+            device,
+            char_uuid,
+            payloads=payloads,
+            force=opts.get("force", False),
+            verify=opts.get("verify", False),
+            respect_roeng=False,
+            landmine_map=mine_map,
+        )
+
+    # Update global session state ------------------------------------------------
+    if _current_device and getattr(_current_device, "is_connected", lambda: False)():
+        try:
+            _current_device.disconnect()
+        except Exception:
+            pass
+
+    _current_device = device
+    _current_mapping = mapping
+    _current_mine_map = mine_map
+    _current_perm_map = perm_map
+    _current_mode = "ble"
+    _current_path = device._device_path
+
+    svc_cnt = len(mapping)
+    char_cnt = sum(len(s.get("chars", {})) for s in mapping.values())
+    print_and_log(
+        f"[enum-{variant}] services={svc_cnt} chars={char_cnt} mine={len(mine_map)} perm={len(perm_map)}",
+        LOG__GENERAL,
+    )
+    print_and_log(str(mapping), LOG__ENUM)
+
+
+def _cmd_enum(args: List[str]) -> None:
+    """Run passive enumeration."""
+    if not args:
+        print("Usage: enum <MAC>")
+        return
+    _enum_common(args[0], "passive")
+
+
+def _cmd_enumn(args: List[str]) -> None:
+    """Run naggy enumeration."""
+    if not args:
+        print("Usage: enumn <MAC>")
+        return
+    _enum_common(args[0], "naggy")
+
+
+def _cmd_enump(args: List[str]) -> None:
+    """Run pokey enumeration."""
+    if not args:
+        print("Usage: enump <MAC> [rounds]")
+        return
+
+    parser = argparse.ArgumentParser(prog="enump", description="Pokey enumeration")
+    parser.add_argument("mac", help="MAC address of the device")
+    parser.add_argument("--rounds", "-r", type=int, default=3, help="Number of rounds (default: 3)")
+    parser.add_argument("--verify", action="store_true", help="Enable read-back verification")
+
+    try:
+        opts = parser.parse_args(args)
+    except SystemExit:
+        return
+
+    _enum_common(opts.mac, "pokey", rounds=opts.rounds, verify=opts.verify)
+
+
+def _cmd_enumb(args: List[str]) -> None:
+    """Run brute enumeration."""
+    if len(args) < 2:
+        print("Usage: enumb <MAC> <CHAR_UUID> [flags]")
+        return
+
+    parser = argparse.ArgumentParser(prog="enumb", description="Brute enumeration")
+    parser.add_argument("mac", help="MAC address of the device")
+    parser.add_argument("char", help="Characteristic UUID")
+    parser.add_argument("--range", help="Byte range, e.g. 0-255 or 0x00-0xFF")
+    parser.add_argument("--patterns", help="Comma-separated patterns: ascii,inc,alt,repeat:<byte>:<len>,hex:<hex>")
+    parser.add_argument("--payload-file", help="Binary file to append as payload")
+    parser.add_argument("--force", action="store_true", help="Force enumeration")
+    parser.add_argument("--verify", action="store_true", help="Enable verification")
+
+    try:
+        opts = parser.parse_args(args)
+    except SystemExit:
+        return
+
+    # Parse --range into tuple[int,int]
+    range_tuple = None
+    if opts.range:
+        try:
+            start_s, end_s = opts.range.split("-", 1)
+            start = int(start_s, 0)  # auto base 0x or decimal
+            end = int(end_s, 0)
+            if not (0 <= start <= 255 and 0 <= end <= 255 and start <= end):
+                raise ValueError
+            range_tuple = (start, end)
+        except Exception:
+            print("[enumb] Invalid --range; use e.g. 0-255 or 0x00-0xFF")
+            return
+
+    patterns_lst = [p.strip() for p in opts.patterns.split(",") if p.strip()] if opts.patterns else None
+
+    file_bytes = None
+    if opts.payload_file:
+        try:
+            with open(opts.payload_file, "rb") as fh:
+                file_bytes = fh.read()
+        except Exception as exc:
+            print(f"[enumb] Cannot read payload file: {exc}")
+            return
+
+    _enum_common(
+        opts.mac,
+        "brute",
+        char=opts.char,
+        range=range_tuple,
+        patterns=patterns_lst,
+        file_bytes=file_bytes,
+        force=opts.force,
+        verify=opts.verify,
+    )
+
+# ---------------------------------------------------------------------------
+# Classic Bluetooth commands
+# ---------------------------------------------------------------------------
+
+
+def _cmd_cscan(_: List[str]) -> None:
+    """Scan for BR/EDR devices using BlueZ discovery."""
+    from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+
+    adapter = _Adapter()
+    if not adapter.is_ready():
+        print("[-] Bluetooth adapter not ready")
+        return
+
+    print_and_log("[*] Scanning for Classic devices…", LOG__GENERAL)
+    try:
+        # Restrict to BR/EDR only – faster discovery
+        try:
+            adapter.set_discovery_filter({"Transport": "bredr"})
+        except Exception:
+            pass
+
+        adapter.run_scan__timed(duration=10)
+        devices = [d for d in adapter.get_discovered_devices() if d["type"].lower() == "br/edr"]
+
+        if not devices:
+            print("No Classic devices found")
+            return
+
+        print("\nAddress              Name (RSSI)")
+        for d in devices:
+            name = d["name"] or d["alias"] or "(unknown)"
+            rssi = d.get("rssi", "?")
+            print(f"{d['address']:17}  {name} ({rssi})")
+        print()
+    except Exception as exc:
+        print_and_log(f"[-] Classic scan failed: {exc}", LOG__DEBUG)
+
+
+def _cmd_cconnect(args: List[str]) -> None:
+    """Connect to a Classic device and enumerate RFCOMM services."""
+    global _current_device, _current_mapping, _current_mode, _current_path
+
+    if not args:
+        print("Usage: cconnect <MAC>")
+        return
+
+    mac = args[0]
+    try:
+        from bleep.ble_ops import connect_and_enumerate__bluetooth__classic as _c_enum
+
+        print_and_log(f"[*] Classic connect {mac}…", LOG__GENERAL)
+        dev, svc_map = _c_enum(mac)
+    except Exception as exc:
+        print_and_log(f"[-] Classic connect failed: {exc}", LOG__DEBUG)
+        return
+
+    # Disconnect previous device if exists
+    if _current_device and _current_device.is_connected():
+        try:
+            _current_device.disconnect()
+        except Exception:
+            pass
+
+    _current_device = dev
+    _current_mapping = svc_map
+    _current_mode = "classic"
+    _current_path = _current_device._device_path  # allows dbus navigation
+
+    print_and_log(f"[+] Connected to {mac} – {len(svc_map)} RFCOMM services", LOG__GENERAL)
+
+
+def _cmd_cservices(_: List[str]) -> None:
+    """List RFCOMM service→channel map for connected Classic device."""
+    if _current_mode != "classic" or not _current_device:
+        print("[-] No Classic device connected")
+        return
+
+    if not _current_mapping:
+        print("[-] No service map available (enumeration may have failed)")
+        return
+
+    print("\nRFCOMM Services (service → channel):")
+    for svc, ch in _current_mapping.items():
+        print(f"  {svc:25} → {ch}")
+    print()
 
 def _cmd_connect(args: List[str]) -> None:
     """Connect to a device by MAC address."""
@@ -483,40 +774,46 @@ def _cmd_disconnect(_: List[str]) -> None:
         print_and_log(f"[-] Disconnect failed: {exc}", LOG__DEBUG)
 
 
+# ---------------------------------------------------------------------------
+# Info command – extended for Classic
+# ---------------------------------------------------------------------------
+
 def _cmd_info(args: List[str]) -> None:
     """Show device information."""
-    global _current_device, _detailed_view
+    global _current_device, _detailed_view, _current_mode
 
     if not _current_device:
         print("[-] No device connected")
         return
 
-    # Get device info
-    device_path = _current_device._device_path
-    device_addr = _current_device.mac_address
-    device_name = _current_device.name if hasattr(_current_device, 'name') else "Unknown"
-    device_addr_type = _current_device.address_type if hasattr(_current_device, 'address_type') else "Unknown"
-    
-    # Print device information
-    print(f"[+] Device: {device_name}")
-    print(f"  Address: {device_addr} ({device_addr_type})")
-    print(f"  Path: {device_path}")
+    if _current_mode == "ble":
+        # Existing BLE behaviour (unchanged)
+        device_path = _current_device._device_path
+        device_addr = _current_device.mac_address
+        device_name = getattr(_current_device, "name", "Unknown")
+        device_addr_type = getattr(_current_device, "address_type", "Unknown")
 
-    # Try to get extra properties
-    try:
-        bus = dbus.SystemBus()
-        obj = bus.get_object("org.bluez", device_path)
-        props_iface = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
+        print(f"[+] Device: {device_name}")
+        print(f"  Address: {device_addr} ({device_addr_type})")
+        print(f"  Path: {device_path}")
 
-        # Get common device properties
         try:
+            bus = dbus.SystemBus()
+            obj = bus.get_object("org.bluez", device_path)
+            props_iface = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
             props = props_iface.GetAll("org.bluez.Device1")
             print("[*] Device Properties:")
             _show_properties(props, _detailed_view)
-        except dbus.exceptions.DBusException:
-            pass
-    except Exception as e:
-        print(f"[-] Error getting additional info: {e}")
+        except Exception as e:
+            print(f"[-] Error getting additional info: {e}")
+
+    else:  # Classic
+        info = _current_device.get_device_info()
+        print("[+] Classic Device Info:")
+        for k, v in info.items():
+            print(f"  {k}: {v}")
+        if _current_mapping:
+            print(f"  RFCOMM services: {len(_current_mapping)} (use 'cservices' to list)")
 
 
 def _cmd_interfaces(args: List[str]) -> None:
@@ -809,7 +1106,11 @@ def _monitor_properties(device_path: str, stop_event: threading.Event) -> None:
                 for prop in invalidated:
                     print(f"    {prop}")
             
-            print(_DEVICE_PROMPT.format(_current_device.mac_address), end="", flush=True)
+            # Check if _current_device exists before accessing its attributes
+            if '_current_device' in globals() and _current_device is not None:
+                print(_DEVICE_PROMPT.format(_current_device.mac_address), end="", flush=True)
+            else:
+                print(_PROMPT, end="", flush=True)
         
         bus.add_signal_receiver(
             properties_changed_cb,
@@ -1143,30 +1444,41 @@ def debugging_notification_callback(value, path=None, interface=None, signal_nam
     if '_current_device' in globals() and _current_device:
         print(_DEVICE_PROMPT.format(_current_device.mac_address), end="", flush=True)
 
-def _get_handle_from_dict(obj_dict):
-    """Extract handle from a service, characteristic, or descriptor dictionary.
-
+def _get_handle_from_dict(obj):
+    """Extract handle from a service, characteristic, or descriptor.
+    
+    Works with both dictionary representations and actual Service objects.
+    
     Tries multiple methods to get the handle:
     1. Direct 'handle' property if available
     2. Extracting from the object path using regex
     3. Computing based on service/characteristic offset
-
+    
     Parameters
     ----------
-    obj_dict : dict
-        Dictionary representing a service, characteristic, or descriptor
-
+    obj : dict or Service object
+        Dictionary or object representing a service, characteristic, or descriptor
+    
     Returns
     -------
     int
         The handle value, or -1 if no handle could be extracted
     """
-    # Try to get handle directly if available
-    if "handle" in obj_dict:
-        return obj_dict["handle"]
-
+    # Check if it's a Service object
+    if hasattr(obj, 'handle') and obj.handle is not None:
+        return obj.handle
+    
+    # Check if it's a dictionary with a handle key
+    if isinstance(obj, dict) and "handle" in obj:
+        return obj["handle"]
+    
     # Try to extract from path
-    path = obj_dict.get("path", "")
+    path = ""
+    if hasattr(obj, 'path'):
+        path = obj.path
+    elif isinstance(obj, dict) and "path" in obj:
+        path = obj["path"]
+    
     if path:
         # Extract handle from path based on type
         if "char" in path:
@@ -1181,7 +1493,7 @@ def _get_handle_from_dict(obj_dict):
             match = re.search(r'desc([0-9a-fA-F]{4})$', path)
             if match:
                 return int(match.group(1), 16)
-
+    
     # If we get here, we couldn't find a handle
     return -1
 
@@ -1208,8 +1520,11 @@ def _cmd_services(_: List[str]) -> None:
 
         print("\nGATT Services:")
         for service in services:
-            uuid = service.get("uuid", "Unknown")
-            path = service.get("path", "Unknown")
+            # Access attributes directly instead of using .get()
+            uuid = service.uuid
+            path = service.path
+
+            #handle = service.handle if service.handle is not None else -1
             handle = _get_handle_from_dict(service)
 
             if _detailed_view:
@@ -1224,16 +1539,16 @@ def _cmd_services(_: List[str]) -> None:
                 print(f"  [0x{handle:04x}] {uuid}")
             print(f"    Path: {path}")
 
-            # List characteristics for this service
-            chars = service.get("characteristics", [])
+            # Get characteristics for this service
+            characteristics = service.get_characteristics()
 
-            print(f"    ({len(chars)} characteristics)")
-            if chars:
+            print(f"    ({len(characteristics)} characteristics)")
+            if characteristics:
                 print("    Characteristics:")
-                for char in chars:
-                    char_uuid = char.get("uuid", "Unknown")
-                    char_flags = ", ".join(char.get("flags", []))
-                    char_handle = _get_handle_from_dict(char)
+                for char in characteristics:
+                    char_uuid = char.uuid
+                    char_flags = ", ".join(char.flags)
+                    char_handle = char.handle if char.handle is not None else -1
 
                     if _detailed_view:
                         # Get decoded UUID name
@@ -1248,12 +1563,12 @@ def _cmd_services(_: List[str]) -> None:
                     print(f"        Flags: {char_flags}")
 
                     # List descriptors if any
-                    descriptors = char.get("descriptors", [])
+                    descriptors = char.descriptors
                     if descriptors:
                         print("        Descriptors:")
                         for desc in descriptors:
-                            desc_uuid = desc.get("uuid", "Unknown")
-                            desc_handle = _get_handle_from_dict(desc)
+                            desc_uuid = desc.uuid
+                            desc_handle = desc.handle if desc.handle is not None else -1
 
                             if _detailed_view:
                                 # Get decoded UUID name
@@ -1748,6 +2063,136 @@ def _show_properties(props: Dict[str, Any], detailed: bool = False) -> None:
             print(f"  {key}: {formatted_value}")
 
 
+def _cmd_aoi(args: List[str]) -> None:
+    """
+    Analyze AOI data for a connected device or specified MAC address.
+    
+    Usage: aoi [--save] [MAC]
+    
+    If no MAC address is provided, uses the currently connected device.
+    The --save flag will save the current device mapping to the AoI directory
+    for future analysis.
+    """
+    global _current_device, _current_mapping, _current_mine_map, _current_perm_map
+    
+    save_flag = "--save" in args
+    if save_flag:
+        args = [arg for arg in args if arg != "--save"]
+    
+    mac = None
+    if args:
+        mac = args[0]
+    elif _current_device:
+        mac = _current_device.mac_address
+    
+    if not mac:
+        print("Error: No device connected and no MAC address provided")
+        print("Usage: aoi [--save] [MAC]")
+        return
+    
+    # If --save flag is set, save the current device mapping
+    if save_flag:
+        if not _current_device or not _current_mapping:
+            print("Error: No device mapping available to save")
+            return
+        
+        # Prepare data to save
+        data = {
+            "device_mac": _current_device.mac_address,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "services": {},
+            "characteristics": {},
+            "landmine_map": _current_mine_map or {},
+            "permission_map": _current_perm_map or {},
+        }
+        
+        # Extract service and characteristic information
+        for svc_uuid, chars in _current_mapping.items():
+            service_info = {
+                "uuid": svc_uuid,
+                "name": get_name_from_uuid(svc_uuid),
+                "characteristics": [c[0] for c in chars]
+            }
+            data["services"][svc_uuid] = service_info
+            
+            for char_uuid, _, _ in chars:
+                char_info = {}
+                try:
+                    # Try to read the characteristic properties
+                    if _current_device:
+                        properties = _current_device.get_characteristic_properties(svc_uuid, char_uuid)
+                        char_info["properties"] = properties
+                except Exception as e:
+                    print(f"Warning: Could not read properties for {char_uuid}: {str(e)}")
+                
+                # Add characteristic info to data
+                data["characteristics"][char_uuid] = {
+                    "uuid": char_uuid,
+                    "name": get_name_from_uuid(char_uuid),
+                    **char_info
+                }
+        
+        # Save data
+        try:
+            analyser = AOIAnalyser()
+            filepath = analyser.save_device_data(mac, data)
+            print(f"[+] Device data saved to {filepath}")
+        except Exception as e:
+            print(f"[-] Failed to save device data: {str(e)}")
+    
+    # Analyze AOI data
+    try:
+        report = analyse_aoi_data(mac)
+        
+        # Print summary information
+        print("\n[*] AOI Analysis Report")
+        print(f"Device: {mac}")
+        print(f"Timestamp: {report['timestamp']}")
+        
+        # Print security concerns
+        print("\n[*] Security Concerns:")
+        if report["summary"]["security_concerns"]:
+            for concern in report["summary"]["security_concerns"]:
+                print(f" - {concern['name']} ({concern['uuid']}): {concern['reason']}")
+        else:
+            print(" - None identified")
+        
+        # Print unusual characteristics
+        print("\n[*] Unusual Characteristics:")
+        if report["summary"]["unusual_characteristics"]:
+            for unusual in report["summary"]["unusual_characteristics"]:
+                print(f" - {unusual['name']} ({unusual['uuid']}): {unusual['reason']}")
+        else:
+            print(" - None identified")
+        
+        # Print notable services
+        print("\n[*] Notable Services:")
+        if report["summary"]["notable_services"]:
+            for service in report["summary"]["notable_services"]:
+                print(f" - {service['name']} ({service['uuid']}): {service['reason']}")
+        else:
+            print(" - None identified")
+        
+        # Print accessibility info
+        acc = report["summary"]["accessibility"]
+        print("\n[*] Accessibility:")
+        print(f" - Total characteristics: {acc['total_characteristics']}")
+        print(f" - Blocked: {acc['blocked_characteristics']}")
+        print(f" - Protected: {acc['protected_characteristics']}")
+        print(f" - Score: {acc['accessibility_score']:.2%}")
+        
+        # Print recommendations
+        print("\n[*] Recommendations:")
+        for rec in report["summary"]["recommendations"]:
+            print(f" - {rec}")
+        
+    except FileNotFoundError:
+        print(f"[-] No AOI data found for device {mac}")
+        if _current_device and _current_device.mac_address == mac:
+            print("[*] Hint: Use 'aoi --save' to save current device data")
+    except Exception as e:
+        print(f"[-] AOI analysis failed: {str(e)}")
+
 # Command mapping
 _CMDS = {
     "help": _cmd_help,
@@ -1775,6 +2220,17 @@ _CMDS = {
     "back": _cmd_back,
     "quit": lambda _: None,
     "exit": lambda _: None,
+    "cscan": _cmd_cscan,
+    "cconnect": _cmd_cconnect,
+    "cservices": _cmd_cservices,
+    "scann": _cmd_scann,
+    "scanp": _cmd_scanp,
+    "scanb": _cmd_scanb,
+    "enum": _cmd_enum,
+    "enumn": _cmd_enumn,
+    "enump": _cmd_enump,
+    "enumb": _cmd_enumb,
+    "aoi": _cmd_aoi,
 }
 
 

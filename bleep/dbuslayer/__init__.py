@@ -4,7 +4,8 @@ Provides abstraction for D-Bus operations related to Bluetooth functionality.
 """
 
 from .adapter import system_dbus__bluez_adapter
-from .device import system_dbus__bluez_device__low_energy
+# Use lazy import for device classes to avoid circular imports
+# from .device import system_dbus__bluez_device__low_energy
 from .signals import system_dbus__bluez_signals
 from .agent import (
     system_dbus__bluez_generic_agent,
@@ -24,3 +25,10 @@ __all__ = [
     "Characteristic",
     "Descriptor",
 ]
+
+# Lazy-load device classes to break circular dependencies
+def __getattr__(name):
+    if name == "system_dbus__bluez_device__low_energy":
+        from .device import system_dbus__bluez_device__low_energy
+        return system_dbus__bluez_device__low_energy
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

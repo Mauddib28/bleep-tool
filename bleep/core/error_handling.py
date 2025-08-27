@@ -2,14 +2,48 @@
 
 import dbus
 import dbus.exceptions
-from typing import Dict, Optional, Tuple, Union
+import functools
+from typing import Dict, Optional, Tuple, Union, Callable, Any
 
 from bleep.bt_ref.constants import *
 from bleep.bt_ref.exceptions import *
 from bleep.bt_ref.utils import *
-from bleep.core.log import get_logger
+from bleep.core.log import get_logger, print_and_log, LOG__GENERAL, LOG__DEBUG
 
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Controller-stall mitigation helper
+# ---------------------------------------------------------------------------
+
+def controller_stall_mitigation(mac: str) -> None:
+    """Attempt to recover from a controller stall indicated by DBus *NoReply*.
+
+    If environment variable ``BLEEP_AUTO_FIX_STALL`` is set to *1* / *true*,
+    a best-effort call to ``bluetoothctl disconnect <MAC>`` is issued.  Any
+    failure is logged at DEBUG level and otherwise ignored.  When the env var
+    is not set, emit a user-facing message suggesting the manual command.
+    """
+
+    import os, subprocess, shlex
+
+    if not mac:
+        return
+
+    auto = os.getenv("BLEEP_AUTO_FIX_STALL", "0").lower() in {"1", "true", "yes"}
+
+    if auto:
+        cmd = ["bluetoothctl", "disconnect", mac]
+        print_and_log(f"[*] Controller stall – running: {' '.join(map(shlex.quote, cmd))}", LOG__GENERAL)
+        try:
+            subprocess.run(cmd, capture_output=True, check=False, timeout=5)
+        except Exception as exc:
+            print_and_log(f"[DEBUG] bluetoothctl disconnect failed: {exc}", LOG__DEBUG)
+    else:
+        print_and_log(
+            f"[!] Controller stall detected. Run 'bluetoothctl disconnect {mac}' and retry, or set BLEEP_AUTO_FIX_STALL=1 to automate.",
+            LOG__GENERAL,
+        )
 
 # ---------------------------------------------------------------------------
 # Rich BlueZ/DBus → RESULT_ERR mapping  (monolith table distilled)
@@ -256,3 +290,237 @@ def get_current_timestamp() -> float:
     from time import time
 
     return time()
+
+
+# ---------------------------------------------------------------------------
+# Enhanced Error Handling System
+# ---------------------------------------------------------------------------
+
+class BlueZErrorHandler:
+    """Centralized error handling for BlueZ D-Bus interactions.
+    
+    This class provides consistent error handling patterns across the codebase,
+    with human-friendly error messages, retry mechanics, and context-aware
+    error reporting.
+    """
+    
+    # Maps D-Bus error names to user-friendly messages
+    ERROR_MESSAGES = {
+        "org.bluez.Error.Failed": "Operation failed",
+        "org.bluez.Error.InProgress": "Operation already in progress",
+        "org.bluez.Error.NotAuthorized": "Not authorized",
+        "org.bluez.Error.NotAvailable": "Not available",
+        "org.bluez.Error.NotConnected": "Device not connected",
+        "org.bluez.Error.NotSupported": "Operation not supported",
+        "org.bluez.Error.NotPermitted": "Operation not permitted",
+        "org.bluez.Error.InvalidValueLength": "Invalid value length",
+        "org.freedesktop.DBus.Error.NoReply": "Controller stalled - try 'bluetoothctl disconnect <MAC>'",
+        "org.freedesktop.DBus.Error.UnknownObject": "Object not found",
+        "org.freedesktop.DBus.Error.InvalidArgs": "Invalid arguments",
+        "org.freedesktop.DBus.Error.UnknownMethod": "Method not found",
+    }
+    
+    # Maps operation types to more specific error messages
+    OPERATION_CONTEXT = {
+        "read_characteristic": {
+            "org.bluez.Error.Failed": "Failed to read characteristic - device may be unavailable or the characteristic might require authentication",
+            "org.bluez.Error.NotPermitted": "Reading this characteristic is not permitted - may require pairing or higher privileges",
+        },
+        "write_characteristic": {
+            "org.bluez.Error.Failed": "Failed to write characteristic - device may be unavailable or the characteristic might be read-only",
+            "org.bluez.Error.NotPermitted": "Writing to this characteristic is not permitted - may require pairing or higher privileges",
+        },
+        "start_notify": {
+            "org.bluez.Error.Failed": "Failed to enable notifications - characteristic may not support notifications",
+            "org.bluez.Error.NotPermitted": "Notifications are not permitted on this characteristic",
+        },
+        "connect": {
+            "org.bluez.Error.Failed": "Failed to connect to device - device may be out of range or unavailable",
+            "org.bluez.Error.InProgress": "Connection already in progress - please wait",
+        },
+    }
+    
+    @classmethod
+    def handle_dbus_error(cls, error, operation=None, device=None, raise_error=False):
+        """
+        Handle D-Bus exceptions with consistent messaging and logging.
+        
+        Args:
+            error: The caught D-Bus exception
+            operation: String describing the attempted operation
+            device: Optional device information (MAC or name)
+            raise_error: Whether to re-raise the exception after handling
+            
+        Returns:
+            None if error handled, raises exception if raise_error=True
+            
+        Example:
+            try:
+                device.connect()
+            except dbus.exceptions.DBusException as e:
+                BlueZErrorHandler.handle_dbus_error(e, operation="connect", device=device.address)
+        """
+        error_str = str(error)
+        error_name = getattr(error, "get_dbus_name", lambda: "unknown")()
+        context = f" during {operation}" if operation else ""
+        device_info = f" on device {device}" if device else ""
+        
+        # If we have a specific message for this operation + error combination, use it
+        if (operation and error_name in cls.OPERATION_CONTEXT.get(operation, {})):
+            message = cls.OPERATION_CONTEXT[operation][error_name]
+            logger.error(f"{message}{device_info}")
+            logger.debug(f"Original error: {error_str}")
+            
+            # Special case for NoReply which might indicate a controller stall
+            if error_name == "org.freedesktop.DBus.Error.NoReply" and device:
+                controller_stall_mitigation(device)
+                
+            if raise_error:
+                raise error
+            
+            # Map to BLEEP error code
+            error_code = decode_dbus_error(error)
+            return error_code
+        
+        # Otherwise fall back to general error type mapping
+        for error_code, message in cls.ERROR_MESSAGES.items():
+            if error_code in error_str:
+                logger.error(f"{message}{context}{device_info}")
+                logger.debug(f"Original error: {error_str}")
+                
+                # Special case for NoReply which might indicate a controller stall
+                if "NoReply" in error_code and device:
+                    controller_stall_mitigation(device)
+                    
+                if raise_error:
+                    raise error
+                
+                # Map to BLEEP error code
+                return decode_dbus_error(error)
+        
+        # If no specific handler found
+        logger.error(f"Unexpected D-Bus error{context}{device_info}: {error_str}")
+        if raise_error:
+            raise error
+        
+        return RESULT_ERR
+    
+    @classmethod
+    def connection_check(cls, func):
+        """
+        Decorator to handle connection-related errors consistently.
+        
+        Automatically attempts to reconnect once if a NotConnected error occurs,
+        and provides standardized error handling.
+        
+        Usage:
+            @BlueZErrorHandler.connection_check
+            def some_device_method(self, *args, **kwargs):
+                # Method implementation
+        """
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            try:
+                return func(self, *args, **kwargs)
+            except dbus.exceptions.DBusException as e:
+                if "org.bluez.Error.NotConnected" in str(e):
+                    logger.warning(f"Device not connected - attempting to reconnect")
+                    try:
+                        if hasattr(self, 'connect') and callable(self.connect):
+                            self.connect()
+                            # Retry the original function
+                            return func(self, *args, **kwargs)
+                        else:
+                            logger.error(f"Cannot reconnect - object doesn't have connect method")
+                    except Exception as reconnect_error:
+                        cls.handle_dbus_error(
+                            reconnect_error, 
+                            operation="reconnect attempt", 
+                            device=getattr(self, 'address', None)
+                        )
+                else:
+                    cls.handle_dbus_error(
+                        e, 
+                        operation=func.__name__, 
+                        device=getattr(self, 'address', None)
+                    )
+                # Map to BLEEP error code
+                return decode_dbus_error(e)
+            except Exception as e:
+                logger.error(f"Non-DBus error in {func.__name__}: {e}")
+                return RESULT_EXCEPTION
+        return wrapper
+        
+    @classmethod
+    def safe_property_access(cls, func):
+        """
+        Decorator to safely handle property access on potentially disconnected devices.
+        
+        Adds defensive checks before accessing device properties to avoid errors
+        when the device is disconnected or unavailable.
+        
+        Usage:
+            @BlueZErrorHandler.safe_property_access
+            def get_device_property(self, property_name):
+                # Method implementation
+        """
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            if not hasattr(self, '_obj') or self._obj is None:
+                logger.warning(f"Cannot access properties - device object is None")
+                return None
+                
+            try:
+                return func(self, *args, **kwargs)
+            except dbus.exceptions.DBusException as e:
+                cls.handle_dbus_error(
+                    e, 
+                    operation=f"property access in {func.__name__}", 
+                    device=getattr(self, 'address', None)
+                )
+                return None
+            except Exception as e:
+                logger.error(f"Error accessing property in {func.__name__}: {e}")
+                return None
+        return wrapper
+    
+    @classmethod
+    def get_user_friendly_message(cls, error):
+        """
+        Convert technical error message to user-friendly version.
+        
+        Args:
+            error: D-Bus exception or error message string
+            
+        Returns:
+            User-friendly error message
+        """
+        if isinstance(error, dbus.exceptions.DBusException):
+            error_name = error.get_dbus_name()
+            error_message = str(error)
+        else:
+            error_name = "unknown"
+            error_message = str(error)
+            
+        # Check specific error names first
+        for error_code, message in cls.ERROR_MESSAGES.items():
+            if error_code in error_message or error_code == error_name:
+                return message
+                
+        # Check for common patterns in message
+        if "not permitted" in error_message.lower():
+            if "read" in error_message.lower():
+                return "You don't have permission to read this data. You may need to pair with the device first."
+            elif "write" in error_message.lower():
+                return "You don't have permission to write to this device. You may need to pair with the device first."
+            else:
+                return "Permission denied. You may need higher privileges or to pair with the device."
+                
+        if "timeout" in error_message.lower():
+            return "The operation timed out. The device might be out of range or unresponsive."
+            
+        if "authentication" in error_message.lower():
+            return "Authentication failed. You may need to pair or provide the correct PIN/passkey."
+        
+        # Generic fallback
+        return f"An error occurred: {error_message}"

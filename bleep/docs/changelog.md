@@ -1,3 +1,111 @@
+## v2.0.6 – Enumeration helper enhancements (2025-07-24)
+• build_payload_iterator now supports alt, repeat:<byte>:<len>, hex:<bytes> patterns.
+• brute_write_range respects ROE flags gracefully (logs + skip instead of raising).
+• User-mode quick-start guide and helper docs added.
+
+## v2.0.7 – User Mode Completion (2025-07-25)
+### Fixed
+* **Debug Mode** – Fixed "services" command to properly handle Service objects in `_get_handle_from_dict()` function, resolving the "argument of type 'Service' is not iterable" error.
+* **Debug Mode** – Fixed error in property monitor callback when disconnecting from a device while monitoring is active.
+* **Error Handling** – Standardized error handling across the codebase with the new `BlueZErrorHandler` class:
+  * User-friendly error messages with contextual information
+  * Automatic reconnection logic for common disconnection issues
+  * Enhanced defensive programming patterns to prevent crashes
+  * Detailed logging of error causes and contexts
+  * Controller stall detection and mitigation
+* **User Mode** – Fixed import error in `user.py` module by updating references from `SignalFilterRule` to `SignalFilter` to match the actual class name in `signals.capture_config.py`
+* **User Mode** – Fixed connection error by correctly unpacking the 4-tuple returned from `connect_and_enumerate__bluetooth__low_energy` function
+* **User Mode** – Fixed service display error by updating the code to handle the dictionary structure of services instead of expecting a list of service objects
+* **User Mode** – Added helper methods to device_le.py that leverage existing Service objects for proper service and characteristic access
+* **User Mode** – Updated service display to correctly show actual services using proper BlueZ object access patterns
+* **User Mode** – Added Brute-Write functionality to the characteristic actions menu for writable characteristics
+* **User Mode** – Completed comprehensive testing of UI functionality against multiple device types, ensuring robust operation across different Bluetooth implementations
+* **User Mode** – Fixed signal capture configuration functionality by properly initializing SignalCaptureConfig with required parameters and using correct API methods
+* **User Mode** – Fixed SignalAction creation in signal capture configuration by using the correct parameter names and ActionType enum values
+* **User Mode** – Fixed filter rule addition in signal capture configuration to correctly use ActionType enum
+* **User Mode** – Fixed signal type selection in filter rules by using the proper SignalType enum values
+### Added
+* **Documentation** – CLI quick-start now lists the `aoi` command; `todo_tracker.md` expanded with detailed AoI workflow subtasks.
+* Observation DB now stores characteristic value history (`char_history` table). Values are logged automatically during multi-read operations.
+* CLI `db` command: `--fields` filter for `list` and new `timeline` sub-command.
+* **Documentation** – CLI quick-start updated accordingly; `todo_tracker.md` expanded with detailed AoI workflow subtasks.
+* **User Mode** – Complete implementation of user-friendly interface for Bluetooth exploration:
+  * Menu-driven interface for interactive device interaction
+  * Simplified device discovery and connection workflow
+  * Service and characteristic browsing with intuitive navigation
+  * Multi-format value reading and writing for characteristics
+  * Notification monitoring with human-readable output
+  * Signal configuration interface with guided setup
+  * Device data export for offline analysis
+  * Integration with error handling system for user-friendly messages
+  * Comprehensive documentation including:
+    * Detailed UI navigation patterns with menu hierarchy
+    * Quick-start examples for common workflows
+    * Advanced usage examples and integration patterns
+    * Expanded troubleshooting guide with solutions for common issues
+* **Assets-of-Interest (AoI)** – Complete implementation with comprehensive analysis, reporting, and management:
+  * Analysis engine for identifying security issues in Bluetooth devices
+  * Report generation in multiple formats (markdown, JSON, text)
+  * Persistent storage of device data for offline analysis
+  * Advanced CLI commands for device management (`analyze`, `report`, `list`, `export`)
+  * Security scoring system to prioritize findings
+  * Comprehensive documentation in `docs/aoi_mode.md`
+* **Debug Shell** – Added `aoi` command for analyzing device data and generating security reports.
+* **Signal Capture System** – Comprehensive framework for capturing, filtering, and processing Bluetooth signals:
+  * Structured configuration system with filters, routes, and actions
+  * Persistent storage of signal configurations
+  * Signal routing based on various criteria (signal type, device, service, etc.)
+  * Multiple action types (logging, saving, callbacks, database storage)
+  * CLI for managing configurations (`signal-config` command)
+  * Integration with existing BlueZ signals system
+  * Example workflows for common use cases
+  * Detailed documentation in `docs/signal_capture.md`
+
+### Changed
+* **Database Schema** – Upgraded to v2 schema, renaming columns to avoid Python keyword conflicts:
+  * `class` → `device_class` in devices table
+  * `state` → `transport_state` in media_transports table
+* **Documentation** – Updated observation_db.md with schema versioning information and filtering examples.
+
+---
+
+## v2.0.5 – Media layer expansion
+
+### Added
+- Media-layer refactor complete:
+  - `MediaService` wrapper (org.bluez.Media1) for endpoint/player registration.
+  - `MediaFolder` / `MediaItem` browsing helpers with ListItems/Search support.
+  - `find_media_objects()` enumeration utility returning Media1/Player/Folder/Item tree.
+  - `MediaRegisterHelper` convenience class to register SBC sink/source endpoints.
+  - CLI `media list --objects` flag to dump full object tree.
+- Stand-alone documentation **docs/media_mode.md** covering prerequisites, CLI, helpers.
+- Unit tests `tests/test_media_helpers.py` validating enumeration & registration helpers.
+
+### Changed
+- `modes/media.py` list command prints concise view by default, retains old behaviour.
+
+---
+
+## v2.0.4 – 2025-07-19
+
+### Added
+- Interactive *Debug* mode support for Classic Bluetooth (`cscan`, `cconnect`, `cservices`).
+- `classic-ping` timeout control and robust RTT parsing.
+- **Native SDP fast-path** via D-Bus `GetServiceRecords`; falls back to *sdptool* when missing.
+- **classic_rfccomm_open()** helper for generic RFCOMM sockets (bc-16).
+- Integration test suite for Classic discovery + BLE-CTF workflow; full pytest suite now passes.
+
+### Fixed
+- UUID name mismatches in tests (`Device Information Service`).
+- Regression where `.bus` attribute was missing; added read-only proxy.
+- Potential crash when detaching property signals now handled defensively.
+
+### Changed
+- README feature table now lists Bluetooth Classic support and links to guide.
+- Expanded logging around `classic_l2ping` and debug commands.
+
+---
+
 # BLEEP change log
 
 ## v1.x.x - Initial Implementation of Bluetooth Landscape Exploration & Enumeration Platform
@@ -154,3 +262,46 @@ Long Term Future Tasks:
 
 *Known issues*
 - User mode UI still WIP – see `docs/user_mode.md` for roadmap. 
+
+## v2.0.1 – 2025-07-18
+
+### Added
+- Classic Bluetooth **PBAP** dumping via `classic-pbap` CLI sub-command with multi-repository support and async transfer logic.
+- Enhanced `classic-enum` command for SDP service enumeration.
+- Documentation: `docs/bl_classic_mode.md`, CLI usage examples, troubleshooting steps.
+
+### Fixed
+- Graceful handling of BlueZ `NoReply` / timeout errors; suggests `bluetoothctl disconnect <MAC>` when controller stalls.
+- Unicode decode errors in phone-book files containing non-UTF-8 characters.
+- D-Bus signature mismatch when registering an OBEX agent (`input signature is longer…`).
+- `classic-scan` now honours `--rssi` and `--pathloss` discovery filters, matching BlueZ SetDiscoveryFilter capabilities.
+
+### Changed
+- `classic-pbap` now stores multi-repo dumps under `/tmp/<mac>_<REPO>.vcf` by default; `--out` supported for single repo.
+
+--- 
+
+## v2.0.2 – 2025-07-18
+
+### Added
+- `--auto-auth` flag on `classic-pbap` that spins up an in-process OBEX Agent and automatically approves authentication / push requests.
+- Generic `classic_rfccomm_open()` helper for future Classic profiles.
+
+### Fixed
+- D-Bus signature mismatch when registering an OBEX agent (`input signature is longer…`).
+
+### Changed
+- Documentation updated for auto-auth usage; bc-17 marked complete in tracker.
+
+--- 
+
+## v2.0.3 – 2025-07-18
+
+### Added
+- Configurable PBAP watchdog (`--watchdog` seconds, default 8).
+- `classic-ping` sub-command wrapping BlueZ *l2ping* for reachability checks.
+
+### Fixed
+- `classic-pbap` no longer hangs indefinitely on stalled transfers; aborts after watchdog timeout.
+
+--- 

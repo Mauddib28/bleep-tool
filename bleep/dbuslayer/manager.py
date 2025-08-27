@@ -13,7 +13,7 @@ so higher-level code keeps working unchanged.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import dbus
 import dbus.mainloop.glib
@@ -31,9 +31,6 @@ from bleep.bt_ref.constants import (
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 from bleep.core import errors
 from bleep.core.errors import map_dbus_error
-from bleep.dbuslayer.device_le import (
-    system_dbus__bluez_device__low_energy as _LEDevice,
-)
 from bleep.dbuslayer.signals import system_dbus__bluez_signals as _SignalsRegistry
 
 __all__ = [
@@ -43,6 +40,10 @@ __all__ = [
 
 _signals_manager = _SignalsRegistry()
 
+# Lazy-load device_le to break circular dependency
+def _get_le_device_class():
+    from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy
+    return system_dbus__bluez_device__low_energy
 
 def _error_from_dbus_error(exc: dbus.exceptions.DBusException) -> errors.BLEEPError:
     return map_dbus_error(exc)
@@ -76,7 +77,7 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
         )
 
         # State
-        self._devices: Dict[str, _LEDevice] = {}
+        self._devices: Dict[str, Any] = {}  # Will contain system_dbus__bluez_device__low_energy instances
         self._mainloop: Optional[GLib.MainLoop] = None
         self._timer_id: Optional[int] = None
         self._discovery_timeout_ms = 60_000  # 60 seconds default
@@ -87,7 +88,7 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
     # ------------------------------------------------------------------
     # Public helpers
     # ------------------------------------------------------------------
-    def devices(self) -> List[_LEDevice]:
+    def devices(self) -> List[Any]:  # Returns list of system_dbus__bluez_device__low_energy instances
         """Return the list of known devices (updates cache first)."""
         self.update_devices()
         return list(self._devices.values())
@@ -201,7 +202,7 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
             self._create_device(mac)
 
     def _create_device(self, mac: str):
-        dev = _LEDevice(mac, self.adapter_name)
+        dev = _get_le_device_class()(mac, self.adapter_name)
         self._devices[mac] = dev
         _signals_manager.register_device(dev)
         print_and_log(f"[BLEEP] Device object created for {mac}", LOG__DEBUG)

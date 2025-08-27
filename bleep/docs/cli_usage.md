@@ -1,25 +1,47 @@
 # CLI quick-start
 
-The CLI entry-point is the `bleep` module itself and is typically launched with the `-m` flag:
+The CLI can be accessed in two ways:
+
+## Method 1: Using the CLI Module (Recommended)
 
 ```bash
-python -m bleep --help   # top-level help / version
+python -m bleep.cli --help   # top-level help / version
 ```
+
+## Method 2: Using the Package Entry Point (If Installed)
+
+If the package is installed with `pip install -e .`:
+
+```bash
+bleep --help   # top-level help / version
+```
+
+> Note: The documentation previously showed `python -m bleep`, but this won't work because the package doesn't have a `__main__.py` file.
 
 ### Common sub-commands
 
 | Command | Purpose | Example |
 |---------|---------|---------|
-| `scan` | Passive BLE scan for advertising packets | `python -m bleep scan --timeout 15` |
-| `connect` | Connect to a target and enumerate its GATT DB | `python -m bleep connect AA:BB:CC:DD:EE:FF` |
-| `gatt-enum` | Quick or deep GATT enumeration incl. permission/landmine reports | `python -m bleep gatt-enum AA:BB:... --deep` |
-| `media-enum` | Enumerate AVRCP / MediaPlayer capabilities | `python -m bleep media-enum AA:BB:... --verbose` |
-| `agent` | Run a pairing agent (simple/interactive) | `python -m bleep agent --mode simple` |
-| `explore` | Scan & produce JSON mapping for later offline analysis | `python -m bleep explore AA:BB:CC:DD:EE:FF --out dump.json` |
-| `analyse` | Post-process one or more JSON dumps | `python -m bleep analyse dump1.json dump2.json` |
-| `signal` | Subscribe to notifications/indications | `python -m bleep signal AA:BB:... char002d --time 60` |
+| `scan` | Passive BLE scan for advertising packets | `python -m bleep.cli scan --timeout 15` |
+| `connect` | Connect to a target and enumerate its GATT DB | `python -m bleep.cli connect AA:BB:CC:DD:EE:FF` |
+| `gatt-enum` | Quick or deep GATT enumeration incl. permission/landmine reports | `python -m bleep.cli gatt-enum AA:BB:... --deep` |
+| `media-enum` | Enumerate AVRCP / MediaPlayer capabilities | `python -m bleep.cli media-enum AA:BB:... --verbose` |
+| `media-ctrl` | Control playback & volume on a media device | `python -m bleep.cli media-ctrl AA:BB:... play` |
+| `db list` | List devices in the observation database | `python -m bleep.cli db list --status classic` |
+| `db show` | Show detailed information for a device | `python -m bleep.cli db show AA:BB:CC:DD:EE:FF` |
+| `db timeline` | View chronological characteristic history | `python -m bleep.cli db timeline AA:BB:... --char 2a00` |
+| `db export` | Export device data to JSON | `python -m bleep.cli db export AA:BB:... --out device.json` |
+| `agent` | Run a pairing agent (simple/interactive) | `python -m bleep.cli agent --mode simple` |
+| `explore` | Scan & produce JSON mapping for later offline analysis | `python -m bleep.cli explore AA:BB:CC:DD:EE:FF --out dump.json` |
+| `analyse` | Post-process one or more JSON dumps | `python -m bleep.cli analyse dump1.json dump2.json` |
+| `signal` | Subscribe to notifications/indications | `python -m bleep.cli signal AA:BB:... char002d --time 60` |
+| `signal-config` | Manage signal capture configurations | `python -m bleep.cli signal-config create my-config --default` |
+| `aoi` | Enumerate Assets-of-Interest listed in JSON files | `python -m bleep.cli aoi targets.json` |
+| `interactive` | Enter interactive REPL console | `python -m bleep.cli interactive` |
 
-Run `python -m bleep <command> --help` for detailed per-command options.
+Characteristic reads are automatically archived in the local database (no CLI flag needed).
+
+Run `python -m bleep.cli <command> --help` for detailed per-command options.
 
 ### Environment variables
 

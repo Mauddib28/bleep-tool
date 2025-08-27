@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 
 import dbus
 from gi.repository import GLib
@@ -31,6 +31,7 @@ from bleep.bt_ref.utils import dbus_to_python, device_address_to_path, handle_in
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__USER
 from bleep.core import errors
 from bleep.core.errors import map_dbus_error, BLEEPError
+from bleep.core.error_handling import BlueZErrorHandler
 from bleep.dbuslayer.service import Service
 from bleep.dbuslayer.characteristic import Characteristic
 from bleep.dbuslayer.descriptor import Descriptor
@@ -113,6 +114,7 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
     # ---------------------------------------------------------------------
     # Pairing & Trust Management
     # ---------------------------------------------------------------------
+    @BlueZErrorHandler.connection_check
     def Pair(self, timeout: int = 30):
         """Pair with the device.
         
@@ -131,15 +133,23 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         Exception
             If pairing fails due to a non-timeout error.
         """
+        from bleep.core.error_handling import BlueZErrorHandler
+        
         print_and_log(f"[*] Attempting to pair with {self.mac_address}", LOG__USER)
         try:
             self._device_iface.Pair(timeout=dbus.UInt32(timeout))
             print_and_log(f"[+] Successfully paired with {self.mac_address}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Pairing failed: {str(e)}", LOG__GENERAL)
+            BlueZErrorHandler.handle_dbus_error(
+                e, 
+                operation="pair", 
+                device=self.mac_address
+            )
+            print_and_log(f"[-] Pairing failed: {BlueZErrorHandler.get_user_friendly_message(e)}", LOG__GENERAL)
             raise map_dbus_error(e)
 
+    @BlueZErrorHandler.connection_check
     def set_trusted(self, trusted: bool = True):
         """Set the device as trusted or untrusted.
         
@@ -153,13 +163,20 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         bool
             True if the operation was successful, False otherwise.
         """
+        from bleep.core.error_handling import BlueZErrorHandler
+        
         try:
             self._props_iface.Set(DEVICE_INTERFACE, "Trusted", dbus.Boolean(trusted))
             trust_status = "trusted" if trusted else "untrusted"
             print_and_log(f"[*] Device {self.mac_address} set as {trust_status}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Setting trust failed: {str(e)}", LOG__DEBUG)
+            BlueZErrorHandler.handle_dbus_error(
+                e, 
+                operation="set_trusted", 
+                device=self.mac_address
+            )
+            print_and_log(f"[-] Setting trust failed: {BlueZErrorHandler.get_user_friendly_message(e)}", LOG__DEBUG)
             raise map_dbus_error(e)
 
     # ---------------------------------------------------------------------
@@ -439,7 +456,75 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
                 return None
             raise mapped
+            
+    def get_services(self) -> List[str]:
+        """
+        Get a list of service UUIDs for this device.
         
+        Returns:
+            List of service UUIDs
+        """
+        # Ensure services are resolved
+        if not self._services:
+            _ = self.services_resolved()
+            
+        return [service.uuid for service in self._services]
+        
+    def get_service(self, service_uuid: str) -> Optional[Any]:
+        """
+        Get a service object by UUID.
+        
+        Args:
+            service_uuid: UUID of the service
+            
+        Returns:
+            Service object or None if not found
+        """
+        # Ensure services are resolved
+        if not self._services:
+            _ = self.services_resolved()
+            
+        for service in self._services:
+            if service.uuid == service_uuid:
+                return service
+        return None
+        
+    def get_characteristics(self, service_uuid: str) -> List[str]:
+        """
+        Get a list of characteristic UUIDs for a service.
+        
+        Args:
+            service_uuid: UUID of the service
+            
+        Returns:
+            List of characteristic UUIDs
+        """
+        service = self.get_service(service_uuid)
+        if not service:
+            return []
+            
+        return [char.uuid for char in service.get_characteristics()]
+        
+    def get_characteristic_flags(self, service_uuid: str, char_uuid: str) -> List[str]:
+        """
+        Get the flags/properties of a characteristic.
+        
+        Args:
+            service_uuid: UUID of the service
+            char_uuid: UUID of the characteristic
+            
+        Returns:
+            List of flags/properties
+        """
+        service = self.get_service(service_uuid)
+        if not service:
+            return []
+            
+        for char in service.get_characteristics():
+            if char.uuid == char_uuid:
+                return char.flags if hasattr(char, 'flags') else []
+                
+        return []
     def get_advertising_flags(self) -> Optional[list[bytes]]:
         try:
             return dbus.UInt16(self._props_iface.Get(DEVICE_INTERFACE, "AdvertisingFlags"))
@@ -1218,6 +1303,12 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         if self._properties_signal is not None:
             try:
                 self._properties_signal.remove()
+            except Exception as _exc:  # pragma: no cover – defensive
+                # Log but suppress any error – stale handlers must not break flow
+                print_and_log(
+                    f"[DEBUG] Ignoring exception while detaching property signal: {_exc}",
+                    LOG__DEBUG,
+                )
             finally:
                 self._properties_signal = None
 
@@ -1383,6 +1474,9 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         bytes
             The value read from the characteristic
         """
+        from bleep.core.error_handling import BlueZErrorHandler
+        from bleep.core.utils import safe_call
+        
         char = self._find_characteristic(uuid)
         if not char:
             raise ValueError(f"Characteristic {uuid} not found")
@@ -1395,17 +1489,24 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                 # Try global signals manager first
                 from bleep.core.device_management import _get_global_signals
                 signals = _get_global_signals()
-                signals.handle_read_event(char.path, value)
+                safe_call(signals, 'handle_read_event', char.path, value)
             except (ImportError, AttributeError):
                 # Fall back to local signal manager
                 global _signals_manager
                 if _signals_manager:
-                    _signals_manager.handle_read_event(char.path, value)
+                    safe_call(_signals_manager, 'handle_read_event', char.path, value)
             
             return value
         except dbus.exceptions.DBusException as e:
+            # Use enhanced error handling
+            error_code = BlueZErrorHandler.handle_dbus_error(
+                e, 
+                operation="read_characteristic", 
+                device=self.mac_address
+            )
+            
             # Record as a landmine if it fails
-            self.record_landmine(uuid, "read_error", str(e))
+            self.record_landmine(uuid, "read_error", BlueZErrorHandler.get_user_friendly_message(e))
             self.update_mine_mapping(uuid, "value_error")
             
             # Rethrow the exception
@@ -1457,14 +1558,24 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                     _signals_manager.handle_write_event(char.path, value)
                 
         except dbus.exceptions.DBusException as e:
+            from bleep.core.error_handling import BlueZErrorHandler
+            
+            # Use enhanced error handling
+            error_code = BlueZErrorHandler.handle_dbus_error(
+                e, 
+                operation="write_characteristic", 
+                device=self.mac_address
+            )
+            
             # Record as a landmine if it fails
-            self.record_landmine(uuid, "write_error", str(e))
+            friendly_message = BlueZErrorHandler.get_user_friendly_message(e)
+            self.record_landmine(uuid, "write_error", friendly_message)
             self.update_mine_mapping(uuid, "value_error")
             
             # Check if it's a permission issue
             error_name = e.get_dbus_name()
             if "NotPermitted" in error_name or "NotAuthorized" in error_name:
-                self.record_security_requirement(uuid, "access_rejected", str(e))
+                self.record_security_requirement(uuid, "access_rejected", friendly_message)
                 self.update_permission_mapping(uuid, "access_rejected")
             
             # Rethrow the exception
@@ -1480,12 +1591,35 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         callback
             Function to call when notifications are received
         """
+        from bleep.core.error_handling import BlueZErrorHandler
+        
         char = self._find_characteristic(uuid)
         if not char:
             raise ValueError(f"Characteristic {uuid} not found")
         
         # Start notifications on the characteristic
-        char.start_notify(callback)
+        try:
+            char.start_notify(callback)
+        except dbus.exceptions.DBusException as e:
+            # Use enhanced error handling
+            BlueZErrorHandler.handle_dbus_error(
+                e, 
+                operation="enable_notifications", 
+                device=self.mac_address
+            )
+            
+            # Record as a landmine if it fails
+            friendly_message = BlueZErrorHandler.get_user_friendly_message(e)
+            self.record_landmine(uuid, "notify_error", friendly_message)
+            
+            # Check if it's a permission issue
+            error_name = e.get_dbus_name()
+            if "NotPermitted" in error_name or "NotAuthorized" in error_name:
+                self.record_security_requirement(uuid, "notify_rejected", friendly_message)
+                self.update_permission_mapping(uuid, "notify_rejected")
+            
+            # Rethrow the exception
+            raise map_dbus_error(e)
         
         # Check if we have signals manager in the device manager
         from bleep.dbuslayer.signals import system_dbus__bluez_signals
@@ -1527,12 +1661,28 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         uuid : str
             The UUID of the characteristic
         """
+        from bleep.core.error_handling import BlueZErrorHandler
+        
         char = self._find_characteristic(uuid)
         if not char:
             raise ValueError(f"Characteristic {uuid} not found")
         
         # Stop notifications on the characteristic
-        char.stop_notify()
+        try:
+            char.stop_notify()
+        except dbus.exceptions.DBusException as e:
+            # Use enhanced error handling
+            BlueZErrorHandler.handle_dbus_error(
+                e, 
+                operation="disable_notifications", 
+                device=self.mac_address
+            )
+            
+            # Record error but don't update landmine maps - stopping notifications is usually not critical
+            print_and_log(f"[DEBUG] Failed to disable notifications: {BlueZErrorHandler.get_user_friendly_message(e)}", LOG__DEBUG)
+            
+            # Rethrow the exception
+            raise map_dbus_error(e)
         
         # Check if we have signals manager in the device manager
         from bleep.dbuslayer.signals import system_dbus__bluez_signals
@@ -2104,3 +2254,23 @@ def _set_dev_addr(self, value: str):  # type: ignore[override]
 
 # Add the property to the class
 system_dbus__bluez_device__low_energy.device_address = property(_get_dev_addr, _set_dev_addr)
+
+# -----------------------------------------------------------------
+# Public attribute shortcuts – keep external helper code stable even
+# after the refactor changed internal naming conventions.
+# -----------------------------------------------------------------
+
+@property
+def bus(self):  # noqa: D401 – simple attribute proxy
+    """Return the underlying D-Bus connection (SystemBus).
+
+    Legacy helper modules and some integration tests still access
+    ``device.bus`` instead of the internal ``_bus`` attribute that was
+    introduced during the refactor.  Expose a read-only property to
+    avoid touching private members outside the class while preserving
+    backward compatibility.
+    """
+    return self._bus
+
+# Bind the dynamic property to the class so that instances expose ``device.bus``
+system_dbus__bluez_device__low_energy.bus = bus

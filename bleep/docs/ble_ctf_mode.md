@@ -5,7 +5,7 @@
 ## Quick start
 
 ```bash
-python -m bleep -m blectf  # interactive helper (coming soon)
+python -m bleep.modes.blectf  # interactive helper (coming soon)
 ```
 
 Right now the module is best used **programmatically**:

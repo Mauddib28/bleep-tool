@@ -30,6 +30,7 @@ from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 from bleep.dbuslayer.device_le import (
     system_dbus__bluez_device__low_energy as _LEDevice,
 )
+from bleep.core.error_handling import controller_stall_mitigation
 from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
 from bleep.ble_ops.reconnect import ReconnectionMonitor, reconnect_check
 
@@ -141,11 +142,36 @@ def connect_and_enumerate__bluetooth__low_energy(
     # ------------------------------------------------------------------
     # 1. Connect (with retry)
     # ------------------------------------------------------------------
+    from bleep.dbuslayer.agent import ensure_default_pairing_agent  # inline import to avoid cycles
+
     try:
         if not device.connect(retry=5):
             raise _errors.ConnectionError(target_bt_addr, "connect failed")
+    except (_errors.NotAuthorizedError, _errors.NotPermittedError):
+        # Likely needs pairing – attempt once with auto-agent
+        print_and_log("[*] Connection requires pairing – attempting auto-pair", LOG__GENERAL)
+        ensure_default_pairing_agent()
+        try:
+            device.pair(timeout=30)
+            device.set_trusted(True)
+            if not device.connect(retry=3):
+                raise _errors.ConnectionError(target_bt_addr, "connect failed after pairing")
+        except dbus.exceptions.DBusException as exc:
+            raise _errors.map_dbus_error(exc) from exc
     except dbus.exceptions.DBusException as exc:
-        raise _errors.map_dbus_error(exc) from exc
+        if exc.get_dbus_name() == "org.freedesktop.DBus.Error.NoReply":
+            print_and_log("[!] Controller appears stalled (NoReply)", LOG__GENERAL)
+            controller_stall_mitigation(target_bt_addr)
+            # one-shot retry
+            try:
+                if device.connect(retry=3):
+                    print_and_log("[+] Recovered after stall workaround", LOG__GENERAL)
+                else:
+                    raise _errors.ConnectionError(target_bt_addr, "connect failed after stall workaround")
+            except Exception:
+                raise _errors.map_dbus_error(exc) from exc
+        else:
+            raise _errors.map_dbus_error(exc) from exc
 
     # ------------------------------------------------------------------
     # 2. Wait for service resolution
