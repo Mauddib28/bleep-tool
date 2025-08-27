@@ -29,6 +29,9 @@ python -m bleep.blectf
 #### Debug Mode:
 python -m bleep.modes.debug
 
+#### User Mode:
+python -m bleep.cli user --menu
+
 #### Help Menu
 python -m bleep --help   # top-level help / version
 
