@@ -1,34 +1,30 @@
-## v2.0.6 – Enumeration helper enhancements (2025-07-24)
-• build_payload_iterator now supports alt, repeat:<byte>:<len>, hex:<bytes> patterns.
-• brute_write_range respects ROE flags gracefully (logs + skip instead of raising).
-• User-mode quick-start guide and helper docs added.
-
-## v2.0.7 – User Mode Completion (2025-07-25)
-### Fixed
-* **Debug Mode** – Fixed "services" command to properly handle Service objects in `_get_handle_from_dict()` function, resolving the "argument of type 'Service' is not iterable" error.
-* **Debug Mode** – Fixed error in property monitor callback when disconnecting from a device while monitoring is active.
-* **Error Handling** – Standardized error handling across the codebase with the new `BlueZErrorHandler` class:
-  * User-friendly error messages with contextual information
-  * Automatic reconnection logic for common disconnection issues
-  * Enhanced defensive programming patterns to prevent crashes
-  * Detailed logging of error causes and contexts
-  * Controller stall detection and mitigation
-* **User Mode** – Fixed import error in `user.py` module by updating references from `SignalFilterRule` to `SignalFilter` to match the actual class name in `signals.capture_config.py`
-* **User Mode** – Fixed connection error by correctly unpacking the 4-tuple returned from `connect_and_enumerate__bluetooth__low_energy` function
-* **User Mode** – Fixed service display error by updating the code to handle the dictionary structure of services instead of expecting a list of service objects
-* **User Mode** – Added helper methods to device_le.py that leverage existing Service objects for proper service and characteristic access
-* **User Mode** – Updated service display to correctly show actual services using proper BlueZ object access patterns
-* **User Mode** – Added Brute-Write functionality to the characteristic actions menu for writable characteristics
-* **User Mode** – Completed comprehensive testing of UI functionality against multiple device types, ensuring robust operation across different Bluetooth implementations
-* **User Mode** – Fixed signal capture configuration functionality by properly initializing SignalCaptureConfig with required parameters and using correct API methods
-* **User Mode** – Fixed SignalAction creation in signal capture configuration by using the correct parameter names and ActionType enum values
-* **User Mode** – Fixed filter rule addition in signal capture configuration to correctly use ActionType enum
-* **User Mode** – Fixed signal type selection in filter rules by using the proper SignalType enum values
+## v2.1.4 – BLE CTF Mode Enhancement (2025-07-26)
 ### Added
-* **Documentation** – CLI quick-start now lists the `aoi` command; `todo_tracker.md` expanded with detailed AoI workflow subtasks.
-* Observation DB now stores characteristic value history (`char_history` table). Values are logged automatically during multi-read operations.
-* CLI `db` command: `--fields` filter for `list` and new `timeline` sub-command.
-* **Documentation** – CLI quick-start updated accordingly; `todo_tracker.md` expanded with detailed AoI workflow subtasks.
+* **BLE CTF Mode** – Enhanced with automated flag discovery and solving capabilities:
+  * Intelligent pattern recognition for various flag formats and challenge types
+  * Automatic solution generation with confidence scoring
+  * Visual representation of flag status and progress
+  * CLI integration for easy command-line usage
+  * Comprehensive documentation in `docs/ble_ctf_mode.md`
+* **BLE CTF Mode** – Added ability to write to any characteristic with the `write-char` command:
+  * Supports writing to any characteristic by name or handle
+  * Allows direct interaction with specific characteristics for advanced testing
+  * Enables manual flag solving with precise control over values
+* **BLE CTF Mode** – Added flexible data format options for writing values:
+  * New `write-hex` command to write hex strings as raw bytes to Flag-Write
+  * New `write-byte` command to write single byte values to Flag-Write
+  * New `write-char-hex` command to write hex strings as raw bytes to any characteristic
+  * New `write-char-byte` command to write single byte values to any characteristic
+  * Auto-detection of hex strings in auto-solve mode for proper byte conversion
+
+### Fixed
+* **BLE CTF Mode** – Fixed D-Bus signature errors when reading and writing characteristics by properly specifying the signature for empty option dictionaries
+* **BLE CTF Mode** – Reduced debug log noise by suppressing expected D-Bus errors (UnknownObject, bus attribute, and signature guessing) during direct handle access attempts
+* **BLE CTF Mode** – Fixed mismatch between flag solutions and actual required values by improving pattern extraction and adding solution verification
+* **BLE CTF Mode** – Enhanced visualization to indicate when solutions are found but not verified by checking the actual score
+
+## v2.1.3 – User Mode Completion (2025-07-25)
+### Added
 * **User Mode** – Complete implementation of user-friendly interface for Bluetooth exploration:
   * Menu-driven interface for interactive device interaction
   * Simplified device discovery and connection workflow
@@ -61,16 +57,45 @@
   * Example workflows for common use cases
   * Detailed documentation in `docs/signal_capture.md`
 
+### Fixed
+* **Debug Mode** – Fixed "services" command to properly handle Service objects in `_get_handle_from_dict()` function, resolving the "argument of type 'Service' is not iterable" error.
+* **Debug Mode** – Fixed error in property monitor callback when disconnecting from a device while monitoring is active.
+* **Error Handling** – Standardized error handling across the codebase with the new `BlueZErrorHandler` class:
+  * User-friendly error messages with contextual information
+  * Automatic reconnection logic for common disconnection issues
+  * Enhanced defensive programming patterns to prevent crashes
+  * Detailed logging of error causes and contexts
+  * Controller stall detection and mitigation
+* **User Mode** – Fixed import error in `user.py` module by updating references from `SignalFilterRule` to `SignalFilter` to match the actual class name in `signals.capture_config.py`
+* **User Mode** – Fixed connection error by correctly unpacking the 4-tuple returned from `connect_and_enumerate__bluetooth__low_energy` function
+* **User Mode** – Fixed service display error by updating the code to handle the dictionary structure of services instead of expecting a list of service objects
+* **User Mode** – Added helper methods to device_le.py that leverage existing Service objects for proper service and characteristic access
+* **User Mode** – Updated service display to correctly show actual services using proper BlueZ object access patterns
+* **User Mode** – Added Brute-Write functionality to the characteristic actions menu for writable characteristics
+* **User Mode** – Completed comprehensive testing of UI functionality against multiple device types, ensuring robust operation across different Bluetooth implementations
+* **User Mode** – Fixed signal capture configuration functionality by properly initializing SignalCaptureConfig with required parameters and using correct API methods
+* **User Mode** – Fixed SignalAction creation in signal capture configuration by using the correct parameter names and ActionType enum values
+* **User Mode** – Fixed filter rule addition in signal capture configuration to correctly use ActionType enum
+* **User Mode** – Fixed signal type selection in filter rules by using the proper SignalType enum values
+
+## v2.1.2 – Database and CLI Enhancements (2025-07-24)
+### Added
+* **Documentation** – CLI quick-start now lists the `aoi` command; `todo_tracker.md` expanded with detailed AoI workflow subtasks.
+* **Observation DB** – Now stores characteristic value history (`char_history` table). Values are logged automatically during multi-read operations.
+* **CLI** – Enhanced with new commands:
+  * `db` command with `--fields` filter for `list` and new `timeline` sub-command
+  * Enumeration helper enhancements:
+    * `build_payload_iterator` now supports alt, repeat:<byte>:<len>, hex:<bytes> patterns
+    * `brute_write_range` respects ROE flags gracefully (logs + skip instead of raising)
+* **Documentation** – User-mode quick-start guide and helper docs added
+
 ### Changed
 * **Database Schema** – Upgraded to v2 schema, renaming columns to avoid Python keyword conflicts:
   * `class` → `device_class` in devices table
   * `state` → `transport_state` in media_transports table
 * **Documentation** – Updated observation_db.md with schema versioning information and filtering examples.
 
----
-
-## v2.0.5 – Media layer expansion
-
+## v2.1.1 – Media Layer Expansion (2025-07-23)
 ### Added
 - Media-layer refactor complete:
   - `MediaService` wrapper (org.bluez.Media1) for endpoint/player registration.
@@ -84,15 +109,12 @@
 ### Changed
 - `modes/media.py` list command prints concise view by default, retains old behaviour.
 
----
-
-## v2.0.4 – 2025-07-19
-
+## v2.1.0 – Bluetooth Classic Support (2025-07-22)
 ### Added
 - Interactive *Debug* mode support for Classic Bluetooth (`cscan`, `cconnect`, `cservices`).
 - `classic-ping` timeout control and robust RTT parsing.
 - **Native SDP fast-path** via D-Bus `GetServiceRecords`; falls back to *sdptool* when missing.
-- **classic_rfccomm_open()** helper for generic RFCOMM sockets (bc-16).
+- **classic_rfccomm_open()** helper for generic RFCOMM sockets.
 - Integration test suite for Classic discovery + BLE-CTF workflow; full pytest suite now passes.
 
 ### Fixed

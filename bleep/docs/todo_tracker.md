@@ -144,12 +144,14 @@ This page aggregates open tasks referenced across the project so contributors ha
 
 ## Specialized Testing Modes
 
-- [ ] **BLE CTF Mode Completion**
-  - [ ] Implement automated flag discovery patterns
-  - [ ] Create CTF-specific visualization of device state
-  - [ ] Add automated solve strategies for common challenge types
-  - [ ] Document CTF mode usage and extension points
-  - [ ] Validate against known CTF devices
+- [x] **BLE CTF Mode Completion**
+  - [x] Implement automated flag discovery patterns
+  - [x] Create CTF-specific visualization of device state
+  - [x] Add automated solve strategies for common challenge types
+  - [x] Document CTF mode usage and extension points
+  - [x] Validate against known CTF devices
+  - [x] Add ability to write to any characteristic (not just Flag-Write)
+  - [x] Add flexible data format options for writing values (hex, byte, string)
 
 - [ ] **Pico-W Testing Mode**
   - [ ] Research Pico W BLE implementation specifics

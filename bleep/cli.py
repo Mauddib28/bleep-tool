@@ -139,6 +139,19 @@ def parse_args(args=None):
     cping_parser.add_argument("address", help="Target MAC address")
     cping_parser.add_argument("--count", type=int, default=3, help="Echo count")
     cping_parser.add_argument("--timeout", type=int, default=13, help="Seconds before aborting l2ping command")
+    
+    # BLE CTF mode
+    ctf_parser = subparsers.add_parser("ctf", help="BLE CTF challenge solver and analyzer")
+    ctf_parser.add_argument("--device", type=str, default="CC:50:E3:B6:BC:A6", 
+                           help="MAC address of BLE CTF device (default: CC:50:E3:B6:BC:A6)")
+    ctf_parser.add_argument("--discover", action="store_true", 
+                           help="Automatically discover and analyze flags")
+    ctf_parser.add_argument("--solve", action="store_true", 
+                           help="Automatically solve all flags")
+    ctf_parser.add_argument("--visualize", action="store_true", 
+                           help="Generate a visual representation of flag status")
+    ctf_parser.add_argument("--interactive", action="store_true", 
+                           help="Start interactive CTF shell")
 
     return parser.parse_args(args)
 
@@ -583,6 +596,46 @@ def main(args=None):
                 return 1
             print(f"Average RTT {rtt:.1f} ms")
             return 0
+            
+        elif args.mode == "ctf":
+            from bleep.ble_ops.ctf import ble_ctf__scan_and_enumeration
+            from bleep.ble_ops.ctf_discovery import discover_flags, auto_solve_flags, generate_flag_visualization
+            from bleep.modes.blectf import main as _blectf_main
+            
+            device_mac = args.device
+            
+            if args.interactive:
+                # Run the interactive CTF shell
+                return _blectf_main() or 0
+            
+            try:
+                # Connect to the device
+                print(f"[*] Connecting to BLE CTF device ({device_mac})...")
+                device, _ = ble_ctf__scan_and_enumeration()
+                print(f"[+] Connected to {device_mac}")
+                
+                # Process command line options
+                if args.discover:
+                    print("[*] Discovering and analyzing flags...")
+                    discover_flags(device)
+                
+                if args.solve:
+                    print("[*] Automatically solving flags...")
+                    auto_solve_flags(device)
+                
+                if args.visualize:
+                    print("[*] Generating flag visualization...")
+                    visualization = generate_flag_visualization(device)
+                    print(visualization)
+                
+                # If no specific action was requested, run in interactive mode
+                if not (args.discover or args.solve or args.visualize):
+                    return _blectf_main() or 0
+                
+                return 0
+            except Exception as e:
+                print(f"[!] BLE CTF error: {e}", file=sys.stderr)
+                return 1
 
         else:  # interactive (default)
             from bleep.modes.interactive import main as _interactive_main

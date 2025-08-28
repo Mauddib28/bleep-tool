@@ -24,7 +24,13 @@ from bleep.ble_ops.ctf import (
     BLE_CTF__CHARACTERISTIC_FLAGS, 
     ble_ctf__scan_and_enumeration,
     ble_ctf__read_characteristic,
-    ble_ctf__write_flag
+    ble_ctf__write_flag,
+    ble_ctf__write_characteristic
+)
+from bleep.ble_ops.ctf_discovery import (
+    discover_flags,
+    auto_solve_flags,
+    generate_flag_visualization
 )
 
 # -----------------------------------------------------------------------------
@@ -133,6 +139,190 @@ def write_flag(device: Any, value: Union[str, int, bytes]) -> None:
             print_and_log(f"[*] Writing '{value}' to Flag-Write...", LOG__GENERAL)
             
         ble_ctf__write_flag(value, device)
+        print_and_log("[+] Write successful", LOG__GENERAL)
+    except Exception as e:
+        print_and_log(f"[-] Write failed: {e}", LOG__GENERAL)
+        raise
+        
+def write_flag_hex(device: Any, hex_value: str) -> None:
+    """Write a hex string as raw bytes to the Flag-Write characteristic.
+    
+    Parameters
+    ----------
+    device
+        The connected BLE device
+    hex_value
+        Hex string to convert to bytes and write (e.g., "d205303e099ceff44835")
+    """
+    try:
+        # Clean up the hex string (remove 0x prefix, spaces, etc.)
+        hex_value = hex_value.lower().replace("0x", "").replace(" ", "")
+        
+        # Convert to bytes
+        try:
+            byte_value = bytes.fromhex(hex_value)
+            print_and_log(f"[*] Writing hex value '{hex_value}' as {len(byte_value)} bytes to Flag-Write...", LOG__GENERAL)
+            ble_ctf__write_flag(byte_value, device)
+            print_and_log("[+] Write successful", LOG__GENERAL)
+        except ValueError:
+            print_and_log(f"[-] Invalid hex string: {hex_value}", LOG__GENERAL)
+            raise ValueError(f"Invalid hex string: {hex_value}")
+    except Exception as e:
+        print_and_log(f"[-] Write failed: {e}", LOG__GENERAL)
+        raise
+        
+def write_flag_byte(device: Any, byte_value: Union[str, int]) -> None:
+    """Write a single byte value to the Flag-Write characteristic.
+    
+    Parameters
+    ----------
+    device
+        The connected BLE device
+    byte_value
+        Single byte value (0-255) to write
+    """
+    try:
+        # Convert string to int if needed
+        if isinstance(byte_value, str):
+            try:
+                # Handle hex notation
+                if byte_value.lower().startswith("0x"):
+                    byte_int = int(byte_value, 16)
+                else:
+                    byte_int = int(byte_value)
+            except ValueError:
+                print_and_log(f"[-] Invalid byte value: {byte_value}", LOG__GENERAL)
+                raise ValueError(f"Invalid byte value: {byte_value}")
+        else:
+            byte_int = byte_value
+            
+        # Validate range
+        if byte_int < 0 or byte_int > 255:
+            print_and_log(f"[-] Byte value out of range (0-255): {byte_int}", LOG__GENERAL)
+            raise ValueError(f"Byte value out of range (0-255): {byte_int}")
+            
+        # Convert to bytes
+        byte_value = bytes([byte_int])
+        print_and_log(f"[*] Writing single byte value {byte_int} (0x{byte_int:02x}) to Flag-Write...", LOG__GENERAL)
+        ble_ctf__write_flag(byte_value, device)
+        print_and_log("[+] Write successful", LOG__GENERAL)
+    except Exception as e:
+        print_and_log(f"[-] Write failed: {e}", LOG__GENERAL)
+        raise
+        
+def write_characteristic(device: Any, char_name: str, value: Union[str, int, bytes]) -> None:
+    """Write a value to any characteristic.
+    
+    Parameters
+    ----------
+    device
+        The connected BLE device
+    char_name
+        Name of the characteristic (e.g., "Flag-02") or characteristic handle (e.g., "char002d")
+    value
+        Value to write (string, integer, or bytes)
+    """
+    try:
+        # If it's a flag name, convert to characteristic handle
+        if char_name in BLE_CTF__CHARACTERISTIC_FLAGS:
+            char_handle = BLE_CTF__CHARACTERISTIC_FLAGS[char_name]
+            print_and_log(f"[*] Writing to {char_name} ({char_handle})...", LOG__GENERAL)
+        else:
+            char_handle = char_name
+            print_and_log(f"[*] Writing to {char_handle}...", LOG__GENERAL)
+            
+        if isinstance(value, int):
+            print_and_log(f"[*] Writing integer value {value} (0x{value:02x})", LOG__GENERAL)
+        else:
+            print_and_log(f"[*] Writing value: '{value}'", LOG__GENERAL)
+            
+        ble_ctf__write_characteristic(char_handle, value, device)
+        print_and_log("[+] Write successful", LOG__GENERAL)
+    except Exception as e:
+        print_and_log(f"[-] Write failed: {e}", LOG__GENERAL)
+        raise
+        
+def write_characteristic_hex(device: Any, char_name: str, hex_value: str) -> None:
+    """Write a hex string as raw bytes to any characteristic.
+    
+    Parameters
+    ----------
+    device
+        The connected BLE device
+    char_name
+        Name of the characteristic (e.g., "Flag-02") or characteristic handle (e.g., "char002d")
+    hex_value
+        Hex string to convert to bytes and write (e.g., "d205303e099ceff44835")
+    """
+    try:
+        # If it's a flag name, convert to characteristic handle
+        if char_name in BLE_CTF__CHARACTERISTIC_FLAGS:
+            char_handle = BLE_CTF__CHARACTERISTIC_FLAGS[char_name]
+            print_and_log(f"[*] Writing to {char_name} ({char_handle})...", LOG__GENERAL)
+        else:
+            char_handle = char_name
+            print_and_log(f"[*] Writing to {char_handle}...", LOG__GENERAL)
+            
+        # Clean up the hex string (remove 0x prefix, spaces, etc.)
+        hex_value = hex_value.lower().replace("0x", "").replace(" ", "")
+        
+        # Convert to bytes
+        try:
+            byte_value = bytes.fromhex(hex_value)
+            print_and_log(f"[*] Writing hex value '{hex_value}' as {len(byte_value)} bytes", LOG__GENERAL)
+            ble_ctf__write_characteristic(char_handle, byte_value, device)
+            print_and_log("[+] Write successful", LOG__GENERAL)
+        except ValueError:
+            print_and_log(f"[-] Invalid hex string: {hex_value}", LOG__GENERAL)
+            raise ValueError(f"Invalid hex string: {hex_value}")
+    except Exception as e:
+        print_and_log(f"[-] Write failed: {e}", LOG__GENERAL)
+        raise
+        
+def write_characteristic_byte(device: Any, char_name: str, byte_value: Union[str, int]) -> None:
+    """Write a single byte value to any characteristic.
+    
+    Parameters
+    ----------
+    device
+        The connected BLE device
+    char_name
+        Name of the characteristic (e.g., "Flag-02") or characteristic handle (e.g., "char002d")
+    byte_value
+        Single byte value (0-255) to write
+    """
+    try:
+        # If it's a flag name, convert to characteristic handle
+        if char_name in BLE_CTF__CHARACTERISTIC_FLAGS:
+            char_handle = BLE_CTF__CHARACTERISTIC_FLAGS[char_name]
+            print_and_log(f"[*] Writing to {char_name} ({char_handle})...", LOG__GENERAL)
+        else:
+            char_handle = char_name
+            print_and_log(f"[*] Writing to {char_handle}...", LOG__GENERAL)
+            
+        # Convert string to int if needed
+        if isinstance(byte_value, str):
+            try:
+                # Handle hex notation
+                if byte_value.lower().startswith("0x"):
+                    byte_int = int(byte_value, 16)
+                else:
+                    byte_int = int(byte_value)
+            except ValueError:
+                print_and_log(f"[-] Invalid byte value: {byte_value}", LOG__GENERAL)
+                raise ValueError(f"Invalid byte value: {byte_value}")
+        else:
+            byte_int = byte_value
+            
+        # Validate range
+        if byte_int < 0 or byte_int > 255:
+            print_and_log(f"[-] Byte value out of range (0-255): {byte_int}", LOG__GENERAL)
+            raise ValueError(f"Byte value out of range (0-255): {byte_int}")
+            
+        # Convert to bytes
+        byte_value = bytes([byte_int])
+        print_and_log(f"[*] Writing single byte value {byte_int} (0x{byte_int:02x})", LOG__GENERAL)
+        ble_ctf__write_characteristic(char_handle, byte_value, device)
         print_and_log("[+] Write successful", LOG__GENERAL)
     except Exception as e:
         print_and_log(f"[-] Write failed: {e}", LOG__GENERAL)
@@ -637,9 +827,17 @@ BLE CTF Mode - Commands:
   connect             Connect to the BLE CTF device
   read <flag>         Read a specific flag (e.g., Flag-02 or char002d)
   write <value>       Write a value to Flag-Write characteristic
+  write-hex <hex>     Write a hex value as raw bytes to Flag-Write
+  write-byte <byte>   Write a single byte value (0-255) to Flag-Write
+  write-char <char> <value>  Write a value to any characteristic
+  write-char-hex <char> <hex>  Write a hex value as raw bytes to any characteristic
+  write-char-byte <char> <byte>  Write a single byte value to any characteristic
   score               Read the current score
   solve <flag>        Solve a specific challenge (e.g., Flag-02)
   solve-all           Attempt to solve all available challenges
+  discover            Automatically discover and analyze flags
+  auto-solve          Automatically discover and solve all flags
+  visualize           Generate a visual representation of flag status
   list                List all available flags
   quit                Exit the program
 """)
@@ -720,6 +918,82 @@ def main():
                 except Exception as e:
                     print_and_log(f"[-] Write failed: {e}", LOG__GENERAL)
                     
+            elif cmd == 'write-hex':
+                if not device:
+                    print_and_log("[-] Not connected to any device", LOG__GENERAL)
+                    continue
+                    
+                if not args:
+                    print_and_log("[-] Please specify a hex value to write", LOG__GENERAL)
+                    continue
+                    
+                try:
+                    write_flag_hex(device, args[0])
+                except Exception as e:
+                    print_and_log(f"[-] Write failed: {e}", LOG__GENERAL)
+                    
+            elif cmd == 'write-byte':
+                if not device:
+                    print_and_log("[-] Not connected to any device", LOG__GENERAL)
+                    continue
+                    
+                if not args:
+                    print_and_log("[-] Please specify a byte value to write (0-255)", LOG__GENERAL)
+                    continue
+                    
+                try:
+                    write_flag_byte(device, args[0])
+                except Exception as e:
+                    print_and_log(f"[-] Write failed: {e}", LOG__GENERAL)
+                    
+            elif cmd == 'write-char':
+                if not device:
+                    print_and_log("[-] Not connected to any device", LOG__GENERAL)
+                    continue
+                    
+                if len(args) < 2:
+                    print_and_log("[-] Please specify both characteristic and value (e.g., write-char char0031 test)", LOG__GENERAL)
+                    continue
+                    
+                try:
+                    char_name = args[0]
+                    value = args[1]
+                    write_characteristic(device, char_name, value)
+                except Exception as e:
+                    print_and_log(f"[-] Write to characteristic failed: {e}", LOG__GENERAL)
+                    
+            elif cmd == 'write-char-hex':
+                if not device:
+                    print_and_log("[-] Not connected to any device", LOG__GENERAL)
+                    continue
+                    
+                if len(args) < 2:
+                    print_and_log("[-] Please specify both characteristic and hex value (e.g., write-char-hex char0031 d205303e099ceff44835)", LOG__GENERAL)
+                    continue
+                    
+                try:
+                    char_name = args[0]
+                    hex_value = args[1]
+                    write_characteristic_hex(device, char_name, hex_value)
+                except Exception as e:
+                    print_and_log(f"[-] Write to characteristic failed: {e}", LOG__GENERAL)
+                    
+            elif cmd == 'write-char-byte':
+                if not device:
+                    print_and_log("[-] Not connected to any device", LOG__GENERAL)
+                    continue
+                    
+                if len(args) < 2:
+                    print_and_log("[-] Please specify both characteristic and byte value (e.g., write-char-byte char0031 7)", LOG__GENERAL)
+                    continue
+                    
+                try:
+                    char_name = args[0]
+                    byte_value = args[1]
+                    write_characteristic_byte(device, char_name, byte_value)
+                except Exception as e:
+                    print_and_log(f"[-] Write to characteristic failed: {e}", LOG__GENERAL)
+                    
             elif cmd == 'score':
                 if not device:
                     print_and_log("[-] Not connected to any device", LOG__GENERAL)
@@ -753,6 +1027,39 @@ def main():
                     solve_all(device)
                 except Exception as e:
                     print_and_log(f"[-] Failed to solve challenges: {e}", LOG__GENERAL)
+            
+            elif cmd == 'discover':
+                if not device:
+                    print_and_log("[-] Not connected to any device", LOG__GENERAL)
+                    continue
+                    
+                try:
+                    print_and_log("[*] Automatically discovering and analyzing flags...", LOG__GENERAL)
+                    discover_flags(device)
+                except Exception as e:
+                    print_and_log(f"[-] Flag discovery failed: {e}", LOG__GENERAL)
+            
+            elif cmd == 'auto-solve':
+                if not device:
+                    print_and_log("[-] Not connected to any device", LOG__GENERAL)
+                    continue
+                    
+                try:
+                    print_and_log("[*] Automatically solving all flags...", LOG__GENERAL)
+                    auto_solve_flags(device)
+                except Exception as e:
+                    print_and_log(f"[-] Auto-solve failed: {e}", LOG__GENERAL)
+            
+            elif cmd == 'visualize':
+                if not device:
+                    print_and_log("[-] Not connected to any device", LOG__GENERAL)
+                    continue
+                    
+                try:
+                    visualization = generate_flag_visualization(device)
+                    print(visualization)
+                except Exception as e:
+                    print_and_log(f"[-] Visualization failed: {e}", LOG__GENERAL)
                     
             elif cmd == 'list':
                 _list_flags()

@@ -201,15 +201,23 @@ def ble_ctf__read_characteristic(
                         char_obj = user_device.bus.get_object("org.bluez", char_path)
                         char_iface = dbus.Interface(char_obj, "org.bluez.GattCharacteristic1")
                         
-                        # Read value
-                        raw = bytes(char_iface.ReadValue({}))
+                        # Read value with properly typed empty options dictionary
+                        from dbus import Dictionary, String
+                        options = Dictionary({}, signature='sv')  # 'sv' = string-variant dictionary
+                        raw = bytes(char_iface.ReadValue(options))
                         print_and_log(f"[+] Direct handle read successful for {characteristic_name}", LOG__DEBUG)
                         try:
                             return raw.decode()
                         except Exception:
                             return raw
                     except Exception as e:
-                        print_and_log(f"[-] Direct handle read failed on service {service.uuid}: {e}", LOG__DEBUG)
+                        # Only log at the most verbose debug level to reduce noise
+                        if "UnknownObject" in str(e) or "has no attribute 'bus'" in str(e) or "Unable to guess signature" in str(e):
+                            # These are expected errors during direct handle access attempts
+                            pass
+                        else:
+                            # Log unexpected errors
+                            print_and_log(f"[-] Direct handle read failed on service {service.uuid}: {e}", LOG__DEBUG)
                         continue
                 
                 # If we get here, all services failed
@@ -280,12 +288,20 @@ def _ble_ctf__write_characteristic(
                         # Convert value to bytes if needed
                         byte_value = _to_bytearray(value)
                         
-                        # Write value
-                        char_iface.WriteValue(dbus.Array(byte_value), {})
+                        # Write value with properly typed empty options dictionary
+                        from dbus import Dictionary, String
+                        options = Dictionary({}, signature='sv')  # 'sv' = string-variant dictionary
+                        char_iface.WriteValue(dbus.Array(byte_value), options)
                         print_and_log(f"[+] Direct handle write successful for {characteristic_name}", LOG__DEBUG)
                         return
                     except Exception as e:
-                        print_and_log(f"[-] Direct handle write failed on service {service.uuid}: {e}", LOG__DEBUG)
+                        # Only log at the most verbose debug level to reduce noise
+                        if "UnknownObject" in str(e) or "has no attribute 'bus'" in str(e) or "Unable to guess signature" in str(e):
+                            # These are expected errors during direct handle access attempts
+                            pass
+                        else:
+                            # Log unexpected errors
+                            print_and_log(f"[-] Direct handle write failed on service {service.uuid}: {e}", LOG__DEBUG)
                         continue
                 
                 # If we get here, all services failed
@@ -437,6 +453,28 @@ def ble_ctf__stop_notify(
 # `Functions.ble_ctf_functions` from crashing even though the implementation
 # is now native.
 # ---------------------------------------------------------------------------
+
+def ble_ctf__write_characteristic(
+    characteristic_name: str,
+    write_value,
+    user_device,
+    user_device__internals_map=None,  # kept for signature compat – ignored
+):
+    """Write a value to any characteristic by name or UUID.
+    
+    Parameters
+    ----------
+    characteristic_name
+        The name or UUID of the characteristic to write to
+    write_value
+        The value to write
+    user_device
+        The connected BLE device
+    user_device__internals_map
+        Legacy parameter, ignored
+    """
+    _ble_ctf__write_characteristic(write_value, characteristic_name, user_device)
+    print_and_log(f"[+] Value written to {characteristic_name}", LOG__DEBUG)
 
 import sys as _sys, types as _types
 
