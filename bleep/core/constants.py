@@ -14,3 +14,9 @@ from bluetooth_constants import *  # re-export everything so we stay source-comp
 
 # Pretty-print column width used by several utilities
 PRETTY_PRINT__GATT__FORMAT_LEN_NEW = 7
+
+# Bluetooth device type enumeration
+BT_DEVICE_TYPE_UNKNOWN = "unknown"  # Not enough information to determine type
+BT_DEVICE_TYPE_CLASSIC = "classic"  # BR/EDR (Classic Bluetooth) device
+BT_DEVICE_TYPE_LE = "le"            # Bluetooth Low Energy device
+BT_DEVICE_TYPE_DUAL = "dual"        # Dual-mode device supporting both Classic and LE

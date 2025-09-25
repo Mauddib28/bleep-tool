@@ -32,7 +32,7 @@ _DB_CONN: sqlite3.Connection | None = None
 
 _DB_PATH = Path(os.getenv("BLEEP_DB_PATH", Path.home() / ".bleep" / "observations.db"))
 
-_SCHEMA_VERSION = 2  # Updated to reflect renamed columns
+_SCHEMA_VERSION = 3  # Added explicit device_type field
 
 _SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS devices (
     rssi_max INT,
     first_seen DATETIME,
     last_seen  DATETIME,
-    notes TEXT
+    notes TEXT,
+    device_type TEXT   -- Added in schema v3: 'unknown', 'classic', 'le', or 'dual'
 );
 
 CREATE TABLE IF NOT EXISTS adv_reports (
@@ -142,7 +143,7 @@ CREATE TABLE IF NOT EXISTS media_transports (
 
 
 def _init_db() -> None:
-    """Initialize the database using v2 schema."""
+    """Initialize the database using latest schema."""
     global _DB_CONN
     if _DB_CONN is not None:
         return
@@ -152,19 +153,38 @@ def _init_db() -> None:
     conn.row_factory = sqlite3.Row
     
     with conn:
-        # Create tables with v2 schema
+        # Create tables with current schema
         conn.executescript(_SCHEMA_SQL)
 
-        # Set or update version
+        # Check schema version and migrate if needed
         ver_row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        current_version = ver_row["version"] if ver_row else 0
+        
+        # Migration from v2 to v3 - Add device_type column
+        if current_version == 2:
+            try:
+                # Add device_type column with default "unknown"
+                conn.execute("ALTER TABLE devices ADD COLUMN device_type TEXT DEFAULT 'unknown'")
+                # Attempt to set device types based on available information
+                conn.execute("""
+                    UPDATE devices SET device_type = 
+                    CASE
+                        WHEN device_class IS NOT NULL AND addr_type IS NULL THEN 'classic'
+                        WHEN addr_type = 'random' THEN 'le'
+                        ELSE 'unknown'
+                    END
+                """)
+                current_version = 3
+            except Exception as e:
+                print(f"Migration v2 to v3 failed: {e}")
+
+        # Update schema version
         if not ver_row:
             conn.execute("INSERT INTO schema_version(version) VALUES (?)", (_SCHEMA_VERSION,))
-        elif ver_row["version"] != _SCHEMA_VERSION:
+        elif current_version != _SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
     
     _DB_CONN = conn
-
-# Migration code removed as we now use v2 schema exclusively
 
 
 @contextmanager
@@ -198,16 +218,32 @@ def upsert_device(mac: str, **cols):
         **cols: Column values to set
     """
     now = datetime.utcnow().isoformat()
-    cols.setdefault("last_seen", now)
-        
-    cols_keys = ",".join(cols.keys())
-    placeholders = ",".join("?" for _ in cols)
-    updates = ",".join(f"{k}=excluded.{k}" for k in cols.keys())
     
+    # Always update last_seen timestamp
+    cols.setdefault("last_seen", now)
+    
+    # Check if device already exists
     with _DB_LOCK, _db_cursor() as cur:
+        device_exists = cur.execute("SELECT 1 FROM devices WHERE mac = ?", (mac,)).fetchone() is not None
+        
+        # If device doesn't exist, set first_seen timestamp
+        if not device_exists and "first_seen" not in cols:
+            cols["first_seen"] = now
+        
+        # Prepare SQL statement
+        cols_keys = ",".join(cols.keys())
+        placeholders = ",".join("?" for _ in cols)
+        
+        # For existing devices, don't update first_seen (keep the original value)
+        updates = ",".join(f"{k}=excluded.{k}" for k in cols.keys() if k != "first_seen")
+        if updates:
+            update_clause = f"ON CONFLICT(mac) DO UPDATE SET {updates}"
+        else:
+            update_clause = "ON CONFLICT(mac) DO NOTHING"  # Unlikely case with no fields to update
+        
+        # Execute upsert
         cur.execute(
-            f"INSERT INTO devices(mac,{cols_keys}) VALUES (? ,{placeholders}) "
-            f"ON CONFLICT(mac) DO UPDATE SET {updates}",
+            f"INSERT INTO devices(mac,{cols_keys}) VALUES (? ,{placeholders}) {update_clause}",
             (mac, *cols.values()),
         )
 
@@ -425,9 +461,19 @@ def get_devices(status: str = None, limit: int = 100) -> List[Dict[str, Any]]:
                     # Devices seen in the last 24 hours
                     status_filters.append("last_seen > datetime('now', '-1 day')")
                 elif s == 'ble':
-                    status_filters.append("addr_type IS NOT NULL")
+                    # Use the explicit device_type field for more accurate filtering
+                    # This includes both BLE-only and dual-mode devices
+                    status_filters.append("(device_type = 'le' OR device_type = 'dual')")
                 elif s == 'classic':
-                    status_filters.append("device_class IS NOT NULL")
+                    # Use the explicit device_type field for more accurate filtering
+                    # This includes both Classic-only and dual-mode devices
+                    status_filters.append("(device_type = 'classic' OR device_type = 'dual')")
+                elif s == 'dual':
+                    # Filter for dual-mode devices
+                    status_filters.append("device_type = 'dual'")
+                elif s == 'unknown':
+                    # Filter for devices with unknown type
+                    status_filters.append("device_type = 'unknown' OR device_type IS NULL")
                 elif s == 'media':
                     # Join with media_players to filter devices with media capabilities
                     query = """

@@ -64,33 +64,48 @@ def parse_args(args=None):
     # Media control
     media_ctrl = subparsers.add_parser("media-ctrl", help="Control AVRCP playback and volume")
     media_ctrl.add_argument("address", help="Target MAC address")
-    media_ctrl.add_argument("action", choices=["play", "pause", "stop", "next", "previous", "volume", "info"], help="Control action")
-    media_ctrl.add_argument("--value", type=int, help="Volume value (0-127) when action is 'volume')")
+    media_ctrl.add_argument("action", choices=["play", "pause", "stop", "next", "previous", "volume", "info", "press"], help="Control action")
+    media_ctrl.add_argument("--value", help="Value for commands: volume (0-127) or press (key code, can be hex with 0x prefix)")
 
     # Agent mode
     agent_parser = subparsers.add_parser("agent", help="Run pairing agent")
     agent_parser.add_argument("--mode", choices=["simple", "interactive"], default="simple")
 
     # Explore mode
-    explore_parser = subparsers.add_parser("explore", help="Scan & dump GATT db")
+    explore_parser = subparsers.add_parser("explore", help="Scan & dump GATT database to JSON for offline analysis")
     explore_parser.add_argument("mac", help="Target MAC address")
     explore_parser.add_argument("--out", "--dump-json", dest="out", help="Output JSON file (default stdout)")
     explore_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose characteristic list even with handles")
+    explore_parser.add_argument("--connection-mode", "--conn-mode", dest="connection_mode", choices=["passive", "naggy"], default="passive", 
+                             help="Connection mode: 'passive' (single attempt, default) or 'naggy' (with retries)")
+    explore_parser.add_argument("--timeout", type=int, default=10, help="Scan timeout in seconds (default: 10)")
+    explore_parser.add_argument("--retries", type=int, default=3, help="Number of connection retries in naggy mode (default: 3)")
 
     # DB (observation) commands
     db_parser = subparsers.add_parser("db", help="Query local observation database")
     db_parser.add_argument("action", choices=["list", "show", "export"], help="Action to perform")
     db_parser.add_argument("mac", nargs="?", help="Target MAC for show/export")
     db_parser.add_argument("--out", dest="out", help="Output file for export")
+    db_parser.add_argument("--status", help="Filter devices by status: recent,ble,classic,media (comma-separated)")
+    db_parser.add_argument("--fields", help="Comma-separated list of device fields to print (for list action)")
 
     # Analysis mode
-    analysis_parser = subparsers.add_parser("analyse", help="Post-process JSON dumps")
+    analysis_parser = subparsers.add_parser("analyse", help="Post-process JSON dumps", aliases=["analyze"])
     analysis_parser.add_argument("files", nargs="+", help="JSON dump files to analyse")
+    analysis_parser.add_argument("--detailed", "-d", action="store_true", help="Show detailed analysis including characteristics")
 
     # AoI mode
-    aoi_parser = subparsers.add_parser("aoi", help="Process Assets-of-Interest JSON list")
-    aoi_parser.add_argument("files", nargs="+", help="AoI JSON files")
-    aoi_parser.add_argument("--delay", type=float, default=4.0, help="Delay between devices")
+    aoi_parser = subparsers.add_parser("aoi", help="Process Assets-of-Interest JSON list (supports multiple subcommands)")
+    aoi_parser.add_argument("files", nargs="*", 
+        help="First argument can be a subcommand (scan, analyze, list, report, export) followed by files or options")
+    aoi_parser.add_argument("-f", "--file", dest="test_file", help="AoI test file to scan")
+    aoi_parser.add_argument("--delay", type=float, default=4.0, help="Delay between devices (for scan subcommand)")
+    # Options for analyze/report/export subcommands
+    aoi_parser.add_argument("--address", "-a", help="MAC address for analyze/report/export subcommands")
+    aoi_parser.add_argument("--deep", action="store_true", help="Perform deeper analysis (for analyze subcommand)")
+    aoi_parser.add_argument("--timeout", type=int, help="Analysis timeout in seconds (for analyze subcommand)")
+    aoi_parser.add_argument("--format", choices=["markdown", "json", "text"], help="Report format (for report subcommand)")
+    aoi_parser.add_argument("--output", "-o", help="Output file/directory (for report/export subcommands)")
 
     # Signal mode
     sig_parser = subparsers.add_parser("signal", help="Listen for notifications")
@@ -118,6 +133,7 @@ def parse_args(args=None):
     )
     cscan_parser.add_argument("--rssi", type=int, help="RSSI threshold: ignore devices weaker than this (dBm)")
     cscan_parser.add_argument("--pathloss", type=int, help="Path-loss threshold in dB (BlueZ >=5.59)")
+    cscan_parser.add_argument("--debug", "-d", action="store_true", help="Enable verbose debug output")
 
     # Classic enumerate
     cen_parser = subparsers.add_parser("classic-enum", help="Enumerate Classic RFCOMM services")
@@ -159,7 +175,7 @@ def parse_args(args=None):
 def main(args=None):
     """Main entry point for BLEEP."""
     args = parse_args(args)
-
+    
     # Optional: honour BLEEP_LOG_LEVEL env var so users can tweak verbosity
     import logging as _logging, os as _os
 
@@ -426,7 +442,24 @@ def main(args=None):
 
         elif args.mode == "media-ctrl":
             from bleep.modes.media import control_media_device as _ctrl
-            success = _ctrl(args.address, args.action, args.value)
+            
+            # Convert value based on the action type
+            value = None
+            if args.value is not None:
+                try:
+                    if args.action == "volume":
+                        value = int(args.value)
+                    elif args.action == "press":
+                        # Handle hex values with 0x prefix
+                        if args.value.lower().startswith("0x"):
+                            value = int(args.value, 16)
+                        else:
+                            value = int(args.value)
+                except ValueError as e:
+                    print(f"Error parsing value: {e}", file=sys.stderr)
+                    return 1
+            
+            success = _ctrl(args.address, args.action, value)
             return 0 if success else 1
 
         elif args.mode == "db":
@@ -436,6 +469,11 @@ def main(args=None):
                 subargv.append(args.mac)
             if args.out:
                 subargv += ["--out", args.out]
+            if args.action == "list":
+                if getattr(args, "status", None):
+                    subargv += ["--status", args.status]
+                if getattr(args, "fields", None):
+                    subargv += ["--fields", args.fields]
             return _db_mode.main(subargv)
 
         elif args.mode == "agent":
@@ -457,24 +495,112 @@ def main(args=None):
             return _user_main(opts) or 0
 
         elif args.mode == "explore":
-            from bleep.modes.exploration import main as _exp_main
-
-            opts = ["--target", args.mac]
+            # For the explore command, we need to override sys.argv
+            import sys
+            original_argv = sys.argv
+            
+            # Build new argv for the exploration module
+            new_argv = ["bleep-explore"]
+            new_argv.extend(["-d", args.mac])
+            
+            # Set timeout parameter (defaults to 10 seconds)
+            timeout = getattr(args, "timeout", 10)
+            new_argv.extend(["-t", str(timeout)])
+            
+            # Use specified connection mode and retries
+            connection_mode = getattr(args, "connection_mode", "passive")
+            new_argv.extend(["-m", connection_mode])
+            
+            if connection_mode == "naggy":
+                retries = getattr(args, "retries", 3)
+                new_argv.extend(["-r", str(retries)])
+            
             if args.out:
-                opts += ["--out", args.out]
+                new_argv.extend(["--out", args.out])
             if args.verbose:
-                opts.append("--verbose")
-            return _exp_main(opts) or 0
+                new_argv.append("--verbose")
+            
+            # Override sys.argv temporarily
+            sys.argv = new_argv
+            
+            # Import and run the exploration main function
+            try:
+                from bleep.modes.exploration import main as _exp_main
+                result = _exp_main() or 0
+            finally:
+                # Restore original sys.argv
+                sys.argv = original_argv
+                
+            return result
 
-        elif args.mode == "analyse":
+        elif args.mode in ["analyse", "analyze"]:
             from bleep.modes.analysis import main as _an_main
-
-            return _an_main(args.files) or 0
+            
+            # Build arguments list for the analysis module
+            analysis_args = args.files.copy()
+            if args.detailed:
+                analysis_args.append("--detailed")
+            
+            return _an_main(analysis_args) or 0
 
         elif args.mode == "aoi":
             from bleep.modes.aoi import main as _aoi_main
+            import sys  # Ensure sys is available in this scope
 
-            opts = args.files + ["--delay", str(args.delay)]
+            # Check if the first argument is a recognized subcommand
+            known_subcommands = ["scan", "analyze", "list", "report", "export"]
+            
+            # Initialize opts list for arguments to pass to _aoi_main
+            opts = []
+            
+            # Process AOI subcommands
+            if args.files and args.files[0] in known_subcommands:
+                # Use the first argument as the subcommand
+                subcommand = args.files[0]
+                opts = [subcommand] + list(args.files[1:])
+                
+                # Add appropriate options based on subcommand
+                if subcommand == "scan" and hasattr(args, 'delay'):
+                    opts += ["--delay", str(args.delay)]
+                
+                # For analyze subcommand, pass the address and other options
+                if subcommand == "analyze" and args.address:
+                    opts += ["--address", args.address]
+                    if args.deep:
+                        opts += ["--deep"]
+                    if args.timeout:
+                        opts += ["--timeout", str(args.timeout)]
+                
+                # For report subcommand
+                if subcommand == "report" and args.address:
+                    opts += ["--address", args.address]
+                    if args.format:
+                        opts += ["--format", args.format]
+                    if args.output:
+                        opts += ["--output", args.output]
+                        
+                # For export subcommand
+                if subcommand == "export" and args.address:
+                    opts += ["--address", args.address]
+                    if args.output:
+                        opts += ["--output", args.output]
+            else:
+                # Combine positional files and file parameter
+                files_list = list(args.files)
+                if args.test_file:
+                    files_list.append(args.test_file)
+                    
+                if not files_list:
+                    print("Error: No files specified or valid subcommand provided.", file=sys.stderr)
+                    print("Available subcommands: scan, analyze, list, report, export", file=sys.stderr)
+                    return 1
+                    
+                # The AOI module expects a subcommand first, so we add "scan" as the default subcommand when files are provided
+                opts = ["scan"] + files_list
+                if hasattr(args, 'delay'):
+                    opts += ["--delay", str(args.delay)]
+            
+            # Pass all arguments to the AOI main function
             return _aoi_main(opts) or 0
 
         elif args.mode == "signal":
@@ -499,7 +625,7 @@ def main(args=None):
             # device-manager wrappers (which cause a circular import during
             # classic-only operations).
             from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
-            from bleep.core.log import print_and_log, LOG__DEBUG
+            from bleep.core.log import print_and_log, LOG__DEBUG, LOG__GENERAL
             import dbus
 
             adapter = _Adapter()
@@ -507,40 +633,85 @@ def main(args=None):
                 print("[!] Bluetooth adapter not ready", file=sys.stderr)
                 return 1
 
+            # Enable debug output if requested
+            debug_mode = getattr(args, "debug", False)
+            if debug_mode:
+                print_and_log("[classic-scan] Debug mode enabled", LOG__GENERAL)
+                print_and_log("[classic-scan] Using adapter: " + adapter.adapter_path, LOG__GENERAL)
+
             # Build discovery filter dict
             _f = {"Transport": "bredr"}
             if getattr(args, "uuid", None):
                 uuids = [u.strip().lower() for u in args.uuid.split(",") if u.strip()]
                 if uuids:
                     _f["UUIDs"] = dbus.Array(uuids, signature="s")  # type: ignore[name-defined]
+                    if debug_mode:
+                        print_and_log(f"[classic-scan] Filtering for UUIDs: {', '.join(uuids)}", LOG__GENERAL)
             if args.rssi is not None:
                 _f["RSSI"] = dbus.Int16(args.rssi)  # type: ignore[name-defined]
+                if debug_mode:
+                    print_and_log(f"[classic-scan] RSSI threshold set to: {args.rssi} dBm", LOG__GENERAL)
             if args.pathloss is not None:
                 _f["Pathloss"] = dbus.UInt16(args.pathloss)  # type: ignore[name-defined]
+                if debug_mode:
+                    print_and_log(f"[classic-scan] Pathloss threshold set to: {args.pathloss} dB", LOG__GENERAL)
 
             try:
                 adapter.set_discovery_filter(_f)
-                print_and_log("[classic-scan] Applied discovery filter: " + str(_f), LOG__DEBUG)
+                log_level = LOG__GENERAL if debug_mode else LOG__DEBUG
+                print_and_log("[classic-scan] Applied discovery filter: " + str(_f), log_level)
             except Exception as exc:
                 # Older BlueZ versions may lack SetDiscoveryFilter – continue but log.
+                log_level = LOG__GENERAL if debug_mode else LOG__DEBUG
                 print_and_log(
                     f"[classic-scan] SetDiscoveryFilter failed ({exc.__class__.__name__}: {exc}); proceeding without filter",
-                    LOG__DEBUG,
+                    log_level,
                 )
+
+            if debug_mode:
+                print_and_log(f"[classic-scan] Starting scan for {args.timeout} seconds...", LOG__GENERAL)
 
             # Timed discovery using the adapter's built-in helper.
             adapter.run_scan__timed(duration=args.timeout)
+
+            if debug_mode:
+                print_and_log("[classic-scan] Scan completed, processing results...", LOG__GENERAL)
 
             devices = [d for d in adapter.get_discovered_devices() if d["type"].lower() == "br/edr"]
 
             if not devices:
                 print("No Classic devices found")
             else:
+                if debug_mode:
+                    print_and_log(f"[classic-scan] Found {len(devices)} Classic BR/EDR devices", LOG__GENERAL)
+                
                 for d in devices:
                     name = d["name"] or d["alias"] or "(unknown)"
                     rssi = d.get("rssi")
                     rssi_str = f"RSSI={rssi}" if rssi is not None else "RSSI=?"
                     print(f"{d['address']}  Name={name}  {rssi_str}")
+                    
+                    # Print additional details in debug mode
+                    if debug_mode:
+                        # Print device class if available
+                        if "class" in d:
+                            try:
+                                from bleep.ble_ops.conversion import format_device_class
+                                class_info = format_device_class(d["class"])
+                                print(f"  Class: 0x{d['class']:06x} ({class_info})")
+                            except Exception:
+                                print(f"  Class: 0x{d['class']:06x}")
+                        
+                        # Print UUIDs if available
+                        if "uuids" in d and d["uuids"]:
+                            print(f"  UUIDs: {', '.join(d['uuids'])}")
+                            
+                        # Print services if available
+                        if "services" in d and d["services"]:
+                            print(f"  Services: {len(d['services'])}")
+                            
+                        print()  # Add a blank line between devices for readability
+            
             return 0
 
         elif args.mode == "classic-enum":
@@ -643,9 +814,11 @@ def main(args=None):
             return _interactive_main() or 0
 
     except KeyboardInterrupt:
+        import sys  # Ensure sys is available in this scope
         print("\nOperation cancelled by user")
         return 1
     except Exception as e:
+        import sys  # Ensure sys is available in this scope
         print(f"Error: {e}", file=sys.stderr)
         return 1
 

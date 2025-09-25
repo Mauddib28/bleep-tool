@@ -3,6 +3,13 @@ Adapter D-Bus Interface
 Provides the system_dbus__bluez_adapter class from the original codebase.
 """
 
+from bleep.core.constants import (
+    BT_DEVICE_TYPE_UNKNOWN,
+    BT_DEVICE_TYPE_CLASSIC,
+    BT_DEVICE_TYPE_LE,
+    BT_DEVICE_TYPE_DUAL,
+)
+
 #!/usr/bin/python3
 
 import dbus
@@ -130,11 +137,10 @@ class system_dbus__bluez_adapter:
                         "name": properties.get("Name", ""),
                         "rssi": properties.get("RSSI") if "RSSI" in properties else None,
                         "alias": properties.get("Alias", ""),
-                        "type": (
-                            "LE"
-                            if properties.get("AddressType") == "random"
-                            else "BR/EDR"
-                        ),
+                        # Determine device type using multiple heuristics
+                        "device_type": self._determine_device_type(properties),
+                        # Store original AddressType property regardless of device type
+                        "address_type": properties.get("AddressType")
                     }
                 )
 
@@ -180,6 +186,54 @@ class system_dbus__bluez_adapter:
         except Exception as e:
             logger.error(f"Adapter power-cycle failed: {e}")
             return False
+
+    def _determine_device_type(self, properties: dict) -> str:
+        """
+        Determine device type using multiple heuristics.
+        
+        Args:
+            properties: Device properties from BlueZ
+            
+        Returns:
+            Device type: 'unknown', 'classic', 'le', or 'dual'
+        """
+        # Get key properties
+        address_type = properties.get("AddressType")
+        device_class = properties.get("Class")
+        uuids = properties.get("UUIDs", [])
+        
+        # Evidence for different device types
+        has_classic_evidence = False
+        has_le_evidence = False
+        
+        # Check for BLE evidence
+        if address_type == "random":
+            has_le_evidence = True
+        
+        # Check for common BLE service UUIDs (GAP 0x1800, GATT 0x1801)
+        if any("1800" in str(uuid).lower() or "1801" in str(uuid).lower() for uuid in uuids):
+            has_le_evidence = True
+            
+        # Check for Classic Bluetooth evidence
+        if device_class is not None:
+            has_classic_evidence = True
+            
+        # Check for SDP-related properties indicating Classic BT
+        # We don't currently have direct access to SDP records in properties,
+        # but the presence of traditional Classic Bluetooth service UUIDs is a hint
+        classic_service_prefixes = ["1101", "1103", "110A", "110B", "110C", "110E", "1112", "1115", "111F", "112F"]
+        if any(str(uuid).upper().startswith(prefix) for prefix in classic_service_prefixes for uuid in uuids):
+            has_classic_evidence = True
+            
+        # Determine device type
+        if has_classic_evidence and has_le_evidence:
+            return BT_DEVICE_TYPE_DUAL
+        elif has_classic_evidence:
+            return BT_DEVICE_TYPE_CLASSIC
+        elif has_le_evidence:
+            return BT_DEVICE_TYPE_LE
+        else:
+            return BT_DEVICE_TYPE_UNKNOWN
 
     def is_ready(self) -> bool:
         """Return True when the adapter object exists and *Powered* is True.

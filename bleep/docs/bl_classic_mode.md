@@ -50,6 +50,8 @@ python -m bleep.cli classic-scan --uuid 112f,110b --rssi -65 --timeout 8
 #  └─ only show devices advertising **PBAP (0x112f)** or **A2DP (0x110b)** and stronger than –65 dBm
 # Path-loss filter (BlueZ ≥5.59)
 python -m bleep.cli classic-scan --pathloss 70 --timeout 6
+# With debug output
+python -m bleep.cli classic-scan --debug
 ```
 Output columns: MAC | Name | RSSI | Class | Flags (Paired/Trusted…).
 

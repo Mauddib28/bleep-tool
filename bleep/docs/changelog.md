@@ -1,3 +1,88 @@
+## v2.1.8 – Device Type Classification & Database Improvements (2025-09-25)
+### Added
+* **Device Type Classification System** – Enhanced identification of Bluetooth device types:
+  * Added constants for device types in core/constants.py (unknown, classic, le, dual)
+  * Implemented sophisticated device type detection with multiple heuristics
+  * Added device_type field to observations database (schema v3)
+  * Updated database filtering to support `--status` flags for each device type
+  * Enhanced `db list` command to support filtering by device_type
+  * Detailed documentation in docs/observation_db.md explaining classification methods
+
+### Fixed
+* **Database Timestamp Tracking** – Fixed critical issues with device timestamp tracking:
+  * Fixed first_seen field not being populated for new devices
+  * Improved upsert_device function to properly handle timestamps
+  * Ensured first_seen remains constant while last_seen updates
+  * Added first_seen to default CLI display fields
+  * Updated documentation with timestamp field examples
+
+## v2.1.7 – Modalias Handling System (2025-09-12)
+### Added
+* **Modalias Handling System** – Comprehensive system for parsing and interpreting modalias strings:
+  * Added USB IDs database updater that downloads from linux-usb.org/usb.ids
+  * Created centralized modalias parsing utilities in bleep.ble_ops.modalias
+  * Implemented robust vendor and product identification with thousands of entries
+  * Added comprehensive documentation in docs/modalias_handling.md
+  * Follows the same pattern as BT SIG UUID handling for consistency
+
+### Changed
+* **Debug Mode** – Enhanced modalias and PnP ID handling:
+  * Refactored modalias parsing to use the centralized system
+  * Removed hardcoded USB vendor IDs in favor of the comprehensive database
+  * Improved display of vendor, product, and device ID information
+  * Better handling of edge cases and invalid modalias strings
+
+## v2.1.6 – Debug Mode Enhancements (2025-09-10)
+### Added
+* **Debug Mode** – Enhanced "detailed on" verbosity with PnP ID decoding:
+  * Added support for decoding PnP ID characteristic (0x2A50) in Device Information Service
+  * Implemented proper interpretation of Device ID from PnP ID data
+  * Added modalias parsing to show vendor, product, and device ID information
+  * Correctly displays USB vendor names based on vendor ID
+  * Follows Linux USB ID database format for consistent device identification
+
+### Fixed
+* **Debug Mode** – Corrected interpretation of device identification data:
+  * Fixed incorrect assumption about version number in PnP ID characteristic
+  * Properly identifies the last two bytes of PnP ID as Device ID, not version
+  * Ensures consistent terminology across code and documentation
+
+## v2.1.5 – CLI Command Fixes & Enhancements (2025-09-02)
+### Added
+* **Documentation** – Added comprehensive documentation for:
+  * `explore_mode.md` - Detailed guide for the explore command with examples and troubleshooting
+  * `analysis_mode.md` - Guide for the analyze/analyse command with examples and output formats
+  * `aoi_mode.md` - Enhanced comprehensive guide for the AOI (Assets of Interest) mode with all security analysis features, subcommands, data storage details, and multiple input formats
+* **Analyze Command** – Enhanced with new features:
+  * Support for both American (`analyze`) and British (`analyse`) spellings
+  * New `--detailed` flag for comprehensive device structure analysis
+  * Improved JSON format compatibility with both new and legacy formats
+  * Better output formatting with device information and service details
+
+### Fixed
+* **Explore Command** – Fixed critical issues:
+  * Fixed parameter conflict between CLI mode and connection mode
+  * Improved passive scan reliability with better timeout distribution
+  * Added proper connection retries to passive mode for better reliability
+  * Fixed help text and documentation to accurately reflect parameters
+* **Analyze Command** – Fixed JSON format compatibility:
+  * Now properly handles JSON files from the explore command
+  * Fixed service and characteristic counting for different formats
+* **CLI Commands** – General improvements:
+  * Fixed `classic-scan` to include debug flag
+  * Fixed `aoi` mode to accept test file parameter, resolved sys module scope issue, and automatically use 'scan' subcommand
+  * Fixed `aoi` mode errors by adding missing NotAuthorizedError class and fixing return value handling
+  * Enhanced `aoi` mode to properly handle all subcommands (scan, analyze, list, report, export) and their parameters
+  * Implemented `aoi` report generation in three formats (markdown, JSON, text) with customizable output paths
+  * Added fallback analysis for `aoi analyze` command when specific implementation is missing
+  * Fixed user mode scan incorrectly reporting "no devices found" when devices are actually found
+  * Fixed _native_scan function to properly return device dictionary instead of status code
+  * Added quiet parameter to passive_scan to prevent duplicate output
+  * Improved device display format in user mode scan to use "Address (Name) - RSSI: value dBm" format
+  * Updated device menu options to consistently use the same format
+  * Fixed InvalidArgs error when connecting to OnePlus devices
+  * Fixed MediaPlayer1 Press method to accept hex values
+
 ## v2.1.4 – BLE CTF Mode Enhancement (2025-07-26)
 ### Added
 * **BLE CTF Mode** – Enhanced with automated flag discovery and solving capabilities:

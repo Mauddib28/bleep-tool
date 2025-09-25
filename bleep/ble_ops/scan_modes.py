@@ -121,6 +121,7 @@ def passive_scan_and_connect(
     security_mapping: Dict[str, List[str]] | None = None,
     *,
     transport: str = "auto",
+    timeout: int = 10,  # Add timeout parameter with default of 10 seconds
 ) -> Tuple[LEDevice, Dict[int, str], Dict[str, List[str]], Dict[str, List[str]]]:
     """Basic scan with a single connection attempt.
     
@@ -140,6 +141,10 @@ def passive_scan_and_connect(
         "bredr" (Classic BR/EDR only).  This parameter controls *only* the
         discovery filter and the choice of wrapper class once the device is
         found; it is **not** related to the scan-mode algorithm itself.
+    timeout: int
+        Total timeout in seconds for the entire scan, connect, and service resolution process.
+        Default is 10 seconds. The timeout is distributed between scanning (50%), 
+        connection (25%), and service resolution (25%), with minimum values for each stage.
     
     Returns
     -------
@@ -154,9 +159,17 @@ def passive_scan_and_connect(
     # Check adapter
     adapter = _get_adapter()
     
-    # Scan for device
+    # Scan for device using the provided timeout
+    print_and_log(f"[*] Using scan timeout of {timeout} seconds", LOG__GENERAL)
+    
+    # Use half the timeout for scanning and half for connection+service resolution
+    scan_timeout = max(timeout // 2, 5)  # At least 5 seconds for scanning
+    connect_timeout = max(timeout // 4, 3)  # At least 3 seconds for connection
+    services_timeout = max(timeout // 4, 5)  # At least 5 seconds for service resolution
+    
+    # Increase max_attempts to 3 for better reliability
     if not _scan_until_visible(
-        target_bt_addr, max_attempts=1, timeout=5, transport=transport
+        target_bt_addr, max_attempts=3, timeout=scan_timeout, transport=transport
     ):
         raise errors.DeviceNotFoundError(target_bt_addr)
     
@@ -171,14 +184,17 @@ def passive_scan_and_connect(
     device = device_wrapper(target_bt_addr)  # type: ignore[call-arg]
     
     try:
-        if not device.connect(retry=0, wait_timeout=1):
+        print_and_log(f"[*] Connecting with timeout of {connect_timeout} seconds (retry=1)", LOG__GENERAL)
+        # Add retry=1 for better reliability
+        if not device.connect(retry=1, wait_timeout=connect_timeout):
             raise errors.ConnectionError(target_bt_addr, "connect failed")
     except dbus.exceptions.DBusException as exc:
         raise errors.map_dbus_error(exc) from exc
     
     # Wait for GATT services only for LE devices
     if isinstance(device, LEDevice):
-        if not _wait_for_services(device, timeout=10):
+        print_and_log(f"[*] Resolving services with timeout of {services_timeout} seconds", LOG__GENERAL)
+        if not _wait_for_services(device, timeout=services_timeout):
             raise errors.ServicesNotResolvedError(target_bt_addr)
     
     # Trigger enumeration and build compatibility maps

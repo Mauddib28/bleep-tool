@@ -28,10 +28,16 @@ except Exception:  # noqa: BLE001 – missing GI bindings / BlueZ runtime
     _HAS_NATIVE_STACK = False
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
-from typing import Any
+from bleep.core.constants import (
+    BT_DEVICE_TYPE_UNKNOWN,
+    BT_DEVICE_TYPE_CLASSIC, 
+    BT_DEVICE_TYPE_LE,
+    BT_DEVICE_TYPE_DUAL
+)
+from typing import Any, Dict
 
 
-def _native_scan(device: str | None, timeout: int, transport: str = "auto") -> int:
+def _native_scan(device: str | None, timeout: int, transport: str = "auto", quiet: bool = False) -> int:
     """Perform a simple LE discovery using the refactored stack."""
 
     adapter = _Adapter()
@@ -49,24 +55,59 @@ def _native_scan(device: str | None, timeout: int, transport: str = "auto") -> i
 
     raw = adapter.get_discovered_devices()
 
-    if not raw:
-        print_and_log("[*] No BLE devices discovered", LOG__GENERAL)
-    else:
-        print_and_log(f"[*] Discovered {len(raw)} device(s)", LOG__GENERAL)
+    # Only print output if not in quiet mode
+    if not quiet:
+        if not raw:
+            print_and_log("[*] No BLE devices discovered", LOG__GENERAL)
+        else:
+            print_and_log(f"[*] Discovered {len(raw)} device(s)", LOG__GENERAL)
 
+            for entry in raw:
+                addr = entry.get("address", "??")
+                name = entry.get("name") or entry.get("alias") or "?"
+                rssi_val = entry.get("rssi")
+                rssi_disp = rssi_val if rssi_val is not None else "?"
+                rssi_display = f"{rssi_disp} dBm" if rssi_disp != "?" else "? dBm"
+                print_and_log(f"  {addr} ({name}) - RSSI: {rssi_display}", LOG__GENERAL)
+    
+    # Always update observations if available
+    if raw and _obs:
         for entry in raw:
             addr = entry.get("address", "??")
             name = entry.get("name") or entry.get("alias") or "?"
             rssi_val = entry.get("rssi")
-            rssi_disp = rssi_val if rssi_val is not None else "?"
-            print_and_log(f"  {addr}  Name={name}  RSSI={rssi_disp}", LOG__GENERAL)
-            if _obs:
-                try:
-                    _obs.upsert_device(addr, name=name, rssi_last=rssi_val)
-                except Exception:
-                    pass
+            device_type = entry.get("type")
+            
+            # Extract device information
+            addr_type = entry.get("address_type")
+            device_type = entry.get("device_type", BT_DEVICE_TYPE_UNKNOWN)
+            
+            # Fallback logic if address_type is not available but device is LE
+            if not addr_type and device_type == BT_DEVICE_TYPE_LE:
+                addr_type = "random" if entry.get("address", "").startswith("random") else "public"
+                
+            try:
+                # Store all device information in the database
+                _obs.upsert_device(
+                    addr, 
+                    name=name, 
+                    rssi_last=rssi_val, 
+                    addr_type=addr_type,
+                    device_type=device_type
+                )
+            except Exception:
+                pass
 
-    return 0
+    # Convert raw device list to dictionary format expected by higher-level code
+    devices = {}
+    for entry in raw:
+        addr = entry.get("address", "??")
+        if addr != "??":
+            devices[addr] = entry
+    
+    print_and_log(f"[DEBUG] _native_scan returning {len(devices)} devices", LOG__GENERAL)
+    
+    return devices
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +319,7 @@ __all__ += [
 # ---------------------------------------------------------------------------
 
 
-def passive_scan(device: str | None = None, timeout: int = 60, transport: str = "auto"):  # noqa: D401
+def passive_scan(device: str | None = None, timeout: int = 60, transport: str = "auto", quiet: bool = False):  # noqa: D401
     """Execute a passive BLE scan.
 
     Parameters
@@ -289,6 +330,8 @@ def passive_scan(device: str | None = None, timeout: int = 60, transport: str = 
         Duration in seconds for the discovery main-loop.
     transport
         Bluetooth transport filter: "auto" (default), "le" (Low Energy), or "bredr" (Classic).
+    quiet
+        If True, suppress console output during scanning.
     """
 
     if not _HAS_NATIVE_STACK:
@@ -297,7 +340,7 @@ def passive_scan(device: str | None = None, timeout: int = 60, transport: str = 
             "a native environment after monolith fallback removal."
         )
 
-    return _native_scan(device, timeout, transport)
+    return _native_scan(device, timeout, transport, quiet)
 
 
 # ---------------------------------------------------------------------------

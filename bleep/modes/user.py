@@ -171,12 +171,30 @@ def run_scan(duration: int = DEFAULT_SCAN_TIMEOUT) -> Dict[str, Dict]:
     print_and_log(f"[*] Starting scan for {duration} seconds...", LOG__USER)
     
     try:
-        devices = passive_scan(timeout=duration)
-        if devices:
-            print_and_log(f"[+] Found {len(devices)} devices", LOG__USER)
+        # Use quiet=True to suppress output from passive_scan
+        devices = passive_scan(timeout=duration, quiet=True)
+        
+        # Debug output to see what we're getting back
+        print_and_log(f"[DEBUG] Raw scan results: {devices}", LOG__DEBUG)
+        
+        # More robust check for devices
+        # Filter out None values and check if we have actual devices
+        valid_devices = {addr: info for addr, info in devices.items() if info is not None} if devices else {}
+        
+        # Debug output after filtering
+        print_and_log(f"[DEBUG] Filtered devices: {valid_devices}", LOG__DEBUG)
+        
+        # Only log the count here, don't display the devices
+        # The actual display of devices is handled by the caller
+        if valid_devices:
+            # Don't print anything here - the caller will display the devices
+            pass
         else:
+            # Only print "No devices found" if there are actually no devices
             print_and_log("[-] No devices found", LOG__USER)
-        return devices
+        
+        # Always return the valid devices, even if empty
+        return valid_devices
     except Exception as e:
         error_msg = BlueZErrorHandler.get_user_friendly_message(e) if hasattr(BlueZErrorHandler, 'get_user_friendly_message') else str(e)
         print_and_log(f"[-] Scan failed: {error_msg}", LOG__USER)
@@ -208,7 +226,7 @@ def connect_to_device(address: str) -> Tuple[Optional[system_dbus__bluez_device_
             # For the CTF target, we know there are only 2 real services
             # Let's hardcode this for now to match the expected output
             print_and_log(f"[+] Found 2 services", LOG__USER)
-            
+
             _current_device = device
             _services = services
             
@@ -220,6 +238,61 @@ def connect_to_device(address: str) -> Tuple[Optional[system_dbus__bluez_device_
     except BLEEPError as e:
         print_and_log(f"[-] Connection error: {e}", LOG__USER)
         return None, None
+    except dbus.exceptions.DBusException as e:
+        # Check for InvalidArgs error with OnePlus devices
+        if "InvalidArgs" in str(e):
+            device_info = None
+            
+            # Try to get device information from the adapter
+            try:
+                adapter = system_dbus__bluez_adapter()
+                discovered_devices = adapter.get_discovered_devices()
+                for addr, info in discovered_devices.items():
+                    if addr.upper() == address.upper():
+                        device_info = info
+                        break
+            except Exception:
+                pass
+            
+            # Check if this is a OnePlus device
+            is_oneplus = False
+            if device_info:
+                name = device_info.get("name", "").lower()
+                if "oneplus" in name:
+                    is_oneplus = True
+                
+            if is_oneplus:
+                print_and_log("[*] OnePlus device detected - attempting alternate connection method...", LOG__USER)
+                
+                try:
+                    # Try alternate connection method with different parameters
+                    from bleep.ble_ops.connect import connect_device_with_retry
+                    device = connect_device_with_retry(address, 
+                                                      retries=3, 
+                                                      backoff=1.5, 
+                                                      connection_timeout=15)
+                                                      
+                    if device and device.is_connected():
+                        # If connected, proceed with enumeration
+                        try:
+                            services, mine_map, perm_map = device.enumerate_services()
+                            
+                            _current_device = device
+                            _services = services
+                            
+                            print_and_log(f"[+] Connected to OnePlus device using alternate method", LOG__USER)
+                            print_and_log(f"[+] Found {len(services) if services else 0} services", LOG__USER)
+                            
+                            return device, services
+                        except Exception as enum_err:
+                            print_and_log(f"[-] Failed to enumerate services: {enum_err}", LOG__USER)
+                except Exception as alt_err:
+                    print_and_log(f"[-] Alternate connection method failed: {alt_err}", LOG__USER)
+            
+        # Show user-friendly error for all D-Bus exceptions
+        error_msg = BlueZErrorHandler.get_user_friendly_message(e) if hasattr(BlueZErrorHandler, 'get_user_friendly_message') else str(e)
+        print_and_log(f"[-] Connection failed: {error_msg}", LOG__USER)
+        return None, None
     except Exception as e:
         error_msg = BlueZErrorHandler.get_user_friendly_message(e) if hasattr(BlueZErrorHandler, 'get_user_friendly_message') else str(e)
         print_and_log(f"[-] Connection failed: {error_msg}", LOG__USER)
@@ -230,8 +303,13 @@ def display_device_info() -> None:
     """Display detailed information about the connected device."""
     global _current_device, _services
     
-    if not _current_device or not _services:
+    #if not _current_device or not _services:
+    # Separated to prevent a false return for no device being connected??
+    if not _current_device:
         print("No device connected")
+        return
+    elif not _services:
+        print("Services not resolved or no services exist")     # Note: Recall that media devices have no services
         return
         
     print(f"\nDevice Information: {_current_device.mac_address}")
@@ -258,7 +336,7 @@ def browse_services() -> Optional[UserMenu]:
     global _current_device, _services
     
     if not _current_device or not _services:
-        print("No device connected")
+        print("No device connected or missing services")
         return None
     
     # Create menu options for each service using the device's get_services method
@@ -1007,7 +1085,7 @@ def export_device_data() -> None:
     global _current_device, _services
     
     if not _current_device or not _services:
-        print("No device connected")
+        print("No device connected or no services")
         return
     
     try:
@@ -1115,9 +1193,21 @@ def scan_and_connect_menu() -> Optional[UserMenu]:
     # Run the scan
     devices = run_scan(duration)
     
-    if not devices:
-        print("No devices found")
+    # Use a more robust check for valid devices
+    valid_devices = {addr: info for addr, info in devices.items() if info is not None} if devices else {}
+    
+    if not valid_devices:
+        # No need to print the message here as it's already printed in run_scan
+        input("\nPress Enter to return to main menu...")
         return None
+    
+    # Display the discovered devices in a formatted way
+    print("\nDiscovered devices:")
+    for i, (addr, info) in enumerate(valid_devices.items(), 1):
+        name = info.get("name", "Unknown")
+        rssi = info.get("rssi", "?")
+        rssi_display = f"{rssi} dBm" if rssi != "?" else "? dBm"
+        print(f"{i}. {addr} ({name}) - RSSI: {rssi_display}")
     
     # Create menu options for each device
     options = []
@@ -1129,7 +1219,7 @@ def scan_and_connect_menu() -> Optional[UserMenu]:
         
         options.append(UserMenuOption(
             key=str(i),
-            label=f"{name} ({addr}) - RSSI: {rssi} dBm",
+            label=f"{addr} ({name}) - RSSI: {rssi} dBm",
             action=lambda a=addr: connect_to_device(a)
         ))
     
@@ -1232,12 +1322,24 @@ def run_user_mode(args):
         # Run scan with specified timeout
         devices = run_scan(args.scan)
         
-        if devices:
+        # More robust check for valid devices
+        valid_devices = {addr: info for addr, info in devices.items() if info is not None}
+        
+        if valid_devices:
+            # Display the discovered devices
+            print_and_log(f"[*] Discovered {len(valid_devices)} device(s)", LOG__USER)
+            for addr, info in valid_devices.items():
+                name = info.get("name", "Unknown")
+                rssi = info.get("rssi", "?")
+                rssi_display = f"{rssi} dBm" if rssi != "?" else "? dBm"
+                print(f"  {addr} ({name}) - RSSI: {rssi_display}")
+            
             # If only one device found, connect to it
-            if len(devices) == 1:
-                addr = list(devices.keys())[0]
+            if len(valid_devices) == 1:
+                addr = list(valid_devices.keys())[0]
                 print_and_log(f"[*] Single device found, connecting to {addr}...", LOG__USER)
                 connect_to_device(addr)
+        # Don't print "No devices found" here - it's already handled in run_scan
     
     # Start menu mode
     if args.menu or not hasattr(args, 'menu'):  # Default to menu mode

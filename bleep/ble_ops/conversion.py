@@ -497,6 +497,58 @@ def decode_appearance(appearance_value: int) -> str:
     return appearance_map.get(appearance_value, f"Unknown (0x{appearance_value:04x})")
 
 
+def decode_pnp_id(pnp_data: bytes) -> str:
+    """Decode PnP ID characteristic value.
+    
+    PnP ID format (7 bytes):
+    - Byte 0: Vendor ID Source (1=Bluetooth SIG, 2=USB Implementers Forum)
+    - Bytes 1-2: Vendor ID (little-endian)
+    - Bytes 3-4: Product ID (little-endian)
+    - Bytes 5-6: Device ID (little-endian)
+    
+    Parameters:
+    -----------
+    pnp_data : bytes
+        The raw PnP ID data (should be 7 bytes)
+        
+    Returns:
+    --------
+    str
+        Decoded PnP ID information
+    """
+    if not pnp_data or len(pnp_data) != 7:
+        return f"Invalid PnP ID data (expected 7 bytes, got {len(pnp_data) if pnp_data else 0})"
+    
+    # Extract fields
+    vendor_id_source = pnp_data[0]
+    vendor_id = int.from_bytes(pnp_data[1:3], byteorder='little')
+    product_id = int.from_bytes(pnp_data[3:5], byteorder='little')
+    # The Device ID bytes are interpreted in little-endian order
+    # to convert to a 16-bit integer
+    device_id = int.from_bytes(pnp_data[5:7], byteorder='little')
+    
+    # Decode vendor ID source
+    source_names = {
+        1: "Bluetooth SIG",
+        2: "USB Implementers Forum"
+    }
+    source_name = source_names.get(vendor_id_source, f"Unknown ({vendor_id_source})")
+    
+    # Look up vendor name based on source
+    # Import here to avoid circular dependency
+    from bleep.ble_ops.modalias import decode_pnp_id_vendor
+    vendor_name = decode_pnp_id_vendor(vendor_id_source, vendor_id)
+    
+    # The last 2 bytes (bytes 5-6) represent the device ID
+    # Simply display as a hexadecimal value without any special interpretation
+    device_id = int.from_bytes(pnp_data[5:7], byteorder='little')
+    device_id_str = f"0x{device_id:04x}"
+    
+    return (f"Vendor: {vendor_name} ({source_name}), "
+            f"Product ID: 0x{product_id:04x}, "
+            f"Device ID: {device_id_str}")
+
+
 def format_device_class(class_value: int) -> str:
     """Format device class for display based on the golden reference implementation.
     
@@ -534,6 +586,7 @@ __all__ = [
     "convert__dbus_to_hex",
     "decode_class_of_device",
     "decode_appearance",
+    "decode_pnp_id",
     "format_device_class",
     "extract__class_of_device__service_and_class_info",
 ] 

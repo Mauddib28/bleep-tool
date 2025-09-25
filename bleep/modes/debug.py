@@ -35,7 +35,8 @@ from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy a
 from bleep.core.errors import map_dbus_error, BLEEPError
 from bleep.bt_ref.utils import get_name_from_uuid
 from bleep.ble_ops.uuid_utils import identify_uuid
-from bleep.ble_ops.conversion import format_device_class, decode_appearance
+from bleep.ble_ops.conversion import format_device_class, decode_appearance, decode_pnp_id
+from bleep.ble_ops.modalias import format_modalias_info
 from bleep.ble_ops.enum_helpers import multi_read_all, small_write_probe, build_payload_iterator, brute_write_range
 from bleep.analysis.aoi_analyser import AOIAnalyser, analyse_aoi_data
 
@@ -1787,6 +1788,11 @@ def _cmd_read(args: List[str]) -> None:
         hex_str = " ".join([f"{b:02x}" for b in value])
         print(f"Value (HEX): {hex_str}")
 
+        # Check if this is a PnP ID characteristic (00002a50)
+        if uuid == "00002a50-0000-1000-8000-00805f9b34fb" and len(value) == 7 and _detailed_view:
+            pnp_info = decode_pnp_id(value)
+            print(f"Value (PnP ID): {pnp_info}")
+
         # Try to interpret as various integer types if length matches
         if len(value) in (1, 2, 4, 8):
             if len(value) == 1:
@@ -2055,6 +2061,11 @@ def _show_properties(props: Dict[str, Any], detailed: bool = False) -> None:
             appearance_desc = decode_appearance(value)
             if appearance_desc:
                 formatted_value = f"{value} ({appearance_desc})"
+
+        # Format Modalias (Remote Device ID information)
+        elif key == "Modalias" and detailed and isinstance(value, str):
+            # Use the centralized modalias parser
+            formatted_value = format_modalias_info(value)
 
         # Format the output
         if isinstance(formatted_value, (list, dict)):

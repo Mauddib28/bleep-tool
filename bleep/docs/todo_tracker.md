@@ -22,6 +22,14 @@ This page aggregates open tasks referenced across the project so contributors ha
   - [x] Write dedicated documentation `docs/aoi_mode.md` (+ examples)
   - [x] Update CLI quick-start table (docs/cli_usage.md)
   - [x] Add entry to changelog on release
+  - [ ] Enhance AoI documentation and capabilities:
+    - [x] Document basic CLI commands and parameters
+    - [x] Document security analysis features and report formats
+    - [x] Explain JSON file format options and data storage
+    - [ ] Create programmatic API reference for AOIAnalyser class
+    - [ ] Add integration examples with observation database
+    - [ ] Document advanced security analysis algorithms
+    - [ ] Create customization guide for security assessment criteria
 - [x] Multi-read / brute-write characteristic helpers complete
   - [x] `multi_read_characteristic` utility (repeat reads)
   - [x] `multi_read_all` rounds helper
@@ -106,8 +114,27 @@ This page aggregates open tasks referenced across the project so contributors ha
     - [x] Implemented migration code with backward compatibility
     - [x] Completed full v2 schema transition by removing all v1 schema code
     - [x] Removed all v1 schema compatibility code (codebase now exclusively uses v2 schema)
+    - [x] v2 to v3: Added device_type field for improved device classification 
+      - Added constants for device types: unknown, classic, le, dual
+      - Enhanced device type detection with multiple heuristics
+      - Updated filtering logic to use explicit device_type
   * Future telemetry table & migrations – tracked separately  
   * Write migration note in README.refactor
+  * Device type classification improvements:
+    - [ ] Enhance 'dual' device detection to require conclusive evidence from both protocols
+    - [ ] Only set device_type='dual' when both BLE and Classic aspects are confirmed
+    - [ ] Document specific detection criteria for each device type category
+  * Database timestamps tracking:
+    - [x] Fix `first_seen` field not being populated for new devices
+    - [x] Ensure timestamp fields maintain correct data (first_seen stays constant, last_seen updates)
+    - [x] Update default CLI display to show both timestamp fields
+  * Enhance observation_db.md documentation:
+    - [x] Document schema versioning information
+    - [x] Add filtering examples for `db list` and `db timeline`
+    - [ ] Expand database schema with comprehensive table and column descriptions
+    - [ ] Add programmatic API usage examples
+    - [ ] Document observation module's public functions with examples
+    - [ ] Create advanced query cookbook for complex data extraction scenarios
 - [x] Classic Bluetooth enumeration (README.refactor)
 - [x] Improve detection of controller stall (NoReply / timeout) and offer automatic `bluetoothctl disconnect` prompt
   - [x] Fixed property monitor callback error when disconnecting from a device while monitoring is active
@@ -197,6 +224,32 @@ This page aggregates open tasks referenced across the project so contributors ha
   - [ ] Build reporting tools
   - [ ] Document assessment methodologies
 
+## Documentation Improvements
+
+> This section tracks gaps in current documentation, particularly for the device tracking and observation capabilities. Addressing these tasks will ensure users can fully leverage the existing features through both CLI and programmatic APIs.
+
+- [ ] **Device Tracking Documentation**
+  - [ ] Create comprehensive programmatic API reference for observation module
+    - [ ] Document each function in `observations.py` with examples
+    - [ ] Add integration examples for custom scripts
+    - [ ] Create cookbook for common observation tasks
+    - [ ] Document filtering and query techniques for device data
+  - [ ] Enhance AOI Analyzer documentation
+    - [ ] Create dedicated `aoi_analyzer_api.md` file with class reference
+    - [ ] Add examples of direct usage of AOIAnalyser class methods
+    - [ ] Document security analysis algorithms and scoring system
+    - [ ] Provide customization examples for different analysis needs
+  - [ ] Add real-world usage scenarios
+    - [ ] Long-term device monitoring workflows
+    - [ ] Enterprise device tracking patterns
+    - [ ] Security assessment workflows using observation database
+    - [ ] Integration examples with external systems
+  - [ ] Document detailed database schema
+    - [ ] Create complete schema diagram with relationships
+    - [ ] Document each table and column with descriptions
+    - [ ] Add query examples for complex data extraction
+    - [ ] Create migration guide for schema changes
+
 ## Technical Scalability Improvements
 
 - [ ] **Database Optimization**
@@ -217,6 +270,40 @@ This page aggregates open tasks referenced across the project so contributors ha
   - [ ] Add connection pooling for high-volume operations
   - [ ] Document D-Bus reliability best practices
 
+## CLI Command Enhancements (Completed)
+
+- [x] **Explore Command Fixes**
+  - [x] Fix parameter conflict between CLI mode and connection mode
+  - [x] Improve passive scan reliability with better timeout distribution
+  - [x] Add proper connection retries to passive mode
+  - [x] Update help text and documentation
+  - [x] Create comprehensive documentation in `explore_mode.md`
+
+- [x] **Analyze Command Enhancements**
+  - [x] Add support for both American (`analyze`) and British (`analyse`) spellings
+  - [x] Implement detailed analysis mode with `--detailed` flag
+  - [x] Fix JSON format compatibility for different file structures
+  - [x] Improve output formatting with device information
+  - [x] Create comprehensive documentation in `analysis_mode.md`
+
+- [x] **Other CLI Improvements**
+  - [x] Add debug flag to `classic-scan` mode
+  - [x] Fix `aoi` mode to accept test file parameter, resolve sys module scope issue, and automatically use 'scan' subcommand
+  - [x] Fix `aoi` mode errors by adding missing NotAuthorizedError class and fixing return value handling
+  - [x] Fix `aoi` subcommands (analyze, list, report, export) to properly work with the CLI
+  - [x] Add proper parameter handling for all AOI subcommands in the CLI parser
+  - [x] Implement basic device data storage and retrieval for AOI mode
+  - [x] Implement report generation in three formats (markdown, JSON, text) for AOI mode
+  - [x] Add fallback analysis for AOI analyze command when full implementation is missing
+  - [x] Create comprehensive documentation for the AOI mode in `aoi_mode.md`
+  - [x] Fix user mode scan incorrectly reporting "no devices found" when devices are actually found
+  - [x] Fix _native_scan function to properly return device dictionary instead of status code
+  - [x] Add quiet parameter to passive_scan to prevent duplicate output
+  - [x] Improve device display format in user mode scan to use "Address (Name) - RSSI: value dBm" format
+  - [x] Update device menu options to consistently use the same format
+  - [x] Fix InvalidArgs error when connecting to OnePlus devices
+  - [x] Fix MediaPlayer1 Press method to accept hex values
+
 ## Previous and unincorporated To Do lists:
 
 ### TODO:
@@ -236,8 +323,10 @@ This page aggregates open tasks referenced across the project so contributors ha
    [x] Create a decode + translation function for Class data
        [x] Hardcode Transation first to prove concept
        [ ] Move to automatic pull down of YAML to perform conversion
-   [ ] Create a decode for appearance values
+   [x] Create a decode for appearance values
        - Pull from bluetooth support files to better identify (e.g. similar to Class data)
+   [x] Add PnP ID characteristic (0x2A50) decoding into the "detailed on" verbosity within the Debug Mode
+       - Correctly identify and display Device ID information from PnP ID and modalias
    [ ] Add functionality to re-read/refresh the device interface information
        - Note: This is most likely where the D-Bus can read the GAP information (i.e. 0x1800)
    [ ] Add read-in and generation of UUIDs to create UUID Check lists (Servce, Characteristic, Descriptor)

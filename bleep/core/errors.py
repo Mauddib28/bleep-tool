@@ -147,11 +147,23 @@ class NotReadyError(BLEEPError):
         )
 
 
+class NotAuthorizedError(BLEEPError):
+    """Raised when an operation requires authorization."""
+
+    def __init__(self, operation: str = "Bluetooth operation"):
+        super().__init__(
+            f"{operation} requires authorization or pairing",
+            RESULT_ERR_ACCESS_DENIED,
+        )
+        self.operation = operation
+
+
 # Map D-Bus exceptions to BLEEP exceptions
 DBUS_ERROR_MAP = {
     "org.freedesktop.DBus.Error.InvalidArgs": InvalidArgumentError,
     "org.bluez.Error.NotSupported": NotSupportedError,
     "org.bluez.Error.NotPermitted": PermissionError,
+    "org.bluez.Error.NotAuthorized": NotAuthorizedError,
     "org.bluez.Error.InvalidValueLength": InvalidArgumentError,
     "org.bluez.Error.Failed": BLEEPError,
 }
@@ -184,6 +196,8 @@ def map_dbus_error(exc: dbus.exceptions.DBusException) -> BLEEPError:
     # Fast path mappings using error name
     if name == "org.bluez.Error.NotPermitted":
         return PermissionError("D-Bus operation", str(exc))
+    if name == "org.bluez.Error.NotAuthorized":
+        return NotAuthorizedError("D-Bus operation")
     if name == "org.freedesktop.DBus.Error.NoReply":
         return TimeoutError("D-Bus operation")
     if name == "org.freedesktop.DBus.Error.ServiceUnknown":
@@ -242,6 +256,7 @@ __all__ = [
     "InvalidArgumentError",
     "NotReadyError",
     "NotReady",
+    "NotAuthorizedError",
     "map_dbus_error",
     "handle_dbus_exception",
 ]

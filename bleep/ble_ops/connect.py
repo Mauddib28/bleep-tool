@@ -147,7 +147,7 @@ def connect_and_enumerate__bluetooth__low_energy(
     try:
         if not device.connect(retry=5):
             raise _errors.ConnectionError(target_bt_addr, "connect failed")
-    except (_errors.NotAuthorizedError, _errors.NotPermittedError):
+    except (_errors.NotAuthorizedError, _errors.PermissionError):
         # Likely needs pairing – attempt once with auto-agent
         print_and_log("[*] Connection requires pairing – attempting auto-pair", LOG__GENERAL)
         ensure_default_pairing_agent()

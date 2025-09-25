@@ -47,10 +47,17 @@ def parse_arguments() -> argparse.Namespace:
     )
     
     parser.add_argument(
+        "-t", "--timeout",
+        help="Scan timeout in seconds",
+        type=int,
+        default=10
+    )
+    
+    parser.add_argument(
         "-r", "--retries",
         help="Number of connection retries (for naggy mode)",
         type=int,
-        default=10
+        default=3
     )
     
     parser.add_argument(
@@ -99,15 +106,18 @@ def mode_to_constant(mode_str: str) -> str:
 
 def print_service_info(device: LEDevice, verbose: bool = False) -> Dict[str, Any]:
     """Print information about services and characteristics and return as dict."""
+    # Use get_name() method instead of accessing .name directly
+    device_name = device.get_name() or device.get_alias() or "Unknown"
+    
     result = {
         "device": {
             "address": device.mac_address,
-            "name": device.name or "Unknown",
+            "name": device_name,
             "services": []
         }
     }
     
-    print_and_log(f"\n[*] Device: {device.name or 'Unknown'} ({device.mac_address})", LOG__GENERAL)
+    print_and_log(f"\n[*] Device: {device_name} ({device.mac_address})", LOG__GENERAL)
     print_and_log(f"[*] Services resolved: {device.is_services_resolved()}", LOG__GENERAL)
     
     service_count = 0
@@ -247,6 +257,12 @@ def main() -> int:
     
     # Connect to the device using the selected mode
     try:
+        print_and_log(f"[*] Starting exploration with {args.timeout}s timeout in {args.mode} mode", LOG__GENERAL)
+        
+        # Only pass timeout parameter to passive mode
+        if mode == PASSIVE_MODE:
+            kwargs["timeout"] = args.timeout
+        
         device, mapping, landmine_map, perm_map = scan_and_connect(
             args.device,
             mode=mode,

@@ -222,6 +222,20 @@ def control_media_device(mac_address: str, command: str, value: Optional[int] = 
         else:
             print_and_log(f"[-] Failed to set volume on {mac_address}", LOG__USER)
     
+    elif command == "press" and value is not None:
+        # Get player object directly
+        player = device.get_media_player()
+        if not player:
+            print_and_log(f"[-] No media player available on {mac_address}", LOG__USER)
+            return False
+            
+        # Send the key press command
+        result = player.press(value)
+        if result:
+            print_and_log(f"[+] Sent key code 0x{value:02x} to {mac_address}", LOG__USER)
+        else:
+            print_and_log(f"[-] Failed to send key code to {mac_address}", LOG__USER)
+            
     elif command == "info":
         # Get player status
         status = device.get_playback_status()
@@ -244,7 +258,10 @@ def control_media_device(mac_address: str, command: str, value: Optional[int] = 
         result = True
     
     else:
-        print_and_log(f"[-] Unknown command: {command}", LOG__USER)
+        if command == "press" and value is None:
+            print_and_log(f"[-] Press command requires a key code value (--value=<code>)", LOG__USER)
+        else:
+            print_and_log(f"[-] Unknown command: {command}", LOG__USER)
         return False
     
     return result

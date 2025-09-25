@@ -33,7 +33,7 @@ def list_devices(fields: list[str] | None = None, status: str | None = None) -> 
             return
             
         # Filter fields if specified
-        cols = fields or ["mac", "name", "last_seen"]
+        cols = fields or ["mac", "name", "first_seen", "last_seen"]
         valid = set(_valid_cols())
         bad = [c for c in cols if c not in valid]
         if bad:

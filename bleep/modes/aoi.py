@@ -9,14 +9,16 @@ This mode provides functionality to:
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import sys
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any
 
 from bleep.core.log import print_and_log, LOG__GENERAL
 from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+from bleep.bt_ref.utils import get_name_from_uuid
 
 
 _DEF_WAIT = 4.0  # seconds between targets
@@ -70,6 +72,119 @@ def _iter_macs(obj) -> List[str]:
     return []
 
 
+def _generate_markdown_report(device_data: Dict[str, Any]) -> str:
+    """Generate a detailed Markdown report from device data."""
+    address = device_data.get("address", "Unknown")
+    name = device_data.get("name", "Unknown Device")
+    scan_time = datetime.datetime.fromtimestamp(device_data.get("scan_timestamp", 0)).strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Start with device header
+    report = f"# Device Report: {name} ({address})\n\n"
+    report += f"**Scan Date:** {scan_time}\n\n"
+    
+    # Add services section
+    services = device_data.get("services", [])
+    report += f"## Services ({len(services)})\n\n"
+    
+    for service_uuid in services:
+        service_name = get_name_from_uuid(service_uuid) or "Unknown Service"
+        report += f"- **{service_uuid}** - {service_name}\n"
+    
+    report += "\n"
+    
+    # Add analysis section if available
+    if "analysis" in device_data:
+        analysis = device_data["analysis"]
+        report += "## Security Analysis\n\n"
+        
+        # Security concerns
+        security_concerns = analysis.get("summary", {}).get("security_concerns", [])
+        report += f"### Security Concerns ({len(security_concerns)})\n\n"
+        if security_concerns:
+            for concern in security_concerns:
+                report += f"- **{concern.get('name', 'Unknown')}**: {concern.get('reason', 'No details')}\n"
+        else:
+            report += "No security concerns detected.\n"
+        
+        report += "\n"
+        
+        # Unusual characteristics
+        unusual_chars = analysis.get("summary", {}).get("unusual_characteristics", [])
+        report += f"### Unusual Characteristics ({len(unusual_chars)})\n\n"
+        if unusual_chars:
+            for char in unusual_chars:
+                report += f"- **{char.get('name', 'Unknown')}**: {char.get('reason', 'No details')}\n"
+        else:
+            report += "No unusual characteristics detected.\n"
+    
+    return report
+
+
+def _generate_json_report(device_data: Dict[str, Any]) -> str:
+    """Generate a JSON report from device data."""
+    # Create a report structure
+    report = {
+        "device": {
+            "address": device_data.get("address", "Unknown"),
+            "name": device_data.get("name", "Unknown Device"),
+            "scan_timestamp": device_data.get("scan_timestamp", 0),
+        },
+        "services": device_data.get("services", []),
+        "analysis": device_data.get("analysis", {})
+    }
+    
+    # Convert to JSON string
+    return json.dumps(report, indent=2)
+
+
+def _generate_text_report(device_data: Dict[str, Any]) -> str:
+    """Generate a plain text report from device data."""
+    address = device_data.get("address", "Unknown")
+    name = device_data.get("name", "Unknown Device")
+    scan_time = datetime.datetime.fromtimestamp(device_data.get("scan_timestamp", 0)).strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Start with device header
+    report = f"Device Report: {name} ({address})\n"
+    report += f"Scan Date: {scan_time}\n\n"
+    
+    # Add services section
+    services = device_data.get("services", [])
+    report += f"Services ({len(services)}):\n"
+    
+    for service_uuid in services:
+        service_name = get_name_from_uuid(service_uuid) or "Unknown Service"
+        report += f"- {service_uuid} - {service_name}\n"
+    
+    report += "\n"
+    
+    # Add analysis section if available
+    if "analysis" in device_data:
+        analysis = device_data["analysis"]
+        report += "Security Analysis:\n\n"
+        
+        # Security concerns
+        security_concerns = analysis.get("summary", {}).get("security_concerns", [])
+        report += f"Security Concerns ({len(security_concerns)}):\n"
+        if security_concerns:
+            for concern in security_concerns:
+                report += f"- {concern.get('name', 'Unknown')}: {concern.get('reason', 'No details')}\n"
+        else:
+            report += "No security concerns detected.\n"
+        
+        report += "\n"
+        
+        # Unusual characteristics
+        unusual_chars = analysis.get("summary", {}).get("unusual_characteristics", [])
+        report += f"Unusual Characteristics ({len(unusual_chars)}):\n"
+        if unusual_chars:
+            for char in unusual_chars:
+                report += f"- {char.get('name', 'Unknown')}: {char.get('reason', 'No details')}\n"
+        else:
+            report += "No unusual characteristics detected.\n"
+    
+    return report
+
+
 ## TODO: Actions to perform or add to the AoI code
 #   [ ] Incorporate enumerate__assets_of_interest
 #
@@ -109,14 +224,17 @@ def main(argv: list[str] | None = None):
                 normalized = mac_up.replace("-", ":")
                 print_and_log(f"[*] AoI connect+enum {mac_up}", LOG__GENERAL)
                 try:
-                    device, services = _connect_enum(mac_up)
+                    device, services_mapping, landmine_map, permission_map = _connect_enum(mac_up)
                     
                     # Save device data for later analysis
                     if device:
                         device_data = {
                             "address": normalized,
-                            "name": getattr(device, "name", "Unknown"),
-                            "services": [s.to_dict() for s in (services or []) if hasattr(s, 'to_dict')],
+                            "name": getattr(device, "get_name", lambda: getattr(device, "name", "Unknown"))() or getattr(device, "name", "Unknown"),
+                            "services": device.get_services() if hasattr(device, 'get_services') else [],
+                            "services_mapping": services_mapping,
+                            "landmine_map": landmine_map,
+                            "permission_map": permission_map,
                             "scan_timestamp": time.time()
                         }
                         analyzer.save_device_data(normalized, device_data)
@@ -138,8 +256,39 @@ def main(argv: list[str] | None = None):
             return 1
             
         # Perform analysis
-        analysis = analyzer.analyze_device_data(device_data)
-        
+        analysis = {}
+        if hasattr(analyzer, 'analyze_device_data'):
+            analysis = analyzer.analyze_device_data(device_data)
+        else:
+            # Fallback to basic analysis if the method doesn't exist
+            analysis = {
+                "summary": {
+                    "security_concerns": [],
+                    "unusual_characteristics": [],
+                    "notable_services": [],
+                    "accessibility": {"read": [], "write": [], "notify": []},
+                    "recommendations": []
+                },
+                "details": {
+                    "services": [],
+                    "characteristics": [],
+                    "landmine_map": {},
+                    "permission_map": {}
+                }
+            }
+            # Basic service analysis
+            if "services" in device_data and device_data["services"]:
+                for service_uuid in device_data["services"]:
+                    analysis["details"]["services"].append({
+                        "uuid": service_uuid,
+                        "name": "Unknown Service",
+                        "is_notable": False
+                    })
+            
+            # Add services mapping to details
+            if "services_mapping" in device_data:
+                analysis["details"]["services_mapping"] = device_data["services_mapping"]
+            
         # Save analysis results back to device data
         device_data["analysis"] = analysis
         analyzer.save_device_data(args.address, device_data)
@@ -176,7 +325,19 @@ def main(argv: list[str] | None = None):
         print_and_log(f"[*] Generating {args.format} report for device: {args.address}", LOG__GENERAL)
         
         try:
-            report = analyzer.generate_report(device_address=args.address, format=args.format)
+            # Load device data
+            device_data = analyzer.load_device_data(args.address)
+            if not device_data:
+                print_and_log(f"[-] No data found for device {args.address}", LOG__GENERAL)
+                return 1
+            
+            # Generate report based on format
+            if args.format == "markdown":
+                report = _generate_markdown_report(device_data)
+            elif args.format == "json":
+                report = _generate_json_report(device_data)
+            else:  # text format
+                report = _generate_text_report(device_data)
             
             if args.output:
                 # Save to specified file
@@ -185,7 +346,13 @@ def main(argv: list[str] | None = None):
                 print_and_log(f"[+] Report saved to {args.output}", LOG__GENERAL)
             else:
                 # Save to auto-generated file
-                output_path = analyzer.save_report(report, device_address=args.address)
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                safe_addr = args.address.replace(":", "").lower()
+                output_file = f"{safe_addr}_report_{timestamp}.{args.format}"
+                output_path = analyzer.aoi_dir / output_file
+                
+                with open(output_path, 'w') as f:
+                    f.write(report)
                 print_and_log(f"[+] Report saved to {output_path}", LOG__GENERAL)
                 
         except Exception as e:

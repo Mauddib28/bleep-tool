@@ -47,6 +47,32 @@ class AOIAnalyser:
     def _ensure_aoi_dir(self) -> None:
         """Ensure the AoI directory exists."""
         os.makedirs(self.aoi_dir, exist_ok=True)
+    
+    def list_devices(self) -> List[str]:
+        """
+        List all devices that have data in the AOI directory.
+        
+        Returns:
+            List of normalized MAC addresses (with colons)
+        """
+        # Ensure directory exists
+        self._ensure_aoi_dir()
+        
+        # Get all JSON files in the directory
+        json_files = list(self.aoi_dir.glob("*.json"))
+        
+        # Extract device MAC addresses from filenames
+        devices = set()
+        for file_path in json_files:
+            # Extract the MAC part from the filename (before the timestamp)
+            filename = file_path.stem  # Get filename without extension
+            if "_" in filename:
+                mac = filename.split("_")[0]  # Get the part before the first underscore
+                # Convert to standard MAC format with colons
+                normalized = ":".join([mac[i:i+2] for i in range(0, len(mac), 2)]).upper()
+                devices.add(normalized)
+        
+        return list(devices)
         
     def load_device_data(self, device_mac: str) -> Dict[str, Any]:
         """
