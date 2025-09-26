@@ -10,10 +10,12 @@ import sys
 import argparse
 import json
 from typing import List, Dict, Optional, Tuple, Any
+from datetime import datetime
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as Adapter
 from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy as LEDevice
+from bleep.core import observations as _obs
 from bleep.ble_ops.scan_modes import (
     passive_scan_and_connect,
     naggy_scan_and_connect,
@@ -226,6 +228,76 @@ def save_to_json(data: Dict[str, Any], filename: str) -> None:
         print_and_log(f"[-] Error saving results: {str(e)}", LOG__GENERAL)
 
 
+def save_to_database(data: Dict[str, Any]) -> None:
+    """Save exploration data to the observation database."""
+    try:
+        if not data.get("device"):
+            print_and_log("[-] No device data to save to database", LOG__GENERAL)
+            return
+            
+        device = data["device"]
+        mac = device["address"]
+        name = device["name"]
+        
+        # Update device in database
+        _obs.upsert_device(
+            mac=mac,
+            name=name,
+            # Set device_type based on available data
+            device_type="le"  # Exploration mode is for BLE devices
+        )
+        
+        # Prepare services list for batch insert
+        services = []
+        for service in device.get("services", []):
+            services.append({
+                "uuid": service["uuid"],
+                "handle_start": None,  # Not available in exploration data
+                "handle_end": None,    # Not available in exploration data
+                "name": None           # Not available in exploration data
+            })
+        
+        # Save all services in one batch operation
+        if services:
+            # This returns a mapping of service UUIDs to their database IDs
+            service_ids = _obs.upsert_services(mac, services)
+            
+            # Now save characteristics for each service
+            for service in device.get("services", []):
+                service_uuid = service["uuid"]
+                service_id = service_ids.get(service_uuid)
+                
+                if not service_id:
+                    continue
+                    
+                # Prepare characteristics list for this service
+                chars = []
+                for char in service.get("characteristics", []):
+                    # Convert value from exploration format to database format
+                    value = None
+                    if isinstance(char.get("value"), dict):
+                        value_hex = char["value"].get("hex")
+                        if value_hex:
+                            try:
+                                value = bytes.fromhex(value_hex)
+                            except ValueError:
+                                pass
+                    
+                    chars.append({
+                        "uuid": char["uuid"],
+                        "handle": char.get("handle"),
+                        "properties": char.get("flags", []),
+                        "value": value
+                    })
+                
+                if chars:
+                    _obs.upsert_characteristics(service_id, chars)
+                
+        print_and_log(f"[+] Saved exploration data to database for device {mac}", LOG__GENERAL)
+    except Exception as e:
+        print_and_log(f"[-] Error saving to database: {str(e)}", LOG__GENERAL)
+
+
 def main() -> int:
     """Main function for exploration mode."""
     args = parse_arguments()
@@ -271,6 +343,9 @@ def main() -> int:
         
         # Print info and save to file if requested
         result = print_service_info(device, args.verbose)
+        
+        # Always save to database
+        save_to_database(result)
         
         if output_file:
             save_to_json(result, output_file)

@@ -83,11 +83,14 @@ def parse_args(args=None):
 
     # DB (observation) commands
     db_parser = subparsers.add_parser("db", help="Query local observation database")
-    db_parser.add_argument("action", choices=["list", "show", "export"], help="Action to perform")
-    db_parser.add_argument("mac", nargs="?", help="Target MAC for show/export")
+    db_parser.add_argument("action", choices=["list", "show", "export", "timeline"], help="Action to perform")
+    db_parser.add_argument("mac", nargs="?", help="Target MAC for show/export/timeline")
     db_parser.add_argument("--out", dest="out", help="Output file for export")
     db_parser.add_argument("--status", help="Filter devices by status: recent,ble,classic,media (comma-separated)")
     db_parser.add_argument("--fields", help="Comma-separated list of device fields to print (for list action)")
+    db_parser.add_argument("--service", help="Filter timeline by service UUID")
+    db_parser.add_argument("--char", help="Filter timeline by characteristic UUID")
+    db_parser.add_argument("--limit", type=int, default=50, help="Maximum entries to show in timeline (default: 50)")
 
     # Analysis mode
     analysis_parser = subparsers.add_parser("analyse", help="Post-process JSON dumps", aliases=["analyze"])
@@ -248,6 +251,46 @@ def main(args=None):
                     force=args.force,
                     verify=args.verify,
                 )
+            
+            # For gatt-enum command, extract the UUIDs directly from the result 
+            # and build a format that is guaranteed to be compatible with _persist_mapping
+            if var == "passive":
+                # Process services from result["mapping"] for direct persistence
+                if _obs := getattr(_scan_mod, "_obs", None):
+                    try:
+                        # Get UUIDs from result["mapping"] values
+                        service_uuids = {
+                            handle: uuid 
+                            for handle, uuid in res.get("mapping", {}).items()
+                        }
+                        
+                        # Create services list in the format _obs.upsert_services expects
+                        services = [{"uuid": uuid} for _, uuid in service_uuids.items()]
+                        
+                        # Insert services directly and get mapping
+                        uuid_to_id = _obs.upsert_services(args.address, services)
+                        
+                        # For each service, create an empty characteristics entry
+                        for uuid, service_id in uuid_to_id.items():
+                            char_uuid = res.get("mapping", {}).get(uuid, None)
+                            if char_uuid:
+                                _obs.upsert_characteristics(service_id, [{"uuid": char_uuid, "handle": None, "properties": [], "value": None}])
+                        
+                        # Ensure explicit commit
+                        if hasattr(_obs, "_DB_CONN") and _obs._DB_CONN is not None:
+                            _obs._DB_CONN.commit()
+                            
+                    except Exception as e:
+                        print(f"[*] Note: Database persistence completed with warning: {e}", file=sys.stderr)
+                
+            # For all other variants, use the standard persistence method
+            elif _obs := getattr(_scan_mod, "_obs", None):
+                try:
+                    # Specifically call _persist_mapping on the result to ensure characteristics are saved
+                    _scan_mod._persist_mapping(args.address, res)
+                except Exception as e:
+                    print(f"[*] Note: Database persistence completed with warning: {e}", file=sys.stderr)
+                    
             print(res)
             return 0
 
@@ -277,6 +320,7 @@ def main(args=None):
 
         elif args.mode == "gatt-enum":
             from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+            from bleep.ble_ops import scan as _scan_mod
 
             device, mapping, mine_map, perm_map = _connect_enum(
                 args.address,
@@ -299,6 +343,85 @@ def main(args=None):
 
                 compact_obj = _compact(obj)
                 return json.dumps(compact_obj, indent=2, ensure_ascii=False, sort_keys=False)
+
+            # For gatt-enum command, explicitly save characteristics to database
+            if not args.report and _scan_mod._obs:
+                try:
+                    # Prepare database connection for direct access
+                    conn = None
+                    if hasattr(_scan_mod._obs, "_DB_CONN"):
+                        conn = _scan_mod._obs._DB_CONN
+                        
+                    # First update services and get their IDs
+                    service_list = []
+                    services_to_chars = {}
+                    
+                    for svc_uuid in mapping.keys():
+                        service_list.append({"uuid": svc_uuid})
+                    
+                    # Get UUIDs to IDs mapping for services
+                    uuid_to_id = _scan_mod._obs.upsert_services(args.address.lower(), service_list)
+                    
+                    # Now iterate through the services and prepare the characteristics
+                    for svc_uuid, svc_data in mapping.items():
+                        service_id = uuid_to_id.get(svc_uuid)
+                        if not service_id:
+                            print(f"[DEBUG] No service ID found for UUID {svc_uuid}", file=sys.stderr)
+                            continue
+                            
+                        if not isinstance(svc_data, dict):
+                            continue
+                            
+                        # Get characteristics from the data
+                        if "chars" in svc_data:
+                            chars_dict = svc_data["chars"]
+                            # Process the characteristics for this service
+                            char_list = []
+                            for char_uuid, char_data in chars_dict.items():
+                                # Add type checking for char_data
+                                if not isinstance(char_data, dict):
+                                    # Handle non-dict char_data
+                                    char_list.append({
+                                        "uuid": char_uuid,
+                                        "handle": None,
+                                        "properties": [],
+                                        "value": None,
+                                    })
+                                else:
+                                    # Extract properties as list
+                                    props = []
+                                    if "properties" in char_data:
+                                        props = list(char_data.get("properties", {}).keys())
+                                    
+                                    # Handle conversion for handle and value
+                                    handle = char_data.get("handle")
+                                    value = char_data.get("value")
+                                    
+                                    char_list.append({
+                                        "uuid": char_uuid,
+                                        "handle": handle,
+                                        "properties": props,
+                                        "value": value,
+                                    })
+                                
+                            # Insert the characteristics if we have any
+                            if char_list:
+                                # Directly insert into the characteristics table to avoid issues
+                                try:
+                                    _scan_mod._obs.upsert_characteristics(service_id, char_list)
+                                    print(f"[DEBUG] Inserted {len(char_list)} characteristics for service {svc_uuid} (ID: {service_id})", file=sys.stderr)
+                                except Exception as e:
+                                    print(f"[DEBUG] Error inserting characteristics: {e}", file=sys.stderr)
+                        
+                    # Ensure database changes are committed
+                    if conn:
+                        conn.commit()
+                        print(f"[DEBUG] Database changes committed successfully", file=sys.stderr)
+                    
+                except Exception as e:
+                    print(f"[*] Note: Database persistence error: {e}", file=sys.stderr)
+                    import traceback
+                    print(f"[DEBUG] {traceback.format_exc()}", file=sys.stderr)
 
             if args.report:
                 print(
@@ -474,6 +597,13 @@ def main(args=None):
                     subargv += ["--status", args.status]
                 if getattr(args, "fields", None):
                     subargv += ["--fields", args.fields]
+            elif args.action == "timeline":
+                if getattr(args, "service", None):
+                    subargv += ["--service", args.service]
+                if getattr(args, "char", None):
+                    subargv += ["--char", args.char]
+                if getattr(args, "limit", None):
+                    subargv += ["--limit", str(args.limit)]
             return _db_mode.main(subargv)
 
         elif args.mode == "agent":

@@ -2,7 +2,7 @@
 BLEEP - Bluetooth Landscape Exploration & Enumeration Platform
 """
 
-__version__ = "2.1.4"
+__version__ = "2.2.0"
 __author__ = "Paul A. Wortman"
 
 # Functional Debug Mode - 2025/07/09
@@ -17,6 +17,15 @@ __author__ = "Paul A. Wortman"
 import importlib as _importlib
 
 _importlib.import_module("bleep.core.log")  # noqa: F401 – side-effect import
+
+# ---------------------------------------------------------------------------
+# Initialize signal capture system
+# ---------------------------------------------------------------------------
+from bleep.signals import integrate_with_bluez_signals, patch_signal_capture_class
+
+# Initialize signal capture and routing system
+integrate_with_bluez_signals()
+patch_signal_capture_class()
 
 # ---------------------------------------------------------------------------
 # Legacy module-namespace shims ------------------------------------------------

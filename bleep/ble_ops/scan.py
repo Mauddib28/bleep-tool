@@ -175,53 +175,167 @@ def _persist_mapping(mac: str, mapping: Dict[str, Any]):
         return
     try:
         svc_list = []
+        
+        # Support different mapping structures (original and gatt-enum format)
+        if "Services" in mapping:  # Handle gatt-enum JSON format
+            mapping = mapping.get("Services", {})
+            
+        # Support format from enum-scan functions where the mapping is inside "mapping" key
+        elif "mapping" in mapping:
+            mapping = mapping.get("mapping", {})
+            
         for svc_uuid, svc_data in mapping.items():
-            svc_list.append({
-                "uuid": svc_uuid,
-                "name": svc_data.get("name"),
-                "handle_start": svc_data.get("start_handle"),
-                "handle_end": svc_data.get("end_handle"),
-            })
+            if not isinstance(svc_data, dict):
+                # Log the unexpected service data type for debugging
+                print_and_log(
+                    f"[DEBUG] Non-dictionary service data for {svc_uuid}: {type(svc_data).__name__}={svc_data!r}",
+                    LOG__DEBUG
+                )
+                svc_list.append({
+                    "uuid": svc_uuid,
+                    "name": None,
+                    "handle_start": None,
+                    "handle_end": None,
+                })
+            else:
+                svc_list.append({
+                    "uuid": svc_uuid,
+                    "name": svc_data.get("name"),
+                    "handle_start": svc_data.get("start_handle"),
+                    "handle_end": svc_data.get("end_handle"),
+                })
+        
         uuid_to_id = _obs.upsert_services(mac, svc_list)  # type: ignore[attr-defined]
+        
         # characteristics
+        characteristic_count = 0
         for svc_uuid, svc_data in mapping.items():
             sid = uuid_to_id.get(svc_uuid)
             if not sid:
                 continue
+            
             char_list = []
-            for char_uuid, char_data in svc_data.get("chars", {}).items():
-                char_list.append({
-                    "uuid": char_uuid,
-                    "handle": char_data.get("handle"),
-                    "properties": list(char_data.get("properties", {}).keys()),
-                    "value": char_data.get("value"),
-                })
+            
+            # Check if svc_data is a dictionary
+            if not isinstance(svc_data, dict):
+                # Already logged above, skip this service
+                continue
+                
+            # Support multiple formats of characteristic data
+            chars_data = None
+            
+            # Standard format with "chars" key
+            if "chars" in svc_data:
+                chars_data = svc_data.get("chars", {})
+            
+            # gatt-enum format with "Characteristics" key
+            elif "Characteristics" in svc_data:
+                chars_data = svc_data.get("Characteristics", {})
+            
+            # For enum-scan format, the characteristic UUID might be directly stored as the value
+            elif isinstance(svc_data, str):
+                # For this format, we can only store the UUID, not properties or values
+                chars_data = {svc_data: {}}
+            
+            # If no characteristics found in any format
+            if not chars_data:
+                continue
+                
+            for char_uuid, char_data in chars_data.items():
+                # Add type checking before accessing dictionary methods
+                if not isinstance(char_data, dict):
+                    # Log the unexpected characteristic data type for debugging
+                    char_list.append({
+                        "uuid": char_uuid,
+                        "handle": None,
+                        "properties": [],
+                        "value": None,
+                    })
+                else:
+                    # Support both property formats (legacy and gatt-enum)
+                    props = []
+                    if "properties" in char_data:
+                        props = list(char_data.get("properties", {}).keys())
+                    elif "Flags" in char_data:
+                        props = char_data.get("Flags", [])
+                        
+                    # Support both handle formats
+                    handle = None
+                    if "handle" in char_data:
+                        handle = char_data.get("handle")
+                    elif "Handle" in char_data:
+                        # Handle format conversion from hex string to integer if needed
+                        handle_val = char_data.get("Handle")
+                        if isinstance(handle_val, str) and handle_val.startswith("0x"):
+                            try:
+                                handle = int(handle_val, 16)
+                            except ValueError:
+                                handle = None
+                        else:
+                            handle = handle_val
+                        
+                    # Support both value formats
+                    value = None
+                    if "value" in char_data:
+                        value = char_data.get("value")
+                    elif "Value" in char_data:
+                        value = char_data.get("Value")
+                        # If value is a string but Raw data is available, use Raw instead
+                        if isinstance(value, str) and "Raw" in char_data:
+                            raw_val = char_data.get("Raw")
+                            # Try to convert Raw from string representation of a list to bytes
+                            if isinstance(raw_val, str) and raw_val.startswith("[") and raw_val.endswith("]"):
+                                try:
+                                    # Parse the string representation of a list into actual bytes
+                                    raw_list = eval(raw_val)
+                                    if isinstance(raw_list, list):
+                                        value = bytes(raw_list)
+                                except Exception:
+                                    # If parsing fails, keep the original Value
+                                    pass
+                    
+                    char_list.append({
+                        "uuid": char_uuid,
+                        "handle": handle,
+                        "properties": props,
+                        "value": value,
+                    })
+                    characteristic_count += 1
+            
             if char_list:
                 _obs.upsert_characteristics(sid, char_list)  # type: ignore[attr-defined]
-    except Exception:
-        pass
+                
+        # Ensure changes are committed to database
+        if hasattr(_obs, "_DB_CONN") and _obs._DB_CONN is not None:
+            _obs._DB_CONN.commit()
+            
+    except Exception as e:
+        print_and_log(f"[-] Error saving to database: {str(e)}", LOG__DEBUG)
+        import traceback
+        print_and_log(f"[-] Traceback: {traceback.format_exc()}", LOG__DEBUG)
 
 
 def _base_enum(target_bt_addr: str, *, deep: bool = False):
     """Connect & enumerate, return (device, mapping, mine_map, perm_map)."""
     from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+    
     device, mapping, mine_map, perm_map = _connect_enum(target_bt_addr, deep_enumeration=deep)
+    
     # Persist to observation DB if available
-    _persist_mapping(device.get_address(), mapping)
     if _obs:
         try:
-            _obs.upsert_device(device.get_address(), name=device.get_name())
-            svc_list = []
-            for uuid, svc_data in mapping.items():
-                svc_list.append({
-                    "uuid": uuid,
-                    "name": svc_data.get("name"),
-                    "handle_start": svc_data.get("start_handle"),
-                    "handle_end": svc_data.get("end_handle"),
-                })
-            _obs.upsert_services(device.get_address(), svc_list)
-        except Exception:
-            pass
+            # Update device in database
+            _obs.upsert_device(
+                device.get_address(), 
+                name=device.get_name(),
+                device_type="le"  # Enum-scan is for BLE devices
+            )
+            
+            # Save services and characteristics
+            _persist_mapping(device.get_address(), mapping)
+        except Exception as e:
+            print_and_log(f"[-] Error saving to database: {str(e)}", LOG__DEBUG)
+    
     return device, mapping, mine_map, perm_map
 
 

@@ -135,6 +135,14 @@ This page aggregates open tasks referenced across the project so contributors ha
     - [ ] Add programmatic API usage examples
     - [ ] Document observation module's public functions with examples
     - [ ] Create advanced query cookbook for complex data extraction scenarios
+  * GATT enumeration database improvements:
+    - [x] Fix SQL syntax error in upsert_characteristics function
+    - [x] Add robust error handling to prevent cascade failures
+    - [x] Support multiple data structure formats (standard, gatt-enum, enum-scan)
+    - [x] Improve gatt-enum command to correctly extract and save characteristics
+    - [x] Add automatic reconnection and retry logic for database operations
+    - [x] Determine why enum-scan, gatt-enum, and gatt-enum --deep scans produce different information verbosity within the database (Note: Behavior may be perfectly within expected operational parameters)
+    - [x] Investigate why gatt-enum --deep scan produces LESS database information than gatt-enum scan despite printing more information to terminal; ensure all terminal output is properly captured in the database
 - [x] Classic Bluetooth enumeration (README.refactor)
 - [x] Improve detection of controller stall (NoReply / timeout) and offer automatic `bluetoothctl disconnect` prompt
   - [x] Fixed property monitor callback error when disconnecting from a device while monitoring is active
@@ -209,6 +217,10 @@ This page aggregates open tasks referenced across the project so contributors ha
   - [x] Create CLI for signal configuration
   - [x] Document signal capture patterns
   - [x] Create examples of signal capture workflows
+  - [x] Fix signal integration with application startup
+  - [x] Add proper database routes for read/write/notification events
+  - [x] Enhance CTF module to properly emit signals for characteristic operations
+  - [x] Implement robust error handling for signal processing
 
 - [ ] **Offline Device Analysis**
   - [ ] Design device structure serialization format

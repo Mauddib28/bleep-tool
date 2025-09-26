@@ -86,7 +86,7 @@ def multi_read_all(
                         val = result[r].get(label)
                         if isinstance(val, (bytes, bytearray)):
                             try:
-                                _obs.insert_char_history(mac, svc_uuid, char_uuid, bytes(val))  # type: ignore[attr-defined]
+                                _obs.insert_char_history(mac, svc_uuid, char_uuid, bytes(val), "read")  # type: ignore[attr-defined]
                             except Exception:
                                 pass
     return result

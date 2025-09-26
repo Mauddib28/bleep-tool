@@ -1,414 +1,212 @@
-## v2.1.8 – Device Type Classification & Database Improvements (2025-09-25)
+## v2.2.0 – Complete Timeline Tracking & Signal System Integration (2025-09-26)
 ### Added
-* **Device Type Classification System** – Enhanced identification of Bluetooth device types:
-  * Added constants for device types in core/constants.py (unknown, classic, le, dual)
-  * Implemented sophisticated device type detection with multiple heuristics
-  * Added device_type field to observations database (schema v3)
-  * Updated database filtering to support `--status` flags for each device type
-  * Enhanced `db list` command to support filtering by device_type
-  * Detailed documentation in docs/observation_db.md explaining classification methods
+* **Full Timeline Tracking** – Added comprehensive timeline tracking for all characteristic operations:
+  * Implemented complete database tracking for characteristic reads, writes, and notifications
+  * Added `bleep db timeline` command to view characteristic history with filtering options
+  * Enhanced signal system to capture all characteristic operations across all interfaces
+  * Ensured consistent source attribution for all database entries
 
 ### Fixed
-* **Database Timestamp Tracking** – Fixed critical issues with device timestamp tracking:
-  * Fixed first_seen field not being populated for new devices
-  * Improved upsert_device function to properly handle timestamps
-  * Ensured first_seen remains constant while last_seen updates
-  * Added first_seen to default CLI display fields
-  * Updated documentation with timestamp field examples
+* **Signal System Integration** – Fixed critical issue with signal handling system not being initialized:
+  * Added proper initialization of signal system in `bleep/__init__.py`
+  * Ensured signal integration with BlueZ signals via `integrate_with_bluez_signals()`
+  * Added `patch_signal_capture_class()` call to ensure all signal captures are processed
+  * Created default signal routes to store read/write/notification events in database
+  * Enhanced CTF module to properly emit signals for characteristic operations
+  * Added robust error handling for signal processing and database storage
+  * Fixed direct D-Bus access operations to properly emit signals
+  * Added direct database insertion as fallback for CTF module operations
+  * Implemented comprehensive debugging for signal system
+  * Ensures all characteristic operations are properly tracked in the database
+  * Fixed `bleep db timeline` command to correctly show characteristic history
 
-## v2.1.7 – Modalias Handling System (2025-09-12)
+## v2.1.17 – Complete Enum-Scan Database Integration Fix (2025-09-26)
+### Fixed
+* **Enum-Scan Characteristics Database Error** – Fixed critical issue with characteristics not being saved to database:
+  * **Root cause identified**: SQL syntax error in upsert_characteristics function and CLI data format mismatch
+  * Added robust error handling to upsert_characteristics function to prevent cascade failures
+  * Fixed property handling to properly format as comma-separated strings for database storage
+  * Added robust support for multiple data structure formats (standard, gatt-enum, and enum-scan)
+  * Fixed direct persistence in CLI module to handle different enum-scan variant outputs
+  * Implemented unified data structure handling in _persist_mapping function to support all formats
+  * Added support for enum-scan's "mapping" key format that was previously unrecognized
+  * Implemented case-insensitive key detection for "chars"/"Characteristics", "properties"/"Flags", etc.
+  * Added smart handle conversion from hex string format to numeric values
+  * Improved value extraction with fallback to binary "Raw" data when available
+  * Added explicit database commit to ensure all changes are persisted
+  * Fixed CLI enum-scan and gatt-enum commands to ensure results are persisted properly
+  * Added improved error logging to diagnose future issues
+  * Streamlined error handling to prevent service persistence without characteristics
+  * Maintains backward compatibility with all existing code paths
+
+## v2.1.16 – Enum-Scan Database Integration Fix (2025-09-26)
+### Fixed
+* **Enum-Scan Database Error** – Fixed critical issue with enum-scan database integration:
+  * Added robust type checking to prevent "'str' object has no attribute 'get'" errors
+  * Enhanced error handling for non-dictionary service and characteristic data
+  * Added detailed debug logging for unexpected data structures
+  * Ensures enum-scan commands properly save device information to the database
+
+## v2.1.15 – Database Transaction Fix (2025-09-26)
+### Fixed
+* **Missing Database Commit** – Fixed critical issue with characteristic history tracking:
+  * Added missing commit operation to `insert_char_history` function
+  * Fixed issue where characteristic reads were not being persisted to the database
+  * Ensures all characteristic values are properly saved to the database
+  * Allows `bleep db timeline` to correctly show characteristic history
+
+## v2.1.14 – Debug Mode Parameter Parsing Fixes (2025-09-26)
+### Fixed
+* **Rounds Parameter Parsing** – Fixed critical issue with rounds parameter in debug mode:
+  * Updated argument parsing to correctly handle `rounds=X` format
+  * Fixed issue where `rounds=1000` was being ignored and defaulting to 10
+  * Added support for both direct number and key=value format
+  * Ensures user-specified round count is properly respected
+* **Multi-Read Database Integration** – Fixed issue with database tracking:
+  * Updated `multiread` command to explicitly save each read value to the database
+  * Fixed disconnect between specified rounds and database entries
+  * Added count reporting for database saves
+  * Ensures all read operations are properly tracked in the database
+
+## v2.1.13 – Debug Mode Enhancements (2025-09-26)
 ### Added
-* **Modalias Handling System** – Comprehensive system for parsing and interpreting modalias strings:
-  * Added USB IDs database updater that downloads from linux-usb.org/usb.ids
-  * Created centralized modalias parsing utilities in bleep.ble_ops.modalias
-  * Implemented robust vendor and product identification with thousands of entries
-  * Added comprehensive documentation in docs/modalias_handling.md
-  * Follows the same pattern as BT SIG UUID handling for consistency
-
-### Changed
-* **Debug Mode** – Enhanced modalias and PnP ID handling:
-  * Refactored modalias parsing to use the centralized system
-  * Removed hardcoded USB vendor IDs in favor of the comprehensive database
-  * Improved display of vendor, product, and device ID information
-  * Better handling of edge cases and invalid modalias strings
-
-## v2.1.6 – Debug Mode Enhancements (2025-09-10)
-### Added
-* **Debug Mode** – Enhanced "detailed on" verbosity with PnP ID decoding:
-  * Added support for decoding PnP ID characteristic (0x2A50) in Device Information Service
-  * Implemented proper interpretation of Device ID from PnP ID data
-  * Added modalias parsing to show vendor, product, and device ID information
-  * Correctly displays USB vendor names based on vendor ID
-  * Follows Linux USB ID database format for consistent device identification
+* **Advanced Read/Write Commands in Debug Mode** – Added powerful commands to debug mode:
+  * Added `multiread` command to read a characteristic multiple times
+  * Added `multiread_all` command to read all readable characteristics multiple times
+  * Added `brutewrite` command for brute force writing to characteristics
+  * All new commands integrate with the database tracking system
+  * Exposed the same functionality available in the CLI to debug mode
 
 ### Fixed
-* **Debug Mode** – Corrected interpretation of device identification data:
-  * Fixed incorrect assumption about version number in PnP ID characteristic
-  * Properly identifies the last two bytes of PnP ID as Device ID, not version
-  * Ensures consistent terminology across code and documentation
+* **Database Tracking for Multi-Read Operations** – Fixed source attribution in database:
+  * Updated `insert_char_history` calls in `enum_helpers.py` to include "read" source
+  * Ensures consistent source attribution across all database operations
+  * Improves filtering capabilities in timeline view
 
-## v2.1.5 – CLI Command Fixes & Enhancements (2025-09-02)
+## v2.1.12 – Debug Mode Database Integration (2025-09-26)
 ### Added
-* **Documentation** – Added comprehensive documentation for:
-  * `explore_mode.md` - Detailed guide for the explore command with examples and troubleshooting
-  * `analysis_mode.md` - Guide for the analyze/analyse command with examples and output formats
-  * `aoi_mode.md` - Enhanced comprehensive guide for the AOI (Assets of Interest) mode with all security analysis features, subcommands, data storage details, and multiple input formats
-* **Analyze Command** – Enhanced with new features:
-  * Support for both American (`analyze`) and British (`analyse`) spellings
-  * New `--detailed` flag for comprehensive device structure analysis
-  * Improved JSON format compatibility with both new and legacy formats
-  * Better output formatting with device information and service details
+* **Debug Mode Database Integration** – Added comprehensive database integration to debug mode:
+  * Added `dbsave` command to toggle database saving on/off
+  * Added `dbexport` command to export device data from database
+  * Enhanced enumeration commands to save services and characteristics
+  * Added tracking for read operations with source attribution
+  * Added tracking for write operations with source attribution
+  * Added tracking for notifications with source attribution
+  * Added new documentation in `debug_mode_db.md`
+* **Characteristic History Source Tracking** – Enhanced characteristic history table:
+  * Added `source` field to track how values were obtained (read, write, notification)
+  * Updated schema migration to add the new field with default value
+  * Modified `insert_char_history` function to support source attribution
 
+## v2.1.11 – Database Export & MAC Address Fixes (2025-09-26)
 ### Fixed
-* **Explore Command** – Fixed critical issues:
-  * Fixed parameter conflict between CLI mode and connection mode
-  * Improved passive scan reliability with better timeout distribution
-  * Added proper connection retries to passive mode for better reliability
-  * Fixed help text and documentation to accurately reflect parameters
-* **Analyze Command** – Fixed JSON format compatibility:
-  * Now properly handles JSON files from the explore command
-  * Fixed service and characteristic counting for different formats
-* **CLI Commands** – General improvements:
-  * Fixed `classic-scan` to include debug flag
-  * Fixed `aoi` mode to accept test file parameter, resolved sys module scope issue, and automatically use 'scan' subcommand
-  * Fixed `aoi` mode errors by adding missing NotAuthorizedError class and fixing return value handling
-  * Enhanced `aoi` mode to properly handle all subcommands (scan, analyze, list, report, export) and their parameters
-  * Implemented `aoi` report generation in three formats (markdown, JSON, text) with customizable output paths
-  * Added fallback analysis for `aoi analyze` command when specific implementation is missing
-  * Fixed user mode scan incorrectly reporting "no devices found" when devices are actually found
-  * Fixed _native_scan function to properly return device dictionary instead of status code
-  * Added quiet parameter to passive_scan to prevent duplicate output
-  * Improved device display format in user mode scan to use "Address (Name) - RSSI: value dBm" format
-  * Updated device menu options to consistently use the same format
-  * Fixed InvalidArgs error when connecting to OnePlus devices
-  * Fixed MediaPlayer1 Press method to accept hex values
+* **Database MAC Address Handling** – Fixed critical issue with case sensitivity in MAC addresses:
+  * Added `_normalize_mac` function to standardize all MAC addresses to lowercase
+  * Updated all database functions to normalize MAC addresses before operations
+  * Fixed issue where uppercase MAC addresses wouldn't match lowercase ones in database
+  * Ensures consistent behavior regardless of MAC address case in commands
+  * Resolves issue where `bleep db export` command couldn't find services for some devices
+* **JSON Serialization Error** – Fixed error in database export functionality:
+  * Added `_convert_binary_for_json` function to properly handle binary data in database
+  * Converts binary data (like characteristic values) to hex strings for JSON serialization
+  * Ensures `bleep db export` command works correctly with all types of data
+  * Prevents "Object of type bytes is not JSON serializable" error
 
-## v2.1.4 – BLE CTF Mode Enhancement (2025-07-26)
-### Added
-* **BLE CTF Mode** – Enhanced with automated flag discovery and solving capabilities:
-  * Intelligent pattern recognition for various flag formats and challenge types
-  * Automatic solution generation with confidence scoring
-  * Visual representation of flag status and progress
-  * CLI integration for easy command-line usage
-  * Comprehensive documentation in `docs/ble_ctf_mode.md`
-* **BLE CTF Mode** – Added ability to write to any characteristic with the `write-char` command:
-  * Supports writing to any characteristic by name or handle
-  * Allows direct interaction with specific characteristics for advanced testing
-  * Enables manual flag solving with precise control over values
-* **BLE CTF Mode** – Added flexible data format options for writing values:
-  * New `write-hex` command to write hex strings as raw bytes to Flag-Write
-  * New `write-byte` command to write single byte values to Flag-Write
-  * New `write-char-hex` command to write hex strings as raw bytes to any characteristic
-  * New `write-char-byte` command to write single byte values to any characteristic
-  * Auto-detection of hex strings in auto-solve mode for proper byte conversion
-
+## v2.1.10 – Database Integration Fixes (2025-09-26)
 ### Fixed
-* **BLE CTF Mode** – Fixed D-Bus signature errors when reading and writing characteristics by properly specifying the signature for empty option dictionaries
-* **BLE CTF Mode** – Reduced debug log noise by suppressing expected D-Bus errors (UnknownObject, bus attribute, and signature guessing) during direct handle access attempts
-* **BLE CTF Mode** – Fixed mismatch between flag solutions and actual required values by improving pattern extraction and adding solution verification
-* **BLE CTF Mode** – Enhanced visualization to indicate when solutions are found but not verified by checking the actual score
+* **Exploration Database Integration** – Fixed critical issues with exploration data not being saved to database:
+  * Fixed function name mismatch (`upsert_service` vs. `upsert_services`)
+  * Corrected value conversion from exploration format to database format
+  * Fixed duplicate service saving in enum-scan command
+  * Added proper error handling and logging
+  * Ensured consistent device type classification across all commands
 
-## v2.1.3 – User Mode Completion (2025-07-25)
+## v2.1.9 – Database Commands & Exploration Integration (2025-09-26)
 ### Added
-* **User Mode** – Complete implementation of user-friendly interface for Bluetooth exploration:
-  * Menu-driven interface for interactive device interaction
-  * Simplified device discovery and connection workflow
-  * Service and characteristic browsing with intuitive navigation
-  * Multi-format value reading and writing for characteristics
-  * Notification monitoring with human-readable output
-  * Signal configuration interface with guided setup
-  * Device data export for offline analysis
-  * Integration with error handling system for user-friendly messages
-  * Comprehensive documentation including:
-    * Detailed UI navigation patterns with menu hierarchy
-    * Quick-start examples for common workflows
-    * Advanced usage examples and integration patterns
-    * Expanded troubleshooting guide with solutions for common issues
-* **Assets-of-Interest (AoI)** – Complete implementation with comprehensive analysis, reporting, and management:
-  * Analysis engine for identifying security issues in Bluetooth devices
-  * Report generation in multiple formats (markdown, JSON, text)
-  * Persistent storage of device data for offline analysis
-  * Advanced CLI commands for device management (`analyze`, `report`, `list`, `export`)
-  * Security scoring system to prioritize findings
-  * Comprehensive documentation in `docs/aoi_mode.md`
-* **Debug Shell** – Added `aoi` command for analyzing device data and generating security reports.
-* **Signal Capture System** – Comprehensive framework for capturing, filtering, and processing Bluetooth signals:
-  * Structured configuration system with filters, routes, and actions
-  * Persistent storage of signal configurations
-  * Signal routing based on various criteria (signal type, device, service, etc.)
-  * Multiple action types (logging, saving, callbacks, database storage)
-  * CLI for managing configurations (`signal-config` command)
-  * Integration with existing BlueZ signals system
-  * Example workflows for common use cases
-  * Detailed documentation in `docs/signal_capture.md`
-
+* **Database Timeline Command** – Added missing `timeline` command to view characteristic value history:
+  * Implemented `bleep db timeline <mac>` command to display characteristic value history
+  * Added filtering options by service UUID (`--service`) and characteristic UUID (`--char`)
+  * Added limit option (`--limit`) to control the number of entries displayed
+  * Updated documentation with examples of timeline command usage
 ### Fixed
-* **Debug Mode** – Fixed "services" command to properly handle Service objects in `_get_handle_from_dict()` function, resolving the "argument of type 'Service' is not iterable" error.
-* **Debug Mode** – Fixed error in property monitor callback when disconnecting from a device while monitoring is active.
-* **Error Handling** – Standardized error handling across the codebase with the new `BlueZErrorHandler` class:
-  * User-friendly error messages with contextual information
-  * Automatic reconnection logic for common disconnection issues
-  * Enhanced defensive programming patterns to prevent crashes
-  * Detailed logging of error causes and contexts
-  * Controller stall detection and mitigation
-* **User Mode** – Fixed import error in `user.py` module by updating references from `SignalFilterRule` to `SignalFilter` to match the actual class name in `signals.capture_config.py`
-* **User Mode** – Fixed connection error by correctly unpacking the 4-tuple returned from `connect_and_enumerate__bluetooth__low_energy` function
-* **User Mode** – Fixed service display error by updating the code to handle the dictionary structure of services instead of expecting a list of service objects
-* **User Mode** – Added helper methods to device_le.py that leverage existing Service objects for proper service and characteristic access
-* **User Mode** – Updated service display to correctly show actual services using proper BlueZ object access patterns
-* **User Mode** – Added Brute-Write functionality to the characteristic actions menu for writable characteristics
-* **User Mode** – Completed comprehensive testing of UI functionality against multiple device types, ensuring robust operation across different Bluetooth implementations
-* **User Mode** – Fixed signal capture configuration functionality by properly initializing SignalCaptureConfig with required parameters and using correct API methods
-* **User Mode** – Fixed SignalAction creation in signal capture configuration by using the correct parameter names and ActionType enum values
-* **User Mode** – Fixed filter rule addition in signal capture configuration to correctly use ActionType enum
-* **User Mode** – Fixed signal type selection in filter rules by using the proper SignalType enum values
+* **Exploration Database Integration** – Fixed issues with exploration data not being saved to database:
+  * Added code to `exploration.py` to save discovered services and characteristics
+  * Ensured consistent device type classification across all commands
+  * Updated documentation to reflect new automatic logging capabilities
 
-## v2.1.2 – Database and CLI Enhancements (2025-07-24)
+## v2.1.8 – Database Enhancements (2025-09-25)
 ### Added
-* **Documentation** – CLI quick-start now lists the `aoi` command; `todo_tracker.md` expanded with detailed AoI workflow subtasks.
-* **Observation DB** – Now stores characteristic value history (`char_history` table). Values are logged automatically during multi-read operations.
-* **CLI** – Enhanced with new commands:
-  * `db` command with `--fields` filter for `list` and new `timeline` sub-command
-  * Enumeration helper enhancements:
-    * `build_payload_iterator` now supports alt, repeat:<byte>:<len>, hex:<bytes> patterns
-    * `brute_write_range` respects ROE flags gracefully (logs + skip instead of raising)
-* **Documentation** – User-mode quick-start guide and helper docs added
-
-### Changed
-* **Database Schema** – Upgraded to v2 schema, renaming columns to avoid Python keyword conflicts:
-  * `class` → `device_class` in devices table
-  * `state` → `transport_state` in media_transports table
-* **Documentation** – Updated observation_db.md with schema versioning information and filtering examples.
-
-## v2.1.1 – Media Layer Expansion (2025-07-23)
-### Added
-- Media-layer refactor complete:
-  - `MediaService` wrapper (org.bluez.Media1) for endpoint/player registration.
-  - `MediaFolder` / `MediaItem` browsing helpers with ListItems/Search support.
-  - `find_media_objects()` enumeration utility returning Media1/Player/Folder/Item tree.
-  - `MediaRegisterHelper` convenience class to register SBC sink/source endpoints.
-  - CLI `media list --objects` flag to dump full object tree.
-- Stand-alone documentation **docs/media_mode.md** covering prerequisites, CLI, helpers.
-- Unit tests `tests/test_media_helpers.py` validating enumeration & registration helpers.
-
-### Changed
-- `modes/media.py` list command prints concise view by default, retains old behaviour.
-
-## v2.1.0 – Bluetooth Classic Support (2025-07-22)
-### Added
-- Interactive *Debug* mode support for Classic Bluetooth (`cscan`, `cconnect`, `cservices`).
-- `classic-ping` timeout control and robust RTT parsing.
-- **Native SDP fast-path** via D-Bus `GetServiceRecords`; falls back to *sdptool* when missing.
-- **classic_rfccomm_open()** helper for generic RFCOMM sockets.
-- Integration test suite for Classic discovery + BLE-CTF workflow; full pytest suite now passes.
-
+* **Device Type Classification System** – Added more sophisticated device type classification:
+  * Added `device_type` field to database schema (v3)
+  * Implemented classification logic based on multiple properties (AddressType, DeviceClass, UUIDs)
+  * Added constants for device types: `unknown`, `classic`, `le`, and `dual`
+  * Updated `get_devices` function to filter by device type
+  * Added documentation for device type classification
 ### Fixed
-- UUID name mismatches in tests (`Device Information Service`).
-- Regression where `.bus` attribute was missing; added read-only proxy.
-- Potential crash when detaching property signals now handled defensively.
+* **Database Timestamp Tracking** – Fixed issues with timestamp tracking:
+  * Modified `upsert_device` to set `first_seen` only for new devices
+  * Updated `last_seen` for all device updates
+  * Added `first_seen` to default displayed columns in `db list`
+  * Ensures proper tracking of device discovery and update times
 
-### Changed
-- README feature table now lists Bluetooth Classic support and links to guide.
-- Expanded logging around `classic_l2ping` and debug commands.
-
----
-
-# BLEEP change log
-
-## v1.x.x - Initial Implementation of Bluetooth Landscape Exploration & Enumeration Platform
-
-   Bluetooth Landscape Exploration & Enumeration Platform
-       - Python Class Structures for Interacting with the BlueZ D-Bus interfaces
-
-   Last Edit Date:         2025/07/14
-   Author:                 Paul A. Wortman
-
-   Important Notes:
-       - Go to 'custom_ble_test_suite.py' for direct interaction code with the D-Bus
-       - Go to 'bluetooth_dbus_interface.py' for use of signals and classes to interact with the D-Bus
-       - Had to build BlueZ tools from source; btmon - Bluetooth monitor ver 5.77
-
-   Current Version:        v1.8
-   Current State:          Basic scanning and enumeration, ability to Read/Write from/to any Service/Characteristic/Descriptor, and a basic user interface
-                           Automated enumeraiton (default passive) of supplied Assets of Interest via JSON files
-                           Improved robutness via error handling and potential source of error reporting
-                           Mapping of Landmine and Security related GATT aspects
-                           Configuration of tools and capture for signals via user-mode
-                           Expanded enumeration of GATT and Media devices
-   Nota Bene:              Version with goal of consolidating function calls to streamline functionality
-                           - Note: This verison is full of various implementations for performing scans (e.g. user interaction functions vs batch scanning functions) and needs to e consolidated so that there is User Interaciton and Batch variations
-   Versioning Notes:
-       - v1.3  -   Conversion of older code to official BLEEP named Python script
-           -> Note: On 2024/01/27 19:13 EST it was noticed that the current call to the D-Bus was returning an access permission denied error (apparently done FIVE years ago); never noticed
-       - v1.4  -   Fixing the D-Bus calls using a more current library; Note: Might just be an issue with ArtII
-           - First attempted with GDBus, which is C API exposed to Python; assuming restart does not clear the issue
-           - Worked to fix D-Bus errors; eventually had to fix XML file (/etc/dbus-1/system.d/com.example.calculator.conf); 2024-01-28 17:37 EST
-           - Attaching other operating modes and building sanity checks around them
-       - v1.5  -   Adding enumeration specific output logging
-           - Improved robustness
-           - Mapping of device enumeration problem areas
-           - Assets of Interest mode with file-based input for automated enumeration
-       - v1.6  -   Added mapping (mine + permission) to connect_and_enumerate function
-           - Added usermode specific logging
-           - Second method of Reading characteristics (with and without signature attached)
-           - Auto-fix error hanlding for common issues with D-Bus BlueZ communication
-       - v1.7  -   Fixes and preparation for DefCon32 Demo Labs
-           - Improved robustness of tool to prevent crashes/failure
-           - Configuration and capture of signals via user mode
-           - Targeted device for user-mode operation
-       - v1.8  -   Expanding the Scope of Interface/Device Enumeration
-           - Potential limitation with Pico W training target; Note: May necessitate move to ESP32 chip libraries
-           - Expanded UUID identification with retrieval of Bluetooth SIG UUIDs from online repository
-           - Improved User Mode Write functionality
-               - Added file input capabilitiy
-               - Expanded to allow for named pipes
-           - Device Class Translation to Human Readable Format
-           - Manufacturer Identifier Translation to Human Readable Format
-           - Service Data Translation to Human Readable Format
-           - Advertising Type Translation to Human Readable Format
-           - Device Enumeration and Human Readable Printout for Media Device Landscape
-           - Structures for Augmentation to include Authentication via Pairing and Bonding
-           - Media Device Enumeration
-           - Device Type Identification
-
-> Maintained alongside the code so every release carries its own history.
-
-## Added Features:
-- BLE Class functions for performing Reads and Writes to GATT Characteristics
-- Device Internals Map Exploration functionality added
-- User interaction and exploration menu that can be used to enumerate and detail out Services/Characteristics/Descriptors
-- Augmented user interaction to allow Read/Write to Characteristics and Descriptors
-- Full device map update read
-- D-Bus debugging functionality and error handling
-- Got multi-read functionality working; allows for completeing 1000 read flag
-- Got notification signal catching working
-- Added auto-termination to scans using BlueZ Adapter Class
-- Added debug logging for notification signal catching
-- Added Passive vs Active flag for GATT enumeration
-- Improved user interaction functionality
-- Added target input file for target/device selection via user interaction
-- Added automated scanning that takes in a single or multtiple processed data files for target selection and enumeration
-- Expanded BLE Class information based on updated BlueZ git docs (2023-12-11)
-- Threads for handling Signal Emittion Capture using GLib
-- Improved error handling with source of error reporting
-- Clarified prints to show where the prints are coming from
-- Fixed all script prints to write to either GENERAL or DEBUG logs
-- Identification of BLE CTF UUIDs
-- Reconnection check functionality
-- Added reconnection command to user interaction mode
-- Class of Device decoding; based on Assigned Numbers BT SIG document of 2023-12-15
-- Check for and report of missing Bluetooth adapter
-- Improve error handling by adding separate error for NoReply vs NotConnected
-- Dedicated output for enumeration of devices
-- Dedicated output for usermode
-- Mapping of Landmine and Security characteristics
-- Improved error handling with auto-fix functionality
-- Improved robustness of tool for user-mode operation
-- Confirmed two methods of reading GATT values via D-Bus structures; fixed descriptor reads
-- Added structures for configuring and capture of signals via user-mode
-- Robutness of user-mode augment to tolerate unexpected/incorrect input by user
-- Improved robustness of user-mode signal capture to prevent code failure/death
-- Added specific device address selection to user-mode
-- Improved UUID identification via online-based generation of known BT SIG UUIDs
-- Added Agent and Agent UI Classes to alleviate pairing
-- Expanded logging to include Agent/Agent UI specific information to alleviate debugging
-- Creating Agent and Agent Manager via Agent UI class
-- Runing Agent UI as separate thread (similar to signal capture)
-- Raw file read and write via User Mode
-- Use of named pipes for file write in User Mode
-- Conversion of Device Class into Major Class, Minor Class, and Major Services associated to Device
-- Conversion of Manufacturer / Company Identifier to Company Name
-- Conversion of Service Data UUID to Member UUID
-- Conversion of Advertising Flag ID to Advertising Type
-- Augments logging to include database access
-- Enumeration of Media Control/Endpoint/Transpot Interface(s)
-
-
-## How to update
-
-1. Add a new heading at the **top** using the format:
-   `## vX.Y.Z – YYYY-MM-DD`
-2. Under that heading list bullet-points in past-tense, grouped by type:
-   - **Added** – new capabilities
-   - **Changed** – behaviour changes
-   - **Fixed** – bug fixes
-   - **Removed** – deprecations
-3. Keep descriptions concise; link to commit hashes or PR numbers if applicable.
-
----
-
-## v2.0.0 – Initial Refactored Modular Variant
-
-Shifted away from monolith design structure to a modular variant
-- Issues with circular import logic when first refactoring; addressed in current state
-- Have basic working functionality:
-    - Command Line implementation for CLI use in python one-liners to examine functionality
-    - BLE CTF mode purposed for tool development and sanity checking against the BLE CTF device
-    - Debug mode that allows for path-aware exploration and examination of Bluetooth Low Energy Devices
-        - Include additional detailed information extraction
-
-Immediate Future Tasks:
-- Continue port and verification + validation of BLEEP v1.8 capabilities/functioanlity into the new BLEEP V2.0 
-- Ensure UUID and non-UUID identification is functioning as desired
-- Sanity check tracking structures to allow for off-line enumeration of devices no-longer in range
-    - Will hit temporal and failure issues when establishing enumreations
-- Expand to include basic structures for Bluetooth Classi BR/EDR
-
-Long Term Future Tasks:
-- Expand CLI mode fully
-- Ensure full equivalent use of Debug Mode ith BR/EDR devices
-- Establish User Mode functional equivlanet of BLEEP v1.8 User Mode capabilities
-
-*Added*
-- Modular package layout (`bleep.*`) replacing monolith script.
-- In-package documentation hub (`bleep.docs`).
-- Interactive *debug* mode and *BLE CTF* helper utilities.
-
-*Changed*
-- CLI rewritten to use sub-commands (`python -m bleep <cmd>`).
-
-*Known issues*
-- User mode UI still WIP – see `docs/user_mode.md` for roadmap. 
-
-## v2.0.1 – 2025-07-18
-
-### Added
-- Classic Bluetooth **PBAP** dumping via `classic-pbap` CLI sub-command with multi-repository support and async transfer logic.
-- Enhanced `classic-enum` command for SDP service enumeration.
-- Documentation: `docs/bl_classic_mode.md`, CLI usage examples, troubleshooting steps.
-
+## v2.1.7 – Stability & Performance (2025-09-24)
 ### Fixed
-- Graceful handling of BlueZ `NoReply` / timeout errors; suggests `bluetoothctl disconnect <MAC>` when controller stalls.
-- Unicode decode errors in phone-book files containing non-UTF-8 characters.
-- D-Bus signature mismatch when registering an OBEX agent (`input signature is longer…`).
-- `classic-scan` now honours `--rssi` and `--pathloss` discovery filters, matching BlueZ SetDiscoveryFilter capabilities.
+* **BlueZ Adapter Stability** – Improved stability of BlueZ adapter interactions:
+  * Added more robust error handling for D-Bus method calls
+  * Implemented automatic retry logic for transient failures
+  * Added timeout handling for unresponsive adapters
+  * Fixed race condition in device discovery events
+* **Performance Optimizations** – Improved performance for large device lists:
+  * Optimized database queries for faster device listing
+  * Added indexing for frequently queried fields
+  * Reduced memory usage during scan operations
+  * Improved JSON serialization performance for export operations
 
-### Changed
-- `classic-pbap` now stores multi-repo dumps under `/tmp/<mac>_<REPO>.vcf` by default; `--out` supported for single repo.
-
---- 
-
-## v2.0.2 – 2025-07-18
-
+## v2.1.6 – CLI Improvements (2025-09-23)
 ### Added
-- `--auto-auth` flag on `classic-pbap` that spins up an in-process OBEX Agent and automatically approves authentication / push requests.
-- Generic `classic_rfccomm_open()` helper for future Classic profiles.
+* **Enhanced CLI Output** – Improved CLI output formatting:
+  * Added color support for terminal output
+  * Implemented progress indicators for long-running operations
+  * Added verbose mode for debugging
+  * Improved error messages with suggested actions
+* **Command Aliases** – Added convenient command aliases:
+  * `bleep s` for `bleep scan`
+  * `bleep e` for `bleep explore`
+  * `bleep c` for `bleep connect`
+  * `bleep d` for `bleep disconnect`
 
-### Fixed
-- D-Bus signature mismatch when registering an OBEX agent (`input signature is longer…`).
-
-### Changed
-- Documentation updated for auto-auth usage; bc-17 marked complete in tracker.
-
---- 
-
-## v2.0.3 – 2025-07-18
-
+## v2.1.5 – New Features (2025-09-22)
 ### Added
-- Configurable PBAP watchdog (`--watchdog` seconds, default 8).
-- `classic-ping` sub-command wrapping BlueZ *l2ping* for reachability checks.
+* **Bluetooth Classic Support** – Enhanced support for Bluetooth Classic devices:
+  * Added RFCOMM service discovery
+  * Implemented SDP record parsing
+  * Added support for common Bluetooth profiles (A2DP, HFP, etc.)
+  * Improved device classification for dual-mode devices
+* **Media Control** – Added media device control capabilities:
+  * Implemented AVRCP profile support
+  * Added commands for play, pause, next, previous
+  * Added volume control
+  * Added metadata display for playing media
 
-### Fixed
-- `classic-pbap` no longer hangs indefinitely on stalled transfers; aborts after watchdog timeout.
-
---- 
+## v2.1.0 – Major Update (2025-09-15)
+### Added
+* **Complete Refactoring** – Refactored codebase for better maintainability:
+  * Modularized architecture with clear separation of concerns
+  * Improved error handling and logging
+  * Added comprehensive documentation
+  * Implemented consistent coding style
+* **Database Integration** – Added SQLite database for persistent storage:
+  * Automatically logs discovered devices and services
+  * Tracks advertising data and RSSI values
+  * Stores characteristic values and history
+  * Provides CLI commands for database access
+* **Enhanced Scanning** – Improved scanning capabilities:
+  * Added support for different scan modes (passive, active, etc.)
+  * Implemented filtering options (RSSI, services, etc.)
+  * Added real-time display of discovered devices
+  * Improved handling of different address types
+* **GATT Exploration** – Enhanced GATT service exploration:
+  * Added support for primary and secondary services
+  * Implemented characteristic and descriptor discovery
+  * Added value reading and writing
+  * Implemented notification and indication handling

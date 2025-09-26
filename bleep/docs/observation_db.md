@@ -17,6 +17,7 @@ BLEEP maintains a local SQLite database (`~/.bleep/observations.db`) that automa
 ## Automatic logging
 
 * `scan`, `connect`, `gatt-enum` and related helpers insert devices, services and characteristics.
+* `explore` and `enum-scan` commands save discovered services and characteristics to the database, including GATT hierarchy.
 * `multi_read_all` logs characteristic values into `char_history` with no extra flags.
 * Media helpers snapshot players/transports whenever they are encountered.
 

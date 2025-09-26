@@ -429,6 +429,39 @@ def create_default_config() -> SignalCaptureConfig:
     )
     config.add_route(route2)
     
+    # Route 3: Store all read operations in database
+    filter3 = SignalFilter(signal_type=SignalType.READ)
+    action3 = SignalAction(action_type=ActionType.DB_STORE, name="store_reads_in_db")
+    route3 = SignalRoute(
+        name="store_characteristic_reads",
+        description="Store all characteristic read operations in the database",
+        filter=filter3,
+        actions=[action3]
+    )
+    config.add_route(route3)
+    
+    # Route 4: Store all write operations in database
+    filter4 = SignalFilter(signal_type=SignalType.WRITE)
+    action4 = SignalAction(action_type=ActionType.DB_STORE, name="store_writes_in_db")
+    route4 = SignalRoute(
+        name="store_characteristic_writes",
+        description="Store all characteristic write operations in the database",
+        filter=filter4,
+        actions=[action4]
+    )
+    config.add_route(route4)
+    
+    # Route 5: Store all notifications in database
+    filter5 = SignalFilter(signal_type=SignalType.NOTIFICATION)
+    action5 = SignalAction(action_type=ActionType.DB_STORE, name="store_notifications_in_db")
+    route5 = SignalRoute(
+        name="store_characteristic_notifications",
+        description="Store all characteristic notifications in the database",
+        filter=filter5,
+        actions=[action5]
+    )
+    config.add_route(route5)
+    
     return config
 
 

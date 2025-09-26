@@ -39,6 +39,15 @@ from bleep.ble_ops.conversion import format_device_class, decode_appearance, dec
 from bleep.ble_ops.modalias import format_modalias_info
 from bleep.ble_ops.enum_helpers import multi_read_all, small_write_probe, build_payload_iterator, brute_write_range
 from bleep.analysis.aoi_analyser import AOIAnalyser, analyse_aoi_data
+from bleep.modes.debug_multiread import _cmd_multiread, _cmd_multiread_all, _cmd_brutewrite
+
+# Import observations module for database integration
+try:
+    from bleep.core import observations as _obs
+    _DB_AVAILABLE = True
+except ImportError:
+    _obs = None
+    _DB_AVAILABLE = False
 
 try:
     import gi
@@ -69,6 +78,7 @@ _monitor_stop_event = threading.Event()
 _notification_handlers = {}
 _detailed_view = False  # Flag to control detailed view mode
 _path_history = []      # Stack of previously visited paths
+_DB_SAVE_ENABLED = True  # Database saving enabled by default
 _path_cache = {}        # Cache of introspection results by path
 
 # Enumeration state (for later inspection)
@@ -427,11 +437,18 @@ def _cmd_help(_: List[str]) -> None:
     print("  enump <MAC> [--rounds N] [--verify]    - Pokey enumeration with 0/1 write probes")
     print("  enumb <MAC> <CHAR_UUID> [--range a-b] [--patterns ascii,inc,alt,repeat:<byte>:<len>,hex:<hex>] [--payload-file FILE] [--force] [--verify]   - Brute enumeration")
     print("  aoi [--save] [MAC]        - Assets-of-Interest analysis and reporting")
+    print("\nAdvanced read/write commands:")
+    print("  multiread <char_uuid|handle> [rounds=N]   - Read a characteristic multiple times (e.g., rounds=1000)")
+    print("  multiread_all [rounds=3]                  - Read all readable characteristics multiple times")
+    print("  brutewrite <char_uuid|handle> <pattern> [--range start-end] [--verify]  - Brute force write values")
     print("\nNavigation commands:")
     print("  ls [path]                  - List objects at current or specified path")
     print("  cd <path>                  - Change to specified D-Bus path")
     print("  pwd                        - Show current D-Bus path")
     print("  back                       - Go back to previous path")
+    print("\nDatabase commands:")
+    print("  dbsave [on|off]           - Toggle database saving")
+    print("  dbexport [--save]         - Export device data from database")
     print("\nOther commands:")
     print("  quit                       - Exit debug mode")
     print()
@@ -475,6 +492,24 @@ def _enum_common(mac: str, variant: str, **opts) -> None:
 
     try:
         device, mapping, mine_map, perm_map = _connect_enum(mac)
+        
+        # Add database persistence here
+        if _DB_AVAILABLE and _DB_SAVE_ENABLED:
+            try:
+                # Update device in database
+                _obs.upsert_device(
+                    device.get_address(), 
+                    name=device.get_name(),
+                    device_type="le"  # Debug enum is for BLE devices
+                )
+                
+                # Save services and characteristics
+                from bleep.ble_ops.scan import _persist_mapping
+                _persist_mapping(device.get_address(), mapping)
+                
+                print_and_log("[*] Device information saved to database", LOG__GENERAL)
+            except Exception as e:
+                print_and_log(f"[-] Failed to save to database: {e}", LOG__DEBUG)
     except Exception as exc:
         _print_detailed_dbus_error(exc)
         return
@@ -1233,6 +1268,36 @@ def debugging_notification_callback(value, path=None, interface=None, signal_nam
     timestamp : float, optional
         The time when the signal was received (defaults to current time)
     """
+    # Save to database if enabled
+    if _DB_AVAILABLE and _DB_SAVE_ENABLED and _current_device and _current_mapping:
+        try:
+            # Extract characteristic UUID from path
+            char_uuid = None
+            if path and "/char" in path:
+                char_parts = path.split("/")
+                for part in char_parts:
+                    if len(part) >= 32:  # Likely a UUID
+                        char_uuid = part
+                        break
+            
+            if char_uuid:
+                # Find service for this characteristic
+                for svc_uuid, svc_data in _current_mapping.items():
+                    for c_uuid, char_data in svc_data.get("chars", {}).items():
+                        if c_uuid == char_uuid:
+                            # Save characteristic value to history
+                            _obs.insert_char_history(
+                                _current_device.get_address(),
+                                svc_uuid,
+                                char_uuid,
+                                value if isinstance(value, bytes) else bytes(str(value), 'utf-8'),
+                                "notification"
+                            )
+                            print_and_log("[*] Notification saved to database", LOG__DEBUG)
+                            break
+        except Exception as e:
+            # Silent failure - don't disrupt notification handling
+            print_and_log(f"[-] Failed to save notification to database: {e}", LOG__DEBUG)
     # Initialize timestamp if not provided
     if timestamp is None:
         import time
@@ -1767,6 +1832,26 @@ def _cmd_read(args: List[str]) -> None:
 
         # Read the characteristic
         value = _current_device.read_characteristic(uuid)
+        
+        # Save to database if enabled
+        if _DB_AVAILABLE and _DB_SAVE_ENABLED and _current_mapping:
+            try:
+                # Find service for this characteristic
+                for svc_uuid, svc_data in _current_mapping.items():
+                    for c_uuid, char_data in svc_data.get("chars", {}).items():
+                        if c_uuid == uuid:
+                            # Save characteristic value to history
+                            _obs.insert_char_history(
+                                _current_device.get_address(),
+                                svc_uuid,
+                                uuid,
+                                value,
+                                "read"
+                            )
+                            print_and_log("[*] Read value saved to database", LOG__DEBUG)
+                            break
+            except Exception as e:
+                print_and_log(f"[-] Failed to save read to database: {e}", LOG__DEBUG)
 
         # Try to display in different formats
         try:
@@ -1931,6 +2016,27 @@ def _cmd_write(args: List[str]) -> None:
 
         # Write the value
         _current_device.write_characteristic(uuid, value)
+        
+        # Save to database if enabled
+        if _DB_AVAILABLE and _DB_SAVE_ENABLED and _current_mapping:
+            try:
+                # Find service for this characteristic
+                for svc_uuid, svc_data in _current_mapping.items():
+                    for c_uuid, char_data in svc_data.get("chars", {}).items():
+                        if c_uuid == uuid:
+                            # Save characteristic value to history
+                            _obs.insert_char_history(
+                                _current_device.get_address(),
+                                svc_uuid,
+                                uuid,
+                                value,
+                                "write"
+                            )
+                            print_and_log("[*] Write value saved to database", LOG__DEBUG)
+                            break
+            except Exception as e:
+                print_and_log(f"[-] Failed to save write to database: {e}", LOG__DEBUG)
+                
         print(f"\n[+] Successfully wrote to characteristic {uuid}\n")
 
     except Exception as exc:
@@ -2204,6 +2310,63 @@ def _cmd_aoi(args: List[str]) -> None:
     except Exception as e:
         print(f"[-] AOI analysis failed: {str(e)}")
 
+# Database commands
+def _cmd_dbsave(args: List[str]) -> None:
+    """Toggle database saving on/off."""
+    global _DB_SAVE_ENABLED
+    
+    if not _DB_AVAILABLE:
+        print("[-] Database module not available")
+        return
+        
+    if args and args[0].lower() in ["on", "true", "1", "yes"]:
+        _DB_SAVE_ENABLED = True
+        print("[*] Database saving enabled")
+    elif args and args[0].lower() in ["off", "false", "0", "no"]:
+        _DB_SAVE_ENABLED = False
+        print("[*] Database saving disabled")
+    else:
+        # Toggle current state
+        _DB_SAVE_ENABLED = not _DB_SAVE_ENABLED
+        print(f"[*] Database saving {'enabled' if _DB_SAVE_ENABLED else 'disabled'}")
+
+
+def _cmd_dbexport(args: List[str]) -> None:
+    """Export device data from database."""
+    if not _DB_AVAILABLE:
+        print("[-] Database module not available")
+        return
+        
+    if not _current_device:
+        print("[-] No device connected")
+        return
+        
+    try:
+        mac = _current_device.get_address()
+        data = _obs.export_device_data(mac)
+        
+        if not data.get('device'):
+            print(f"[-] No data found for device {mac}")
+            return
+            
+        print(f"[*] Device: {data['device'].get('name', 'Unknown')}")
+        print(f"[*] MAC: {data['device'].get('mac', 'Unknown')}")
+        print(f"[*] Services: {len(data['services'])}")
+        print(f"[*] Characteristics: {len(data['characteristics'])}")
+        print(f"[*] Characteristic history entries: {len(data.get('characteristic_history', []))}")
+        
+        # Optional: save to file
+        if args and args[0].lower() == "--save":
+            import json
+            filename = f"bleep_debug_export_{mac.replace(':', '')}.json"
+            with open(filename, 'w') as f:
+                json.dump(data, f, indent=2)
+            print(f"[*] Exported data to {filename}")
+            
+    except Exception as e:
+        print(f"[-] Export failed: {e}")
+
+
 # Command mapping
 _CMDS = {
     "help": _cmd_help,
@@ -2242,6 +2405,11 @@ _CMDS = {
     "enump": _cmd_enump,
     "enumb": _cmd_enumb,
     "aoi": _cmd_aoi,
+    "dbsave": _cmd_dbsave,
+    "dbexport": _cmd_dbexport,
+    "multiread": lambda args: _cmd_multiread(args, _current_device, _current_mapping, _DB_AVAILABLE, _DB_SAVE_ENABLED, _obs, _print_detailed_dbus_error),
+    "multiread_all": lambda args: _cmd_multiread_all(args, _current_device, _current_mapping, _DB_AVAILABLE, _DB_SAVE_ENABLED, _print_detailed_dbus_error),
+    "brutewrite": lambda args: _cmd_brutewrite(args, _current_device, _current_mapping, _DB_AVAILABLE, _DB_SAVE_ENABLED, _obs, _print_detailed_dbus_error),
 }
 
 
