@@ -22,11 +22,19 @@ This page aggregates open tasks referenced across the project so contributors ha
   - [x] Write dedicated documentation `docs/aoi_mode.md` (+ examples)
   - [x] Update CLI quick-start table (docs/cli_usage.md)
   - [x] Add entry to changelog on release
-  - [ ] Enhance AoI documentation and capabilities:
+  - [x] Fix AoI implementation issues:
+    - [x] Add missing `analyze_device_data` bridge method
+    - [x] Fix service and characteristic data handling for different formats
+    - [x] Improve error handling and type checking
+    - [x] Resolve method name inconsistencies
+  - [x] Enhance AoI documentation and capabilities:
     - [x] Document basic CLI commands and parameters
     - [x] Document security analysis features and report formats
     - [x] Explain JSON file format options and data storage
-    - [ ] Create programmatic API reference for AOIAnalyser class
+    - [x] Create programmatic API reference for AOIAnalyser class (`docs/aoi_implementation.md`)
+    - [x] Add troubleshooting section and best practices
+    - [x] Create comprehensive test suite for AoI functionality
+    - [x] Document testing procedures in `docs/aoi_testing.md`
     - [ ] Add integration examples with observation database
     - [ ] Document advanced security analysis algorithms
     - [ ] Create customization guide for security assessment criteria

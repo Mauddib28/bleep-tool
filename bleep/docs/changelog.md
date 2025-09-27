@@ -1,3 +1,38 @@
+## v2.2.2 – AoI Mode Fixes & Documentation Improvements (2025-09-26)
+### Fixed
+* **AoI Implementation Issues** – Fixed critical issues with the Assets-of-Interest functionality:
+  * Added missing `analyze_device_data` method to bridge between function calls with different naming conventions
+  * Fixed service and characteristic data handling to support different data structures
+  * Added robust type checking to prevent "'list' object has no attribute 'items'" errors
+  * Improved handling of service and characteristic UUIDs in different formats
+  * Enhanced error handling for various data structure formats in saved AoI data
+  * Fixed method name mismatches between American and British spelling conventions
+  * Added support for extracting characteristics from services_mapping when needed
+  * Fixed proper path resolution when working with device data files
+
+### Added
+* **AoI Documentation Improvements** – Enhanced documentation for the Assets-of-Interest feature:
+  * Added detailed implementation notes about data handling and error recovery
+  * Updated examples with more realistic use cases
+  * Added new troubleshooting section with common issues and solutions
+  * Expanded best practices with tips for more effective device analysis
+  * Added explanation of different data structures supported by the analyzer
+
+## v2.2.1 – Debug Mode Command Improvements (2025-09-26)
+### Fixed
+* **Debug Mode Command Errors** – Fixed and improved the multiread_all command:
+  * Fixed parameter parsing to properly handle both `rounds=X` format and direct number format
+  * Added robust result structure handling to prevent "'str' object has no attribute 'get'" errors
+  * Improved error handling and reporting for all multi-read operations
+  * Ensures consistent behavior across all debug mode commands
+  * Made command device-agnostic to work with any Bluetooth device, not just specific ones
+  * Properly identifies all readable characteristics by examining flags and properties
+  * Added multiple methods to discover characteristics, with progressive fallbacks
+  * Enhanced logging with proper log levels for better debugging and traceability
+  * Preserved existing functionality while adding improved error handling
+  * Added comprehensive docstrings and comments for better code maintainability
+  * Implemented generic device address handling to work with any device type
+
 ## v2.2.0 – Complete Timeline Tracking & Signal System Integration (2025-09-26)
 ### Added
 * **Full Timeline Tracking** – Added comprehensive timeline tracking for all characteristic operations:

@@ -63,9 +63,21 @@ def _arg_parser() -> argparse.ArgumentParser:
 def _iter_macs(obj) -> List[str]:
     """Return list of mac strings inside *obj* (supports nested dict format)."""
     if isinstance(obj, list):
-        return obj
+        macs = []
+        for item in obj:
+            if isinstance(item, dict) and "address" in item:
+                macs.append(item["address"])
+            elif isinstance(item, str):
+                macs.append(item)
+            else:
+                macs.extend(_iter_macs(item))
+        return macs
     if isinstance(obj, dict):
         macs: List[str] = []
+        # Check if this dict is a device object with an address
+        if "address" in obj:
+            macs.append(obj["address"])
+        # Otherwise recurse through values
         for val in obj.values():
             macs.extend(_iter_macs(val))
         return macs
@@ -249,7 +261,14 @@ def main(argv: list[str] | None = None):
     elif args.command == "analyze":
         # Analyze a specific device
         print_and_log(f"[*] Analyzing device: {args.address}", LOG__GENERAL)
-        device_data = analyzer.load_device_data(args.address)
+        try:
+            device_data = analyzer.load_device_data(args.address)
+        except FileNotFoundError:
+            print_and_log(f"No data found for device {args.address}", LOG__GENERAL)
+            return 1
+        except Exception as e:
+            print_and_log(f"[-] Error loading device data: {e}", LOG__GENERAL)
+            return 1
         
         if not device_data:
             print_and_log(f"[-] No data found for device {args.address}", LOG__GENERAL)
@@ -394,6 +413,7 @@ def main(argv: list[str] | None = None):
             output_dir = args.output
             os.makedirs(output_dir, exist_ok=True)
             
+            # Use consistent naming pattern to match the test expectations
             output_file = os.path.join(output_dir, f"aoi_export_all_{int(time.time())}.json")
             
             export_data = {}

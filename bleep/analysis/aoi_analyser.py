@@ -171,46 +171,88 @@ class AOIAnalyser:
         }
         
         # Extract service and characteristic information
-        services = data.get("services", {})
+        services_data = data.get("services", {})
         characteristics = data.get("characteristics", {})
         landmine_map = data.get("landmine_map", {})
         permission_map = data.get("permission_map", {})
         
-        # Analyze services
-        for uuid, service_info in services.items():
-            service_report = self._analyse_service(uuid, service_info)
-            if service_report:
-                report["details"]["services"].append(service_report)
-                
-                # Check for notable services
-                if service_report.get("is_notable", False):
-                    report["summary"]["notable_services"].append({
-                        "uuid": uuid,
-                        "name": service_report.get("name", "Unknown Service"),
-                        "reason": service_report.get("notable_reason", ""),
-                    })
+        # Handle different service data formats
+        # If services is a list of UUIDs
+        if isinstance(services_data, list):
+            for uuid in services_data:
+                service_info = {"uuid": uuid}
+                service_report = self._analyse_service(uuid, service_info)
+                if service_report:
+                    report["details"]["services"].append(service_report)
+                    
+                    # Check for notable services
+                    if service_report.get("is_notable", False):
+                        report["summary"]["notable_services"].append({
+                            "uuid": uuid,
+                            "name": service_report.get("name", "Unknown Service"),
+                            "reason": service_report.get("notable_reason", ""),
+                        })
+        # If services is a dictionary
+        elif isinstance(services_data, dict):
+            for uuid, service_info in services_data.items():
+                service_report = self._analyse_service(uuid, service_info)
+                if service_report:
+                    report["details"]["services"].append(service_report)
+                    
+                    # Check for notable services
+                    if service_report.get("is_notable", False):
+                        report["summary"]["notable_services"].append({
+                            "uuid": uuid,
+                            "name": service_report.get("name", "Unknown Service"),
+                            "reason": service_report.get("notable_reason", ""),
+                        })
         
         # Analyze characteristics
-        for uuid, char_info in characteristics.items():
-            char_report = self._analyse_characteristic(uuid, char_info)
-            if char_report:
-                report["details"]["characteristics"].append(char_report)
-                
-                # Check for security concerns
-                if char_report.get("security_concern", False):
-                    report["summary"]["security_concerns"].append({
-                        "uuid": uuid,
-                        "name": char_report.get("name", "Unknown Characteristic"),
-                        "reason": char_report.get("security_reason", ""),
-                    })
-                
-                # Check for unusual characteristics
-                if char_report.get("is_unusual", False):
-                    report["summary"]["unusual_characteristics"].append({
-                        "uuid": uuid,
-                        "name": char_report.get("name", "Unknown Characteristic"),
-                        "reason": char_report.get("unusual_reason", ""),
-                    })
+        # Handle cases where characteristics might be in services_mapping instead
+        if not characteristics and "services_mapping" in data:
+            for handle, uuid in data.get("services_mapping", {}).items():
+                char_info = {"uuid": uuid, "handle": handle}
+                char_report = self._analyse_characteristic(uuid, char_info)
+                if char_report:
+                    report["details"]["characteristics"].append(char_report)
+                    
+                    # Check for security concerns
+                    if char_report.get("security_concern", False):
+                        report["summary"]["security_concerns"].append({
+                            "uuid": uuid,
+                            "name": char_report.get("name", "Unknown Characteristic"),
+                            "reason": char_report.get("security_reason", ""),
+                        })
+                    
+                    # Check for unusual characteristics
+                    if char_report.get("is_unusual", False):
+                        report["summary"]["unusual_characteristics"].append({
+                            "uuid": uuid,
+                            "name": char_report.get("name", "Unknown Characteristic"),
+                            "reason": char_report.get("unusual_reason", ""),
+                        })
+        # Process normal characteristics dictionary
+        elif isinstance(characteristics, dict):
+            for uuid, char_info in characteristics.items():
+                char_report = self._analyse_characteristic(uuid, char_info)
+                if char_report:
+                    report["details"]["characteristics"].append(char_report)
+                    
+                    # Check for security concerns
+                    if char_report.get("security_concern", False):
+                        report["summary"]["security_concerns"].append({
+                            "uuid": uuid,
+                            "name": char_report.get("name", "Unknown Characteristic"),
+                            "reason": char_report.get("security_reason", ""),
+                        })
+                    
+                    # Check for unusual characteristics
+                    if char_report.get("is_unusual", False):
+                        report["summary"]["unusual_characteristics"].append({
+                            "uuid": uuid,
+                            "name": char_report.get("name", "Unknown Characteristic"),
+                            "reason": char_report.get("unusual_reason", ""),
+                        })
         
         # Analyze permission and landmine maps
         report["details"]["landmine_map"] = self._analyse_landmine_map(landmine_map)
@@ -425,6 +467,21 @@ class AOIAnalyser:
         
         return recommendations
         
+    def analyze_device_data(self, device_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analyze device data without requiring a device_mac.
+        This method serves as a bridge between generate_report and analyse_device.
+        
+        Args:
+            device_data: Device data dictionary
+            
+        Returns:
+            Analysis report dictionary
+        """
+        # Extract the device MAC from the data if available
+        device_mac = device_data.get("address", device_data.get("device_mac", "unknown"))
+        return self.analyse_device(device_mac, device_data)
+    
     def generate_report(self, device_address: str = None, device_data: Dict = None, 
                        format: str = "markdown") -> str:
         """

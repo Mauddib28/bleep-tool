@@ -151,6 +151,8 @@ For example:
 ~/.bleep/aoi/001122334455_20230901_123456.json
 ```
 
+Reports are stored in the same directory with the naming pattern: `{normalized_mac}_report_{timestamp}.{format}`
+
 ## Security Analysis Features
 
 The AOI analyzer performs several types of security checks:
@@ -174,6 +176,40 @@ The AOI analyzer performs several types of security checks:
 - Identifies characteristics that might cause device crashes or lockups
 - Detects potentially dangerous write operations
 - Flags characteristics with unusual behavior
+
+## Best Practices
+
+1. **Organize Device Lists**: Group related devices in separate JSON files for better organization
+2. **Set Appropriate Delays**: Use `--delay` parameter to control the time between device scans (default: 4.0 seconds)
+3. **Use Deep Analysis**: For important devices, use the `--deep` flag for more thorough security analysis
+4. **Save Reports**: Always save security reports for important findings
+5. **Export Data**: Export device data for integration with other security tools
+6. **Monitor Changes**: Re-scan and analyze devices periodically to track changes
+
+## Troubleshooting
+
+- **No Devices Found**: Ensure your Bluetooth adapter is working and the devices are in range
+- **Analysis Fails**: Verify the device has been scanned and data exists in `~/.bleep/aoi/`
+- **Empty Reports**: Some devices might not provide enough information for meaningful analysis
+- **Connection Issues**: Use `--delay` with higher values for devices that are slow to respond
+
+## Implementation Notes
+
+The AOI implementation includes robust handling for different data formats and structures:
+
+1. **Service Data Handling**:
+   - Supports both list format (`"services": ["uuid1", "uuid2"]`) and dictionary format for services
+   - Properly processes services from different data sources
+
+2. **Characteristic Data Handling**:
+   - Extracts characteristics from service mappings when needed
+   - Handles characteristics in various formats
+   - Processes both direct UUIDs and characteristic objects
+
+3. **Error Handling**:
+   - Robust type checking to prevent failures with unexpected data structures
+   - Graceful fallbacks for missing or incomplete data
+   - Comprehensive error reporting and logging
 
 ## Tips
 
