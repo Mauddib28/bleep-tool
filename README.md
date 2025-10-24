@@ -17,6 +17,9 @@ deactivate
 
 ### Install:
 pip install -e .
+#### Troubleshooting:
+apt-get install build-essential libdbus-glib-1-dev libgirepository1.0-dev
+pip install dbus-python
 
 ### Usage Modes:
 #### Command Line Interface (CLI) Mode:
@@ -41,6 +44,7 @@ Inital refactoring complete (v2.0.0)
 - Not entirely verified and valdiated; be aware of potential issues
     - Note: Modes outlined above are considered functional
 - The use of double "-m" flags does not work.... instead grow off of the bleep. structure for sub-modules
+- System should NOW allow call of 'bleep' instead of 'python -m bleep.*'
 
 ==========================================================================================
 		            bleep platform - research / source documentation
