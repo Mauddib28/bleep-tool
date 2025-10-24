@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="bleep",
-    version="2.0.0",
+    version="2.2.1",
     description="Bluetooth Landscape Exploration & Enumeration Platform",
     author="Paul A. Wortman",
     packages=find_packages(),

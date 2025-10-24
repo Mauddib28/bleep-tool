@@ -18,7 +18,7 @@ deactivate
 ### Install:
 pip install -e .
 #### Troubleshooting:
-apt-get install build-essential libdbus-glib-1-dev libgirepository1.0-dev
+apt-get install build-essential libdbus-glib-1-dev libgirepository1.0-dev cmake libcairo2-dev libgirepository-2.0-dev
 pip install dbus-python
 
 ### Usage Modes:
