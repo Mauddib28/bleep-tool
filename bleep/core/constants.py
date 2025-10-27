@@ -8,7 +8,8 @@ Only *new* constants that do not belong in the Bluetooth spec helper
 should be declared here.
 """
 
-from bluetooth_constants import *  # re-export everything so we stay source-compatible
+#from bluetooth_constants import *  # re-export everything so we stay source-compatible
+from bleep.bt_ref.constants import *
 
 # Place any **new** constants below; keep the namespace clean.
 

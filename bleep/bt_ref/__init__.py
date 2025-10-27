@@ -37,6 +37,7 @@ except (SyntaxError, IndentationError):
 
 __all__ = ["constants", "exceptions", "utils", "uuids"]
 
+'''
 from importlib import import_module as _imp
 import sys as _sys
 
@@ -81,3 +82,4 @@ for _name in _ref_names:
 
 # Clean up internal names
 del _imp, _sys, _ref_names
+'''

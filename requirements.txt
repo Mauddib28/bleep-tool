@@ -1,4 +1,4 @@
-dbus_python==1.2.16
-gobject==0.1.0
-PyGObject==3.36.0
-xmltodict==0.13.0
+dbus-python>=1.2.0
+PyGObject>=3.48.0
+PyYAML>=6.0
+pytest>=8.0.0 
