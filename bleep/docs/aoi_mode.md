@@ -28,6 +28,29 @@ python -m bleep.cli aoi targets.json --delay 5.0
 
 The AOI mode supports several subcommands for different operations. When using the CLI without a subcommand, it defaults to the `scan` operation.
 
+### Database Integration
+
+AOI mode now integrates with BLEEP's observation database, providing a unified storage system for device data and analysis results:
+
+```bash
+# Use database for storage when scanning (no files)
+python -m bleep.cli aoi scan targets.json --db-only
+
+# Analyze a device and store results in database
+python -m bleep.cli aoi analyze --address 00:11:22:33:44:55
+
+# Disable database for a specific operation
+python -m bleep.cli aoi analyze --address 00:11:22:33:44:55 --no-db
+
+# Generate report using database data
+python -m bleep.cli aoi report --address 00:11:22:33:44:55
+
+# List devices from database
+python -m bleep.cli aoi list
+```
+
+Database integration is enabled by default for all operations. Use the `--no-db` flag to disable it when needed.
+
 ### Scan Subcommand
 
 ```bash
@@ -94,6 +117,9 @@ python -m bleep.cli aoi export --address 00:11:22:33:44:55 --output device_data.
 
 # Export all devices' data
 python -m bleep.cli aoi export --output export_dir
+
+# Export without using the database
+python -m bleep.cli aoi export --address 00:11:22:33:44:55 --output device_data.json --no-db
 ```
 
 The export operation:
@@ -101,6 +127,26 @@ The export operation:
 - Can export a single device or all devices
 - Preserves all collected information including services, characteristics, and analysis results
 - Useful for sharing data or processing with external tools
+
+### Database Subcommand
+
+```bash
+# Import AoI data from files to database
+python -m bleep.cli aoi db import [--address 00:11:22:33:44:55]
+
+# Export AoI data from database to files
+python -m bleep.cli aoi db export [--address 00:11:22:33:44:55]
+
+# Synchronize database and files (bidirectional)
+python -m bleep.cli aoi db sync
+```
+
+The database operations:
+- **Import**: Loads data from JSON files into the observation database
+- **Export**: Saves database data to JSON files
+- **Sync**: Performs bidirectional synchronization between database and files
+- Can operate on a single device (with `--address`) or all devices
+- Creates a unified storage system for device data and analysis results
 
 ## JSON File Format
 

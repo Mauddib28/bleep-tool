@@ -1,3 +1,50 @@
+## v2.4.0 – Enhanced Pairing Agent (2025-10-01)
+### Added
+* **Enhanced Pairing Agent** – Comprehensive Bluetooth pairing system:
+  * Implemented flexible I/O handler framework (`bleep/dbuslayer/agent_io.py`) with CLI, programmatic, and auto-accept options
+  * Added pairing state machine (`bleep/dbuslayer/pairing_state.py`) for robust pairing process management
+  * Created secure storage for bonding information (`bleep/dbuslayer/bond_storage.py`)
+  * Enhanced BlueZ agent classes with modular design and D-Bus reliability integration
+  * Added support for all pairing methods (legacy PIN, SSP)
+  * Added support for all capability levels (NoInputNoOutput, DisplayOnly, KeyboardDisplay, etc.)
+  * Implemented service-level authorization
+* **Pairing Agent Documentation** – Comprehensive documentation for the pairing agent:
+  * Created detailed `pairing_agent.md` guide with architecture and usage examples
+  * Added `agent_mode.md` with CLI usage instructions
+  * Created `agent_documentation_index.md` for easy navigation
+  * Updated main documentation index with new agent documentation
+  * Added programmatic usage examples and best practices
+
+### Enhanced
+* **Agent Mode** – Improved agent mode in CLI:
+  * Added bond management commands (list-bonded, remove-bond)
+  * Enhanced trust management (trust, untrust, list-trusted)
+  * Added customization options for agent capabilities
+  * Improved error handling and user feedback
+
+## v2.3.0 – D-Bus Reliability Improvements (2025-09-30)
+### Added
+* **D-Bus Reliability Framework** – Comprehensive system to improve D-Bus interaction stability:
+  * Added timeout enforcement layer (`bleep/dbus/timeout_manager.py`) to prevent operations from hanging
+  * Implemented BlueZ service monitor (`bleep/dbuslayer/bluez_monitor.py`) for stall and restart detection
+  * Created controller health metrics system (`bleep/core/metrics.py`) for performance tracking
+  * Added automatic connection recovery with staged strategies (`bleep/dbuslayer/recovery.py`)
+  * Implemented state preservation system for reconnection handling
+  * Added D-Bus connection pool (`bleep/dbus/connection_pool.py`) for optimized connections
+  * Created comprehensive diagnostic tool (`bleep/scripts/dbus_diagnostic.py`)
+* **D-Bus Reliability Documentation** – Detailed guides and best practices:
+  * Added comprehensive best practices guide (`bleep/docs/dbus_best_practices.md`)
+  * Created system architecture documentation (`bleep/docs/d-bus-reliability.md`) 
+  * Added examples and templates for robust D-Bus usage
+  * Documentation for diagnostic tool and troubleshooting
+
+### Fixed
+* **BlueZ Connection Stability** – Fixed common issues with BlueZ D-Bus operations:
+  * Implemented reliable timeout handling for all D-Bus method calls
+  * Added graceful error recovery for connection issues
+  * Improved performance for high-volume D-Bus operations
+  * Added detailed metrics collection for operation diagnosis
+
 ## v2.2.2 – AoI Mode Fixes & Documentation Improvements (2025-09-26)
 ### Fixed
 * **AoI Implementation Issues** – Fixed critical issues with the Assets-of-Interest functionality:

@@ -59,6 +59,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:  # noqa: D401 – cli helper
     p.add_argument("--trust", metavar="MAC", help="Set a device as trusted")
     p.add_argument("--untrust", metavar="MAC", help="Set a device as untrusted")
     p.add_argument("--list-trusted", action="store_true", help="List all trusted devices")
+    p.add_argument("--list-bonded", action="store_true", help="List all bonded devices (with stored keys)")
+    p.add_argument("--remove-bond", metavar="MAC", help="Remove bonding information for a device")
+    p.add_argument("--storage-path", help="Path to store bonding information")
     p.add_argument("--timeout", type=int, default=30, 
                   help="Timeout for pairing operations (seconds)")
     p.add_argument("-h", "--help", action="help")
@@ -139,23 +142,72 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
                     print_and_log(f"[-] Failed to set device {args.untrust} as untrusted", LOG__GENERAL)
             except Exception as e:
                 print_and_log(f"[-] Error setting device as untrusted: {str(e)}", LOG__GENERAL)
+    
+    # Handle bond management operations
+    if args.list_bonded or args.remove_bond:
+        from bleep.dbuslayer.bond_storage import DeviceBondStore
+        bond_store = DeviceBondStore(args.storage_path)
+        
+        if args.list_bonded:
+            bonded_devices = bond_store.list_bonded_devices()
+            print_and_log("[*] Bonded devices with stored keys:", LOG__GENERAL)
+            for device in bonded_devices:
+                name = device.get("name", "Unknown")
+                addr = device.get("address", "Unknown")
+                timestamp = device.get("timestamps", {}).get("last_paired", "Unknown")
+                print_and_log(f"    {name} ({addr}) - Last paired: {timestamp}", LOG__GENERAL)
+            
+            if not bonded_devices:
+                print_and_log("[*] No bonded devices found", LOG__GENERAL)
                 
-        # If only trust operations were requested, exit
-        if not args.pair:
-            return 0
+        if args.remove_bond:
+            try:
+                # First try to look up by address directly
+                result = bond_store.load_device_bond_by_address(args.remove_bond)
+                if result and result.get("device_path"):
+                    if bond_store.delete_device_bond(result["device_path"]):
+                        print_and_log(f"[+] Bond information deleted for {args.remove_bond}", LOG__GENERAL)
+                    else:
+                        print_and_log(f"[-] Failed to delete bond for {args.remove_bond}", LOG__GENERAL)
+                else:
+                    print_and_log(f"[-] No bond found for {args.remove_bond}", LOG__GENERAL)
+            except Exception as e:
+                print_and_log(f"[-] Error removing bond: {str(e)}", LOG__GENERAL)
+                
+    # If only trust/bond operations were requested, exit
+    if not args.pair and (args.trust or args.untrust or args.list_trusted or args.list_bonded or args.remove_bond):
+        return 0
 
     # Create and register agent
     agent_type = args.mode
     cap = _CAPABILITIES[args.cap]
     
     try:
-        agent = create_agent(
-            bus, 
-            agent_type=agent_type, 
-            capabilities=cap, 
-            default=args.default,
-            auto_accept=args.auto_accept
-        )
+        # Create appropriate I/O handler based on flags
+        io_handler = None
+        if agent_type == "pairing":
+            from bleep.dbuslayer.agent_io import create_io_handler
+            if args.auto_accept:
+                io_handler = create_io_handler("auto")
+            else:
+                io_handler = create_io_handler("cli")
+        elif agent_type == "interactive":
+            from bleep.dbuslayer.agent_io import create_io_handler
+            io_handler = create_io_handler("cli")
+        elif agent_type == "enhanced":
+            from bleep.dbuslayer.agent_io import create_io_handler
+            io_handler = create_io_handler("programmatic", auto_accept=args.auto_accept)
+        
+        # Create the agent
+            agent = create_agent(
+                bus, 
+                agent_type=agent_type, 
+                capabilities=cap, 
+                default=args.default,
+                auto_accept=args.auto_accept,
+                io_handler=io_handler,
+                storage_path=args.storage_path
+            )
         
         print_and_log(f"[*] Agent registered ({agent.__class__.__name__}, cap={cap})", LOG__GENERAL)
         

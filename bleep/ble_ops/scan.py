@@ -87,16 +87,21 @@ def _native_scan(device: str | None, timeout: int, transport: str = "auto", quie
                 addr_type = "random" if entry.get("address", "").startswith("random") else "public"
                 
             try:
-                # Store all device information in the database
-                _obs.upsert_device(
-                    addr, 
-                    name=name, 
-                    rssi_last=rssi_val, 
-                    addr_type=addr_type,
-                    device_type=device_type
-                )
-            except Exception:
-                pass
+                # Collect all relevant device information for accurate classification
+                device_info = {
+                    'name': name,
+                    'rssi_last': rssi_val,
+                    'addr_type': addr_type
+                }
+                
+                # Add device_class if available (important for dual-mode detection)
+                if 'device_class' in entry:
+                    device_info['device_class'] = entry.get('device_class')
+                
+                # Let the enhanced upsert_device function handle classification
+                _obs.upsert_device(addr, **device_info)
+            except Exception as e:
+                print_and_log(f"[-] Error upserting device in database: {str(e)}", LOG__DEBUG)
 
     # Convert raw device list to dictionary format expected by higher-level code
     devices = {}
@@ -324,15 +329,27 @@ def _base_enum(target_bt_addr: str, *, deep: bool = False):
     # Persist to observation DB if available
     if _obs:
         try:
-            # Update device in database
-            _obs.upsert_device(
-                device.get_address(), 
-                name=device.get_name(),
-                device_type="le"  # Enum-scan is for BLE devices
-            )
+            # Get device properties for classification
+            addr = device.get_address()
+            name = device.get_name()
+            addr_type = device.get_address_type() if hasattr(device, 'get_address_type') else None
+            
+            # Collect information to determine device type accurately
+            device_info = {
+                'name': name,
+                'addr_type': addr_type
+            }
+            
+            # Check if device has Classic Bluetooth capabilities
+            # For most devices, enum-scan is for BLE devices, but some may be dual-mode
+            if hasattr(device, 'get_device_class') and device.get_device_class():
+                device_info['device_class'] = device.get_device_class()
+            
+            # Let upsert_device function handle classification logic
+            _obs.upsert_device(addr, **device_info)
             
             # Save services and characteristics
-            _persist_mapping(device.get_address(), mapping)
+            _persist_mapping(addr, mapping)
         except Exception as e:
             print_and_log(f"[-] Error saving to database: {str(e)}", LOG__DEBUG)
     

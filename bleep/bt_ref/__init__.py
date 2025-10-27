@@ -37,6 +37,12 @@ except (SyntaxError, IndentationError):
 
 __all__ = ["constants", "exceptions", "utils", "uuids"]
 
+# NOTE: Legacy module loading logic commented out to prevent circular imports
+# and dependency on root-level legacy files. The refactored code now uses
+# internal imports (bleep.bt_ref.constants, etc.) instead of legacy root files.
+#
+# Commented out section (lines 40-83) that attempted to dynamically load
+# legacy files from root directory:
 '''
 from importlib import import_module as _imp
 import sys as _sys

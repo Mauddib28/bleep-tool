@@ -17,6 +17,7 @@ from .descriptor import Descriptor
 __version__ = "0.1.0"
 
 __all__ = [
+    # Core D-Bus interfaces
     "system_dbus__bluez_adapter",
     "system_dbus__bluez_device__low_energy",
     "system_dbus__bluez_signals",
@@ -24,6 +25,15 @@ __all__ = [
     "system_dbus__bluez_agent_user_interface",
     "Characteristic",
     "Descriptor",
+    
+    # Reliability components
+    "bluez_monitor",
+    "recovery",
+    
+    # Pairing agent components
+    "agent_io",
+    "pairing_state",
+    "bond_storage",
 ]
 
 # Lazy-load device classes to break circular dependencies

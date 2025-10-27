@@ -1,2 +1,2 @@
-#from bluetooth_exceptions import *  # re-export legacy names
-from bleep.bt_ref.exceptions import *
+# Shim for legacy compatibility - imports from internal refactored module
+from .exceptions import *

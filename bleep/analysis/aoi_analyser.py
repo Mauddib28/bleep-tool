@@ -10,12 +10,71 @@ notable items of interest.
 import json
 import logging
 import os
+import functools
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Union
 
 from bleep.core.errors import BLEEPError
 from bleep.bt_ref.utils import get_name_from_uuid
+from bleep.core import observations
+
+
+class BytesEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles bytes objects by converting them to hex strings."""
+    def default(self, obj):
+        if isinstance(obj, bytes):
+            return obj.hex()
+        return super().default(obj)
+
+
+def safe_db_operation(func):
+    """
+    Decorator for safely handling database operations with proper error handling.
+    
+    Args:
+        func: The function to wrap
+        
+    Returns:
+        Wrapped function with error handling
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            # Check for foreign key constraint failure
+            if hasattr(e, '__module__') and e.__module__ == 'sqlite3' and 'FOREIGN KEY constraint failed' in str(e):
+                logger.error(f"Database foreign key constraint error: {e}")
+                
+                # Try to extract device MAC from arguments
+                device_mac = None
+                if len(args) > 1 and isinstance(args[1], str):
+                    device_mac = args[1]
+                elif 'device_mac' in kwargs:
+                    device_mac = kwargs['device_mac']
+                elif 'mac' in kwargs:
+                    device_mac = kwargs['mac']
+                
+                # If we found a MAC address, try to create the device
+                if device_mac:
+                    try:
+                        logger.info(f"Creating missing device entry for {device_mac}")
+                        observations.upsert_device(
+                            device_mac,
+                            name=f"Device {device_mac}",
+                            addr_type="unknown",
+                            device_class=0,
+                            device_type="unknown"
+                        )
+                        # Retry the operation
+                        return func(*args, **kwargs)
+                    except Exception as inner_e:
+                        logger.error(f"Failed to create device entry: {inner_e}")
+            
+            logger.error(f"Database operation failed: {e}")
+            return None
+    return wrapper
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -33,16 +92,39 @@ class AOIAnalyser:
     and other notable findings.
     """
     
-    def __init__(self, aoi_dir: Optional[str] = None):
+    def __init__(self, aoi_dir: Optional[str] = None, use_db: bool = True):
         """
         Initialize the AOI Analyser.
         
         Args:
             aoi_dir: Directory where AoI JSON dumps are stored. Defaults to ~/.bleep/aoi/
+            use_db: Whether to use the database for storage/retrieval
         """
         self.aoi_dir = Path(aoi_dir or DEFAULT_AOI_DIR)
         self._ensure_aoi_dir()
         self.reports = {}
+        self.use_db = use_db
+        
+    def _prepare_data_for_json(self, data):
+        """
+        Convert non-serializable types in data structure to serializable ones.
+        
+        Args:
+            data: Any data structure that might contain non-serializable types
+            
+        Returns:
+            Data structure with all non-serializable types converted to serializable ones
+        """
+        if isinstance(data, bytes):
+            return data.hex()
+        elif isinstance(data, dict):
+            return {k: self._prepare_data_for_json(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._prepare_data_for_json(item) for item in data]
+        elif isinstance(data, tuple):
+            return tuple(self._prepare_data_for_json(item) for item in data)
+        else:
+            return data
         
     def _ensure_aoi_dir(self) -> None:
         """Ensure the AoI directory exists."""
@@ -50,11 +132,25 @@ class AOIAnalyser:
     
     def list_devices(self) -> List[str]:
         """
-        List all devices that have data in the AOI directory.
+        List all devices that have data in the AOI storage (file or database).
         
         Returns:
             List of normalized MAC addresses (with colons)
         """
+        if self.use_db:
+            # Try database first
+            try:
+                # Get devices from database
+                devices = observations.get_aoi_analyzed_devices()
+                if devices:
+                    return [device["mac"].upper() for device in devices]
+                    
+                # If no devices found in database, fall back to files
+                logger.info("No AoI devices found in database, falling back to files")
+            except Exception as e:
+                logger.error(f"Error accessing database, falling back to files: {str(e)}")
+        
+        # Fall back to file-based lookup
         # Ensure directory exists
         self._ensure_aoi_dir()
         
@@ -76,7 +172,7 @@ class AOIAnalyser:
         
     def load_device_data(self, device_mac: str) -> Dict[str, Any]:
         """
-        Load AoI data for a specific device.
+        Load AoI data for a specific device from either database or file.
         
         Args:
             device_mac: MAC address of the device
@@ -88,11 +184,29 @@ class AOIAnalyser:
             FileNotFoundError: If no data exists for this device
             BLEEPError: If data exists but is corrupted or incompatible
         """
+        # Try to load from database if enabled
+        if self.use_db:
+            try:
+                # Get device details from database
+                device_data = observations.get_device_detail(device_mac)
+                if device_data:
+                    # Add any AoI analysis data if available
+                    aoi_analysis = observations.get_aoi_analysis(device_mac)
+                    if aoi_analysis:
+                        device_data["analysis"] = aoi_analysis
+                    return device_data
+                
+                # If no device data in database, fall back to files
+                logger.debug(f"No device data found in database for {device_mac}, falling back to files")
+            except Exception as e:
+                logger.error(f"Error accessing database for {device_mac}, falling back to files: {str(e)}")
+        
+        # Fall back to file-based lookup
         # Normalize MAC address format
-        device_mac = device_mac.replace(':', '').lower()
+        device_mac_norm = device_mac.replace(':', '').lower()
         
         # Find the most recent file for this device
-        device_files = list(self.aoi_dir.glob(f"{device_mac}*.json"))
+        device_files = list(self.aoi_dir.glob(f"{device_mac_norm}*.json"))
         if not device_files:
             raise FileNotFoundError(f"No AoI data found for device {device_mac}")
             
@@ -109,29 +223,106 @@ class AOIAnalyser:
         except Exception as e:
             raise BLEEPError(f"Error loading {latest_file}: {str(e)}")
     
+    @safe_db_operation
     def save_device_data(self, device_mac: str, data: Dict[str, Any]) -> str:
         """
-        Save device data to the AoI directory.
+        Save device data to storage (database and/or file).
         
         Args:
             device_mac: MAC address of the device
             data: Dictionary of device data to save
             
         Returns:
-            Path to the saved file
+            Path to the saved file (if file storage is used)
         """
+        # Ensure device_mac is a string
+        if not isinstance(device_mac, str):
+            device_mac = str(device_mac)
+            
+        # Save to database if enabled
+        if self.use_db:
+            try:
+                # Extract basic device information
+                device_info = {
+                    "name": data.get("name", "Unknown Device"),
+                    "last_seen": datetime.now().isoformat()
+                }
+                
+                # Add device type and addr_type if available
+                if "device_type" in data:
+                    device_info["device_type"] = data["device_type"]
+                if "addr_type" in data:
+                    device_info["addr_type"] = data["addr_type"]
+                if "device_class" in data:
+                    device_info["device_class"] = data["device_class"]
+                
+                # Save device info to database
+                observations.upsert_device(device_mac, **device_info)
+                
+                # Save services if present
+                if "services" in data:
+                    services = []
+                    # Handle different service data formats
+                    if isinstance(data["services"], dict):
+                        for svc_uuid, svc_info in data["services"].items():
+                            if isinstance(svc_info, dict):
+                                svc_info["uuid"] = svc_uuid
+                                services.append(svc_info)
+                            else:
+                                services.append({"uuid": svc_uuid})
+                    else:
+                        for svc_uuid in data["services"]:
+                            services.append({"uuid": svc_uuid})
+                        
+                    service_ids = observations.upsert_services(device_mac, services)
+                    
+                    # Save characteristics if present in services_mapping
+                    if "services_mapping" in data and service_ids:
+                        for svc_uuid, svc_id in service_ids.items():
+                            chars = []
+                            # Extract characteristics for this service
+                            for uuid, handle in data["services_mapping"].items():
+                                if handle == svc_uuid:
+                                    # Find characteristic details if available
+                                    char_info = {"uuid": uuid}
+                                    if "characteristics" in data and uuid in data["characteristics"]:
+                                        # Ensure bytes are converted to hex strings
+                                        char_data = data["characteristics"][uuid]
+                                        if isinstance(char_data, dict):
+                                            for k, v in char_data.items():
+                                                if isinstance(v, bytes):
+                                                    char_data[k] = v.hex()
+                                            char_info.update(char_data)
+                                    chars.append(char_info)
+                            
+                            if chars:
+                                observations.upsert_characteristics(svc_id, chars)
+                
+                # If analysis exists, save it
+                if "analysis" in data:
+                    observations.store_aoi_analysis(device_mac, data["analysis"])
+                    
+                logger.info(f"Saved AoI data to database for {device_mac}")
+            except Exception as e:
+                logger.error(f"Error saving to database: {str(e)}")
+                # Continue with file save even if database save fails
+        
+        # Always save to file for backward compatibility
         # Normalize MAC address format
-        device_mac = device_mac.replace(':', '').lower()
+        device_mac_norm = device_mac.replace(':', '').lower()
         
         # Create timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Create filename
-        filename = f"{device_mac}_{timestamp}.json"
+        filename = f"{device_mac_norm}_{timestamp}.json"
         filepath = self.aoi_dir / filename
         
+        # Prepare data for serialization
+        serializable_data = self._prepare_data_for_json(data)
+        
         with open(filepath, 'w') as f:
-            json.dump(data, f, indent=2)
+            json.dump(serializable_data, f, indent=2, cls=BytesEncoder)
         
         logger.info(f"Saved AoI data to {filepath}")
         return str(filepath)
@@ -147,9 +338,18 @@ class AOIAnalyser:
         Returns:
             Analysis report dictionary
         """
+        # Ensure device_mac is a string
+        if not isinstance(device_mac, str):
+            device_mac = str(device_mac)
+            
         # Load data if not provided
         if data is None:
             data = self.load_device_data(device_mac)
+            
+        # Handle case where data is None or not a dictionary
+        if not data or not isinstance(data, dict):
+            logger.error(f"Invalid device data for {device_mac}")
+            data = {}
         
         # Initialize report structure
         report = {
@@ -267,8 +467,36 @@ class AOIAnalyser:
         # Generate recommendations
         report["summary"]["recommendations"] = self._generate_recommendations(report)
         
+        # Ensure all dictionary keys in the report are strings
+        # This prevents "unhashable type: 'dict'" errors when the report is used as a key
+        report = self._prepare_data_for_json(report)
+        
         # Store the report
         self.reports[device_mac] = report
+        
+        # Store in database if enabled
+        if self.use_db:
+            try:
+                # Ensure device exists in database before storing analysis
+                try:
+                    device_exists = observations.get_device_detail(device_mac) is not None
+                    if not device_exists:
+                        logger.info(f"Creating device entry for {device_mac} before storing analysis")
+                        observations.upsert_device(
+                            device_mac,
+                            name=f"Device {device_mac}",
+                            addr_type="unknown",
+                            device_class=0,
+                            device_type="unknown"
+                        )
+                except Exception as e:
+                    logger.error(f"Error checking device existence: {str(e)}")
+                
+                observations.store_aoi_analysis(device_mac, report)
+                logger.info(f"Saved analysis to database for {device_mac}")
+            except Exception as e:
+                logger.error(f"Error saving analysis to database: {str(e)}")
+                
         return report
     
     def _analyse_service(self, uuid: str, service_info: Dict[str, Any]) -> Dict[str, Any]:

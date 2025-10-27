@@ -9,10 +9,11 @@ BLEEP maintains a local SQLite database (`~/.bleep/observations.db`) that automa
 | `devices` | Basic device information (MAC, name, RSSI, first/last seen…) |
 | `adv_reports` | Raw advertising reports with decoded fields |
 | `services` / `characteristics` / `descriptors` | GATT hierarchy discovered during enumeration |
-| `char_history` | *NEW* – every value read from a characteristic (timestamped) |
+| `char_history` | Every value read from a characteristic (timestamped) |
 | `media_players` / `media_transports` | AVRCP & A2DP state snapshots |
 | `classic_services` | RFCOMM-based service → channel mapping (SDP) |
 | `pbap_metadata` | Phone-book repository metadata (entries, hash) |
+| `aoi_analysis` | *NEW* – Assets-of-Interest analysis results (security concerns, unusual characteristics) |
 
 ## Automatic logging
 
@@ -43,8 +44,60 @@ The database schema is versioned to allow for smooth migrations:
 | v1 | Initial schema with basic tables |
 | v2 | Renamed columns to avoid Python keyword conflicts (`class` → `device_class`, `state` → `transport_state`) |
 | v3 | Added `device_type` field for improved device type classification |
+| v4 | Added `aoi_analysis` table for Assets-of-Interest integration |
 
 Migrations occur transparently when the schema version changes. For detailed migration history, see [README.refactor-migrations.md](../../README.refactor-migrations.md).
+
+## AOI Integration
+
+The database now integrates with the Assets-of-Interest (AoI) module, allowing for:
+
+1. **Unified Storage**: AoI analysis results are stored in the `aoi_analysis` table while maintaining backward compatibility with the file-based system
+2. **Bidirectional Synchronization**: Data can flow between the database and AoI JSON files
+3. **Enhanced Querying**: Use SQL queries to find devices with specific security characteristics or issues
+
+### CLI Commands for AoI-Database Integration
+
+```bash
+# Import AoI data from files to database
+python -m bleep.cli aoi db import [--address MAC]
+
+# Export AoI data from database to files
+python -m bleep.cli aoi db export [--address MAC]
+
+# Synchronize database and files (bidirectional)
+python -m bleep.cli aoi db sync [--address MAC]
+
+# Use database for storage when scanning
+python -m bleep.cli aoi scan targets.json --db-only
+
+# Disable database for a specific operation
+python -m bleep.cli aoi analyze --address 00:11:22:33:44:55 --no-db
+```
+
+### Programmatic Access
+
+```python
+# Import necessary modules
+from bleep.analysis.aoi_analyser import AOIAnalyser
+from bleep.core import observations
+
+# Initialize analyzer with database integration
+analyzer = AOIAnalyser(use_db=True)
+
+# Load device data from database
+device_mac = "00:11:22:33:44:55"
+device_data = analyzer.load_device_data(device_mac)
+
+# Get AoI analysis from database
+analysis = observations.get_aoi_analysis(device_mac)
+
+# Store AoI analysis in database
+observations.store_aoi_analysis(device_mac, analysis)
+
+# Get all devices with AoI analysis
+analyzed_devices = observations.get_aoi_analyzed_devices()
+```
 
 ## Device Type Classification
 

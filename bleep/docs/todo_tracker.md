@@ -35,7 +35,7 @@ This page aggregates open tasks referenced across the project so contributors ha
     - [x] Add troubleshooting section and best practices
     - [x] Create comprehensive test suite for AoI functionality
     - [x] Document testing procedures in `docs/aoi_testing.md`
-    - [ ] Add integration examples with observation database
+    - [x] Add integration examples with observation database
     - [ ] Document advanced security analysis algorithms
     - [ ] Create customization guide for security assessment criteria
 - [x] Multi-read / brute-write characteristic helpers complete
@@ -94,7 +94,111 @@ This page aggregates open tasks referenced across the project so contributors ha
 - [x] **Integration hooks** – `--objects` flag in `bleep/modes/media.py`. *(Phase 4)*
 - [x] **Documentation & tests** – media_mode docs + pytest helper tests added.
 
-- [ ] Pairing agent polish (README.refactor)
+- [x] **AoI Test Suite Fixes**
+  - [x] Fix "unhashable type: 'dict'" errors in AoI analyzer:
+    - [x] Update `analyse_device` method in `aoi_analyser.py` to handle dictionary keys properly
+    - [x] Ensure all dictionary keys used in lookups are hashable types (strings, numbers, tuples)
+    - [x] Add proper type checking before dictionary operations
+  - [x] Fix JSON serialization errors with bytes objects:
+    - [x] Create a custom JSON encoder class in `aoi_analyser.py` to handle bytes objects
+    - [x] Update `save_device_data` method to use the custom encoder
+    - [x] Convert bytes to hex strings during serialization
+  - [x] Implement proper database error handling in CLI commands:
+    - [x] Add device existence check before storing AoI analysis
+    - [x] Create minimal device entries when analyzing unknown devices
+    - [x] Add graceful error handling for foreign key constraint failures
+    - [x] Provide user-friendly error messages instead of raw database errors
+  - [x] Fix report generation failures:
+    - [x] Ensure report templates handle missing or incomplete data
+    - [x] Add fallback mechanisms for report generation when analysis data is incomplete
+    - [x] Fix file path handling for report output
+  - [x] Enhance test environment setup:
+    - [x] Create proper test fixtures for AoI integration tests
+    - [x] Implement database pre-population for required test data
+    - [x] Add cleanup mechanisms to ensure test isolation
+
+- [x] **Enhance Pairing Agent**
+  - [x] **Phase 1: Agent Architecture** (2 weeks)
+    - [x] Design Enhanced Agent Framework
+      - [x] Support for multiple capability levels (DisplayOnly, DisplayYesNo, KeyboardOnly, NoInputNoOutput, KeyboardDisplay)
+      - [x] Design flexible IO handler interface for different interaction modes
+      - [x] Create state management for multi-step pairing processes
+    - [x] Design persistent trusted device storage
+      - [x] Define secure storage for paired device credentials
+      - [x] Create migration path for existing paired devices
+    - [x] Implement agent registration system
+      - [x] Support registration with different capability levels based on context
+      - [x] Implement proper agent release on shutdown
+    - [x] Agent Manager Integration
+      - [x] Implement proper integration with org.bluez.AgentManager1
+      - [x] Support RegisterAgent method with proper capability arguments
+      - [x] Handle RequestDefaultAgent correctly
+      - [x] Add proper error handling for agent registration failures
+  - [x] **Phase 2: Core Agent Methods** (3 weeks)
+    - [x] Implement the full org.bluez.Agent1 interface:
+      - [x] Release: Handle agent release requests
+      - [x] RequestPinCode: Request PIN code for legacy pairing
+      - [x] DisplayPinCode: Show PIN code to user
+      - [x] RequestPasskey: Request passkey for SSP pairing
+      - [x] DisplayPasskey: Show passkey with entered digits count
+      - [x] RequestConfirmation: Handle numeric comparison pairing
+      - [x] RequestAuthorization: Process authorization requests
+      - [x] AuthorizeService: Control service-level authorization
+      - [x] Cancel: Handle request cancellation
+    - [x] Add support for Secure Simple Pairing (SSP)
+      - [x] Implement numeric comparison workflow
+      - [x] Add just-works pairing mode
+      - [x] Support passkey entry method
+    - [x] Implement service-level authorization
+      - [x] Create authorization rules framework
+      - [x] Add per-service authorization options
+    - [x] Add support for automatic re-authentication
+      - [x] Store bonding information securely
+      - [x] Implement LTK (Long Term Key) management
+  - [x] **Phase 3: User Interface Integration** (2 weeks)
+    - [x] Create CLI prompts for agent interactions
+      - [x] Implement passkey entry prompts
+      - [x] Add confirmation dialogs for pairing requests
+      - [x] Show PIN codes and passkeys when required
+      - [x] Add cancel command for ongoing pairing operations
+    - [x] Integrate agent with debug mode
+      - [x] Add `pair [device_address]` command
+      - [x] Add `unpair [device_address]` command
+      - [x] Add `trust [device_address]` command
+      - [x] Add `untrust [device_address]` command
+    - [x] Integrate agent with user mode
+      - [x] Create simplified pairing UX for non-expert users
+      - [x] Add pairing status indicators
+      - [x] Implement pairing request notifications
+  - [x] **Phase 4: Reliability Enhancements** (2 weeks)
+    - [x] Add agent connection monitoring
+      - [x] Detect D-Bus disconnections
+      - [x] Implement automatic re-registration after BlueZ restart
+    - [x] Implement pairing timeout management
+      - [x] Add configurable timeouts for different pairing operations
+      - [x] Create timeout recovery strategies
+    - [x] Handle incomplete pairing sessions
+      - [x] Detect and recover from stalled pairing attempts
+      - [x] Add cleanup for abandoned pairing sessions
+    - [x] Enhance error reporting
+      - [x] Create human-friendly error messages for common pairing failures
+      - [x] Add diagnostic information for troubleshooting
+      - [x] Create recovery suggestions for pairing errors
+    - [x] Add pairing diagnostics tooling
+      - [x] Create `check-pairing [device_address]` command
+      - [x] Implement pairing capability detection for devices
+      - [x] Add verbose logging option for pairing process
+  - [x] **Phase 5: Documentation & Testing** (1 week)
+    - [x] Create comprehensive documentation
+      - [x] Update `docs/pairing_agent.md` with usage guide
+      - [x] Document pairing troubleshooting steps
+      - [x] Add examples for different pairing scenarios
+      - [x] Document programmatic API for pairing agent
+    - [x] Create test suite for pairing functionality
+      - [x] Create mock device for agent interface testing
+      - [x] Add integration tests for real device pairing
+      - [x] Test edge cases for pairing failures
+      - [x] Verify recovery mechanisms
 - [ ] Device-feature database (SDP & PBAP)  
   * Merge existing bullet *"Local database for unknown UUIDs + device observations"* – expand scope to store:
     * SDP service/attribute snapshots per device (Classic & BLE)
@@ -238,11 +342,59 @@ This page aggregates open tasks referenced across the project so contributors ha
   - [ ] Document offline analysis workflow
 
 - [ ] **Directed Device Assessment**
-  - [ ] Design targeted scanning framework
-  - [ ] Implement device fingerprinting
-  - [ ] Create vulnerability assessment helpers
-  - [ ] Build reporting tools
-  - [ ] Document assessment methodologies
+  - [ ] **Phase 1: Design & Architecture** (2 weeks)
+    - [ ] Design targeted scanning framework
+      - [ ] Identify common Bluetooth vulnerability patterns
+      - [ ] Review existing security assessment methodologies
+      - [ ] Define assessment categories (authentication, encryption, firmware, etc.)
+      - [ ] Create plugin-based assessment architecture
+      - [ ] Design rule engine for vulnerability detection
+      - [ ] Define interfaces between scanning and assessment components
+    - [ ] Device fingerprinting system design
+      - [ ] Create schema for device fingerprints
+      - [ ] Define fingerprint matching algorithm 
+      - [ ] Plan fingerprint storage and retrieval
+      - [ ] Design multi-factor fingerprinting (service patterns, response timing, etc.)
+      - [ ] Create manufacturer-specific detection patterns
+  - [ ] **Phase 2: Core Implementation** (3 weeks)
+    - [ ] Implement device fingerprinting
+      - [ ] Implement fingerprint collection during scans
+      - [ ] Create fingerprint matching and identification system
+      - [ ] Build baseline database of common device fingerprints
+      - [ ] Add manufacturer-specific detection logic
+    - [ ] Create vulnerability assessment helpers
+      - [ ] Implement authentication bypass detection
+      - [ ] Develop weak encryption identification
+      - [ ] Create plaintext credential transmission detection
+      - [ ] Implement replay attack vulnerability detection
+      - [ ] Add firmware version fingerprinting
+      - [ ] Create modular system for new vulnerability checks
+      - [ ] Develop severity scoring system for findings
+  - [ ] **Phase 3: Reporting & Integration** (2 weeks)
+    - [ ] Build reporting tools
+      - [ ] Implement vulnerability report generator
+      - [ ] Create multiple output formats (Markdown, JSON, HTML)
+      - [ ] Add visualization capabilities for assessment results
+      - [ ] Implement comparison tools for multiple assessments
+      - [ ] Create trend analysis for device improvements over time
+    - [ ] Integration with existing components
+      - [ ] Integrate with AoI analysis system
+      - [ ] Connect to observation database
+      - [ ] Link with signal capture system
+      - [ ] Add CLI commands for directed assessment
+      - [ ] Create programmatic API for assessment functions
+  - [ ] **Phase 4: Documentation & Polish** (1 week)
+    - [ ] Document assessment methodologies
+      - [ ] Create user guides for directed assessment
+      - [ ] Document assessment plugin architecture
+      - [ ] Provide examples of common vulnerability patterns
+      - [ ] Create reference for all assessment commands
+      - [ ] Add developer documentation for extending assessment capabilities
+    - [ ] Final polish
+      - [ ] Optimize performance for large-scale assessments
+      - [ ] Implement caching for repeated assessments
+      - [ ] Add progress reporting for long-running assessments
+      - [ ] Create sample assessment configurations
 
 ## Documentation Improvements
 
@@ -272,11 +424,11 @@ This page aggregates open tasks referenced across the project so contributors ha
 
 ## Technical Scalability Improvements
 
-- [ ] **Database Optimization**
-  - [ ] Implement indexing strategy for observation database
-  - [ ] Add query optimization for large device sets
-  - [ ] Create database maintenance utilities
-  - [ ] Document database schema and optimization techniques
+- [x] **Database Optimization**
+  - [x] Implement indexing strategy for observation database
+  - [x] Add query optimization for large device sets
+  - [x] Create database maintenance utilities
+  - [x] Document database schema and optimization techniques
 
 - [ ] **Memory Management**
   - [ ] Audit large data structure usage
@@ -284,11 +436,24 @@ This page aggregates open tasks referenced across the project so contributors ha
   - [ ] Add resource cleanup hooks
   - [ ] Document memory usage patterns and recommendations
 
-- [ ] **D-Bus Reliability**
-  - [ ] Enhance BlueZ stall detection
-  - [ ] Implement automatic recovery strategies
-  - [ ] Add connection pooling for high-volume operations
-  - [ ] Document D-Bus reliability best practices
+- [x] **D-Bus Reliability**
+  - [x] Enhance BlueZ stall detection
+    - [x] Implement timeout enforcement layer for D-Bus method calls (`bleep/dbus/timeout_manager.py`)
+    - [x] Create heartbeat mechanism to detect unresponsive BlueZ services (`bleep/dbuslayer/bluez_monitor.py`)
+    - [x] Implement controller health metrics collection (`bleep/core/metrics.py`)
+  - [x] Implement automatic recovery strategies
+    - [x] Build connection reset manager with staged recovery (`bleep/dbuslayer/recovery.py`)
+    - [x] Develop state preservation system for connection recovery (`bleep/dbuslayer/recovery.py`)
+    - [x] Add progressive backoff for reconnection attempts (`bleep/dbuslayer/recovery.py`)
+  - [x] Add connection pooling for high-volume operations
+    - [x] Create managed pool of D-Bus connections (`bleep/dbus/connection_pool.py`)
+    - [x] Implement D-Bus proxy object cache (`bleep/dbus/connection_pool.py`)
+    - [x] Add request batching for related operations (`bleep/dbus/connection_pool.py`)
+  - [x] Document D-Bus reliability best practices
+    - [x] Create comprehensive D-Bus interaction guidelines (`bleep/docs/dbus_best_practices.md`)
+    - [x] Document common failure modes and recovery patterns (`bleep/docs/dbus_best_practices.md`)
+    - [x] Add examples and templates for robust D-Bus usage (`bleep/docs/d-bus-reliability.md`)
+    - [x] Create diagnostic tools for troubleshooting (`bleep/scripts/dbus_diagnostic.py`)
 
 ## CLI Command Enhancements (Completed)
 

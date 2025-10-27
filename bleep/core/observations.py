@@ -6,13 +6,14 @@ unavailable on the host system.
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 from bleep.core.log import print_and_log, LOG__DEBUG
 
@@ -28,6 +29,14 @@ __all__ = [
     "get_characteristic_timeline",
     "export_device_data",
     "store_signal_capture",
+    # AoI Database Integration
+    "store_aoi_analysis",
+    "get_aoi_analysis",
+    "has_aoi_analysis",
+    "get_aoi_analyzed_devices",
+    # Database Maintenance and Performance
+    "maintain_database",
+    "explain_query",
 ]
 
 _DB_LOCK = threading.Lock()
@@ -35,7 +44,7 @@ _DB_CONN: sqlite3.Connection | None = None
 
 _DB_PATH = Path(os.getenv("BLEEP_DB_PATH", Path.home() / ".bleep" / "observations.db"))
 
-_SCHEMA_VERSION = 3  # Added explicit device_type field
+_SCHEMA_VERSION = 5  # Added performance indexes
 
 _SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -81,6 +90,12 @@ CREATE TABLE IF NOT EXISTS services (
  );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_services_mac_uuid ON services(mac,uuid);
+
+-- Performance indexes for frequently queried fields
+CREATE INDEX IF NOT EXISTS idx_devices_device_type ON devices(device_type);
+CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen);
+CREATE INDEX IF NOT EXISTS idx_adv_reports_mac ON adv_reports(mac);
+CREATE INDEX IF NOT EXISTS idx_adv_reports_ts ON adv_reports(ts);
 
 CREATE TABLE IF NOT EXISTS characteristics (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,6 +150,11 @@ CREATE TABLE IF NOT EXISTS char_history (
     source TEXT DEFAULT 'unknown'
 );
 
+-- Performance indexes for char_history table (added in schema v5)
+CREATE INDEX IF NOT EXISTS idx_char_history_mac_service_char ON char_history(mac, service_uuid, char_uuid);
+CREATE INDEX IF NOT EXISTS idx_char_history_ts ON char_history(ts);
+CREATE INDEX IF NOT EXISTS idx_char_history_source ON char_history(source);
+
 CREATE TABLE IF NOT EXISTS media_transports (
     path TEXT PRIMARY KEY,
     mac TEXT,
@@ -142,6 +162,16 @@ CREATE TABLE IF NOT EXISTS media_transports (
     volume INT,
     codec INT,
     ts DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS aoi_analysis (
+    mac TEXT REFERENCES devices(mac) ON DELETE CASCADE,
+    analysis_timestamp DATETIME,
+    security_concerns JSON,
+    unusual_characteristics JSON,
+    notable_services JSON,
+    recommendations JSON,
+    PRIMARY KEY (mac)
 );
 """
 
@@ -173,14 +203,58 @@ def _init_db() -> None:
                 conn.execute("""
                     UPDATE devices SET device_type = 
                     CASE
+                        -- Classic devices have device_class but no addr_type
                         WHEN device_class IS NOT NULL AND addr_type IS NULL THEN 'classic'
-                        WHEN addr_type = 'random' THEN 'le'
+                        
+                        -- LE devices have addr_type but no device_class
+                        WHEN addr_type IS NOT NULL AND device_class IS NULL THEN 'le'
+                        
+                        -- Potential dual-mode devices have both identifiers
+                        WHEN device_class IS NOT NULL AND addr_type IS NOT NULL THEN 'dual'
+                        
+                        -- Default to unknown if not enough information
                         ELSE 'unknown'
                     END
                 """)
                 current_version = 3
             except Exception as e:
                 print(f"Migration v2 to v3 failed: {e}")
+                
+        # Migration from v3 to v4 - Add aoi_analysis table
+        if current_version == 3:
+            try:
+                # Create aoi_analysis table
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS aoi_analysis (
+                        mac TEXT REFERENCES devices(mac) ON DELETE CASCADE,
+                        analysis_timestamp DATETIME,
+                        security_concerns JSON,
+                        unusual_characteristics JSON,
+                        notable_services JSON,
+                        recommendations JSON,
+                        PRIMARY KEY (mac)
+                    )
+                """)
+                current_version = 4
+            except Exception as e:
+                print(f"Migration v3 to v4 failed: {e}")
+                
+        # Migration from v4 to v5 - Add performance indexes
+        if current_version == 4:
+            try:
+                # Create indexes for frequently queried fields
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_devices_device_type ON devices(device_type)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_adv_reports_mac ON adv_reports(mac)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_adv_reports_ts ON adv_reports(ts)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_char_history_mac_service_char ON char_history(mac, service_uuid, char_uuid)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_char_history_ts ON char_history(ts)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_char_history_source ON char_history(source)")
+                
+                print("[+] Database indexes created for improved performance")
+                current_version = 5
+            except Exception as e:
+                print(f"Migration v4 to v5 failed: {e}")
 
         # Update schema version
         if not ver_row:
@@ -228,11 +302,17 @@ def _normalize_mac(mac: str) -> str:
 
 def upsert_device(mac: str, **cols):
     """
-    Update or insert a device record in the database.
+    Update or insert a device record in the database with enhanced device type classification.
     
     Args:
         mac: Device MAC address
         **cols: Column values to set
+        
+    Note on device_type classification:
+    - 'unknown': Not enough information available
+    - 'classic': Device has Classic identifiers (device_class) but no LE identifiers
+    - 'le': Device has LE identifiers (addr_type) but no Classic identifiers
+    - 'dual': Device has conclusive evidence of both Classic and LE capabilities
     """
     # Normalize MAC address to lowercase
     mac = _normalize_mac(mac)
@@ -241,13 +321,63 @@ def upsert_device(mac: str, **cols):
     # Always update last_seen timestamp
     cols.setdefault("last_seen", now)
     
-    # Check if device already exists
+    # Check if device already exists and get current device info
     with _DB_LOCK, _db_cursor() as cur:
-        device_exists = cur.execute("SELECT 1 FROM devices WHERE mac = ?", (mac,)).fetchone() is not None
+        device_row = cur.execute(
+            """SELECT device_type, device_class, addr_type,
+                  (SELECT COUNT(*) FROM services WHERE mac=?) as gatt_services,
+                  (SELECT COUNT(*) FROM classic_services WHERE mac=?) as classic_services 
+               FROM devices WHERE mac=?""", 
+            (mac, mac, mac)
+        ).fetchone()
+        
+        device_exists = device_row is not None
         
         # If device doesn't exist, set first_seen timestamp
         if not device_exists and "first_seen" not in cols:
             cols["first_seen"] = now
+        
+        # Only determine device_type if not explicitly provided
+        if "device_type" not in cols:
+            # Extract current values from database
+            current_device_type = device_row["device_type"] if device_exists else "unknown"
+            current_device_class = device_row["device_class"] if device_exists else None
+            current_addr_type = device_row["addr_type"] if device_exists else None
+            has_gatt = device_row["gatt_services"] > 0 if device_exists else False
+            has_classic = device_row["classic_services"] > 0 if device_exists else False
+            
+            # Get updated values from current operation
+            new_device_class = cols.get("device_class", current_device_class)
+            new_addr_type = cols.get("addr_type", current_addr_type)
+            
+            # Apply enhanced classification logic
+            if new_device_class and new_addr_type:
+                # Strong evidence for dual-mode device (both Classic and LE identifiers)
+                cols["device_type"] = "dual"
+            elif has_gatt and has_classic:
+                # Device has both GATT and Classic services, must be dual
+                cols["device_type"] = "dual"
+            elif current_device_type == "dual":
+                # Preserve dual status if already established
+                cols["device_type"] = "dual"
+            elif new_device_class and not new_addr_type:
+                # Classic device (has class but no LE address type)
+                cols["device_type"] = "classic"
+            elif new_addr_type and not new_device_class:
+                # LE device (has address type but no Classic class)
+                cols["device_type"] = "le"
+            elif has_gatt and not has_classic:
+                # Has GATT services but no Classic services
+                cols["device_type"] = "le"
+            elif has_classic and not has_gatt:
+                # Has Classic services but no GATT services
+                cols["device_type"] = "classic"
+            elif current_device_type != "unknown":
+                # Preserve any previously established non-unknown type
+                cols["device_type"] = current_device_type
+            else:
+                # Not enough information to determine type
+                cols["device_type"] = "unknown"
         
         # Prepare SQL statement
         cols_keys = ",".join(cols.keys())
@@ -652,20 +782,269 @@ def store_signal_capture(signal_data: dict) -> None:
         print(traceback.format_exc(), file=sys.stderr)
 
 # ---------------------------------------------------------------------------
+# Database Maintenance and Performance Functions ---------------------------
+# ---------------------------------------------------------------------------
+
+def maintain_database(vacuum: bool = True, analyze: bool = True) -> Dict[str, Any]:
+    """
+    Perform database maintenance operations for improved performance.
+    
+    Args:
+        vacuum: Whether to run VACUUM to reclaim unused space
+        analyze: Whether to run ANALYZE to update statistics for query optimization
+        
+    Returns:
+        Dictionary with operation results
+    """
+    results = {"success": True, "operations": []}
+    
+    if not _DB_CONN:
+        _init_db()
+    
+    try:
+        with _DB_LOCK:
+            if vacuum:
+                start_time = datetime.utcnow()
+                _DB_CONN.execute("VACUUM")  # type: ignore[union-attr]
+                end_time = datetime.utcnow()
+                duration = (end_time - start_time).total_seconds()
+                results["operations"].append({
+                    "operation": "VACUUM", 
+                    "success": True,
+                    "duration_seconds": duration
+                })
+                print_and_log(f"[+] Database VACUUM completed in {duration:.2f} seconds", LOG__DEBUG)
+                
+            if analyze:
+                start_time = datetime.utcnow()
+                _DB_CONN.execute("ANALYZE")  # type: ignore[union-attr]
+                end_time = datetime.utcnow()
+                duration = (end_time - start_time).total_seconds()
+                results["operations"].append({
+                    "operation": "ANALYZE", 
+                    "success": True,
+                    "duration_seconds": duration
+                })
+                print_and_log(f"[+] Database ANALYZE completed in {duration:.2f} seconds", LOG__DEBUG)
+                
+        # Get database statistics
+        with _db_cursor() as cur:
+            # Get total row counts
+            counts = {}
+            for table in ["devices", "services", "characteristics", "char_history", "adv_reports", 
+                         "classic_services", "media_players", "media_transports", "aoi_analysis"]:
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    counts[table] = cur.fetchone()[0]
+                except Exception:
+                    counts[table] = -1
+                    
+            # Get database size
+            cur.execute("PRAGMA page_count")
+            page_count = cur.fetchone()[0]
+            cur.execute("PRAGMA page_size")
+            page_size = cur.fetchone()[0]
+            db_size = page_count * page_size
+            
+            results["statistics"] = {
+                "row_counts": counts,
+                "database_size_bytes": db_size,
+                "database_size_mb": round(db_size / (1024 * 1024), 2)
+            }
+            
+        return results
+        
+    except Exception as e:
+        print_and_log(f"[-] Database maintenance error: {e}", LOG__DEBUG)
+        import traceback
+        print_and_log(traceback.format_exc(), LOG__DEBUG)
+        results["success"] = False
+        results["error"] = str(e)
+        return results
+
+def explain_query(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+    """
+    Get the execution plan for a SQL query for performance debugging.
+    
+    Args:
+        query: SQL query to explain
+        params: Query parameters
+        
+    Returns:
+        List of dictionaries describing the query execution plan
+    """
+    if not _DB_CONN:
+        _init_db()
+        
+    try:
+        with _DB_LOCK, _db_cursor() as cur:
+            # Execute EXPLAIN QUERY PLAN
+            cur.execute(f"EXPLAIN QUERY PLAN {query}", params)
+            plan = cur.fetchall()
+            
+            # Format the plan as a list of dictionaries
+            result = []
+            for row in plan:
+                result.append({
+                    "id": row["id"],
+                    "parent": row["parent"],
+                    "notused": row["notused"],
+                    "detail": row["detail"]
+                })
+            
+            return result
+    except Exception as e:
+        print_and_log(f"[-] Error explaining query: {e}", LOG__DEBUG)
+        return [{"error": str(e)}]
+
+# ---------------------------------------------------------------------------
+# AoI Integration Functions ------------------------------------------------
+# ---------------------------------------------------------------------------
+
+def store_aoi_analysis(mac: str, analysis: Dict[str, Any]) -> None:
+    """
+    Store AoI analysis results in the database.
+    
+    Args:
+        mac: Device MAC address
+        analysis: Analysis dictionary from AOIAnalyser
+    """
+    # Normalize MAC address to lowercase
+    mac = _normalize_mac(mac)
+    
+    # Extract summary sections
+    security_concerns = analysis.get("summary", {}).get("security_concerns", [])
+    unusual_characteristics = analysis.get("summary", {}).get("unusual_characteristics", [])
+    notable_services = analysis.get("summary", {}).get("notable_services", [])
+    recommendations = analysis.get("summary", {}).get("recommendations", [])
+    
+    # Store in database
+    with _DB_LOCK, _db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO aoi_analysis(mac, analysis_timestamp, security_concerns, 
+                                   unusual_characteristics, notable_services, recommendations)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(mac) DO UPDATE SET 
+                analysis_timestamp=excluded.analysis_timestamp,
+                security_concerns=excluded.security_concerns,
+                unusual_characteristics=excluded.unusual_characteristics,
+                notable_services=excluded.notable_services,
+                recommendations=excluded.recommendations
+            """,
+            (
+                mac,
+                datetime.utcnow().isoformat(),
+                json_dumps(security_concerns),
+                json_dumps(unusual_characteristics),
+                json_dumps(notable_services),
+                json_dumps(recommendations)
+            )
+        )
+
+def get_aoi_analysis(mac: str) -> Optional[Dict[str, Any]]:
+    """
+    Get AoI analysis results from the database.
+    
+    Args:
+        mac: Device MAC address
+        
+    Returns:
+        Analysis dictionary or None if not found
+    """
+    # Normalize MAC address to lowercase
+    mac = _normalize_mac(mac)
+    
+    try:
+        with _db_cursor() as cur:
+            row = cur.execute(
+                "SELECT * FROM aoi_analysis WHERE mac = ?",
+                (mac,)
+            ).fetchone()
+            
+            if not row:
+                return None
+                
+            # Parse JSON fields
+            security_concerns = json.loads(row["security_concerns"]) if row["security_concerns"] else []
+            unusual_characteristics = json.loads(row["unusual_characteristics"]) if row["unusual_characteristics"] else []
+            notable_services = json.loads(row["notable_services"]) if row["notable_services"] else []
+            recommendations = json.loads(row["recommendations"]) if row["recommendations"] else []
+                
+            # Return analysis in expected format
+            return {
+                "timestamp": row["analysis_timestamp"],
+                "summary": {
+                    "security_concerns": security_concerns,
+                    "unusual_characteristics": unusual_characteristics,
+                    "notable_services": notable_services,
+                    "recommendations": recommendations,
+                }
+            }
+    except Exception as e:
+        print_and_log(f"Error retrieving AoI analysis: {e}", LOG__DEBUG)
+        return None
+
+def has_aoi_analysis(mac: str) -> bool:
+    """
+    Check if a device has AoI analysis in the database.
+    
+    Args:
+        mac: Device MAC address
+        
+    Returns:
+        True if analysis exists, False otherwise
+    """
+    # Normalize MAC address to lowercase
+    mac = _normalize_mac(mac)
+    
+    with _db_cursor() as cur:
+        row = cur.execute(
+            "SELECT 1 FROM aoi_analysis WHERE mac = ?",
+            (mac,)
+        ).fetchone()
+        
+        return row is not None
+
+def get_aoi_analyzed_devices() -> List[Dict[str, Any]]:
+    """
+    Get list of devices that have AoI analysis in the database.
+    
+    Returns:
+        List of device dictionaries
+    """
+    try:
+        with _db_cursor() as cur:
+            rows = cur.execute("""
+                SELECT d.*, a.analysis_timestamp
+                FROM devices d
+                JOIN aoi_analysis a ON d.mac = a.mac
+                ORDER BY a.analysis_timestamp DESC
+            """).fetchall()
+            
+            return [dict(row) for row in rows]
+    except Exception as e:
+        print_and_log(f"Error retrieving AoI analyzed devices: {e}", LOG__DEBUG)
+        return []
+
+# ---------------------------------------------------------------------------
 # Data retrieval functions --------------------------------------------------
 # ---------------------------------------------------------------------------
 
-def get_devices(status: str = None, limit: int = 100) -> List[Dict[str, Any]]:
+def get_devices(status: str = None, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
     """
-    Get list of devices from the database.
+    Get list of devices from the database with pagination support.
     
     Args:
         status: Optional filter for device status (comma-separated)
           'recent' - Devices seen in the last 24 hours
           'ble' - Bluetooth Low Energy devices
           'classic' - Bluetooth Classic devices
+          'dual' - Dual-mode devices (both Classic and BLE)
+          'unknown' - Devices with unknown type
           'media' - Devices with media capabilities
-        limit: Maximum number of devices to return
+        limit: Maximum number of devices to return (pagination page size)
+        offset: Number of records to skip (pagination starting point)
         
     Returns:
         List of device dictionaries (empty list if error occurs)
@@ -706,8 +1085,10 @@ def get_devices(status: str = None, limit: int = 100) -> List[Dict[str, Any]]:
             if status_filters:
                 query += " WHERE " + " OR ".join(status_filters)
         
-        query += " ORDER BY last_seen DESC LIMIT ?"
+        # Add pagination with LIMIT and OFFSET
+        query += " ORDER BY last_seen DESC LIMIT ? OFFSET ?"
         params.append(limit)
+        params.append(offset)
         
         # Execute the query
         with _DB_LOCK, _db_cursor() as cur:

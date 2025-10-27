@@ -12,7 +12,7 @@ from importlib import import_module as _import_module
 from types import ModuleType as _ModuleType
 from typing import TYPE_CHECKING as _TYPE_CHECKING
 
-__all__ = ["adapter", "device", "gatt"]
+__all__ = ["adapter", "device", "gatt", "timeout_manager"]
 
 
 def __getattr__(name: str) -> _ModuleType:  # pragma: no cover – import meta-hook
@@ -29,3 +29,4 @@ if _TYPE_CHECKING:  # pragma: no cover – mypy/pylance only
     from . import adapter  # noqa: F401  (re-export for typing tools)
     from . import device   # noqa: F401
     from . import gatt     # noqa: F401
+    from . import timeout_manager  # noqa: F401
