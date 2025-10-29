@@ -16,6 +16,12 @@ If the package is installed with `pip install -e .`:
 bleep --help   # top-level help / version
 ```
 
+> **Note:** BLEEP requires PyGObject (python3-gi) for core D-Bus operations. Install via your system package manager:
+> - Ubuntu/Debian/Kali: `sudo apt-get install python3-gi`
+> - Arch Linux: `sudo pacman -S python-gobject`
+> 
+> PyGObject is optional in pip install (moved to `extras_require["monitor"]`) to prevent build failures, but **required at runtime** for scanning, connecting, and monitoring operations.
+
 > Note: The documentation previously showed `python -m bleep`, but this won't work because the package doesn't have a `__main__.py` file.
 
 ### Common sub-commands
