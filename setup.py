@@ -19,7 +19,11 @@ install_requires = [
     "pytest>=8.0.0",
     "xmltodict>=0.14.2",
     "numpy>=2.3.1",
-    "pycairo>=1.28.0",
+    "pycairo>=1.16",
+    "iniconfig>=1",
+    "packaging>=20",
+    "pluggy>=1.5",
+    "Pygments>=2.7.2",
 ]
 
 # PyGObject is required for core D-Bus operations (scanning, connecting, monitoring)
