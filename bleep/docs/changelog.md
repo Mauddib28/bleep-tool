@@ -22,6 +22,37 @@
   * Added customization options for agent capabilities
   * Improved error handling and user feedback
 
+## v2.3.1 – Legacy Code Removal & Complete Self-Sufficiency (2025-10-29)
+
+### Breaking Changes
+* **Removed Legacy Module Shims** – Complete removal of backward compatibility shims for root-level imports:
+  * Removed `sys.modules` shims in `bleep/__init__.py` that allowed `import bluetooth_constants` (root-level)
+  * Deleted root-level legacy shim files (`bluetooth_constants.py`, `bluetooth_utils.py`, `bluetooth_uuids.py`, `bluetooth_exceptions.py`)
+  * External scripts must now use proper import paths: `from bleep.bt_ref import constants, utils, uuids, exceptions`
+  * **Migration Required**: Any external scripts using root-level `import bluetooth_constants` will break and must be updated
+
+### Removed
+* **Legacy Compatibility Module** – Removed deprecated `bleep.compat.py` module:
+  * Module was unused internally and provided deprecated backward compatibility shims
+  * Cleaner codebase with reduced maintenance burden
+* **Legacy Namespace Shim** – Removed `sys.modules` shim for `Functions.ble_ctf_functions` in `bleep/ble_ops/ctf.py`:
+  * Legacy namespace was not used in refactored codebase
+  * Removed unnecessary defensive programming artifact
+
+### Changed
+* **Package Installation** – Improved package portability and installation:
+  * Made PyGObject optional (moved to `extras_require["monitor"]`) to fix installation failures in environments without build dependencies
+  * Added YAML cache files (`yaml_cache/*.yaml`, `url_mappings.json`) to `package_data` for complete package distribution
+  * `pip install -e .` now works without requiring `libgirepository1.0-dev` for PyGObject compilation
+  * Users needing monitor features can install with: `pip install -e .[monitor]`
+
+### Fixed
+* **Self-Sufficiency** – Achieved complete codebase independence:
+  * All internal imports now use proper paths (`from bleep.bt_ref import constants`)
+  * No dependencies on root-level legacy files
+  * Package can be installed in any directory without external file dependencies
+  * No circular import issues when deployed to different environments
+
 ## v2.3.0 – D-Bus Reliability Improvements (2025-09-30)
 ### Added
 * **D-Bus Reliability Framework** – Comprehensive system to improve D-Bus interaction stability:

@@ -14,6 +14,17 @@ This page aggregates open tasks referenced across the project so contributors ha
 
 ### High-level backlog (copy + paste from sources)
 
+- [x] **Legacy Code Removal & Self-Sufficiency** – Complete removal of legacy dependencies (v2.3.1, 2025-10-29):
+  - [x] Removed `sys.modules` shims in `bleep/__init__.py` for root-level legacy imports
+  - [x] Deleted root-level legacy shim files (`bluetooth_constants.py`, `bluetooth_utils.py`, `bluetooth_uuids.py`, `bluetooth_exceptions.py`)
+  - [x] Removed deprecated `bleep.compat.py` module (unused internally)
+  - [x] Removed legacy namespace shim `Functions.ble_ctf_functions` from `ctf.py`
+  - [x] Made PyGObject optional in `setup.py` (moved to `extras_require["monitor"]`)
+  - [x] Added YAML cache files to `package_data` for complete package distribution
+  - [x] Achieved complete codebase self-sufficiency with no dependencies on root-level legacy files
+  - [x] Updated changelog with breaking changes and migration notes
+  - [x] All internal imports now use proper paths (`from bleep.bt_ref import constants`)
+
 - [x] **Documentation** – User mode guide completed (docs/user_mode.md)
 - [x] **Assets-of-Interest (AoI) workflow**
   - [x] Implement analysis layer (`bleep/analysis/aoi_analyser.py`) converting (device,mapping,…) into actionable report

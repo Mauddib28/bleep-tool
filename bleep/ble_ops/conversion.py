@@ -8,7 +8,7 @@ import binascii as _binascii
 from typing import Dict, List, Optional, Tuple, Union
 
 from bleep.core import log as _log
-from bleep.bt_ref import bluetooth_utils as _bt_utils
+from bleep.bt_ref import utils as _bt_utils
 
 # ---------------------------------------------------------------------------
 # Core conversion functions used throughout the codebase

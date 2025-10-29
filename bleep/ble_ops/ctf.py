@@ -549,8 +549,4 @@ def ble_ctf__write_characteristic(
         Legacy parameter, ignored
     """
     _ble_ctf__write_characteristic(write_value, characteristic_name, user_device)
-    print_and_log(f"[+] Value written to {characteristic_name}", LOG__DEBUG)
-
-import sys as _sys, types as _types
-
-_sys.modules.setdefault("Functions.ble_ctf_functions", _types.ModuleType("Functions.ble_ctf_functions")) 
+    print_and_log(f"[+] Value written to {characteristic_name}", LOG__DEBUG) 
