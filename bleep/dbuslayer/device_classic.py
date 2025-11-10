@@ -275,7 +275,7 @@ class system_dbus__bluez_device__classic:
             Device type ('dual', 'br/edr', 'le') or None if not available
         """
         try:
-            return str(self._props_iface.Get(DEVICE_INTERFACE, "Type"))
+            return str(self._props_iface.Get(DEVICE_INTERFACE, "Type"))         # Note: DEVICE_INTERFACE does NOT have a "Type" property; ToDo: Fix the determination logic for figuring out device type
         except (dbus.exceptions.DBusException, KeyError):
             return None
             

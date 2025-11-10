@@ -2115,7 +2115,7 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                 services = self.services_resolved(skip_device_type_check=True)
                 result["is_gatt_server"] = len(services) > 0
             
-            # Check device type from BlueZ
+            # Check device type from BlueZ      # Nota Bene: DEVICE_INTERFACE does NOT have a "Type" property.... Needs to be updated; ToDo: Fix device type identification
             try:
                 device_type = self._props_iface.Get(DEVICE_INTERFACE, "Type")
                 if str(device_type) in ["br/edr", "dual"]:
