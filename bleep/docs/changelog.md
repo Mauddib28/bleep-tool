@@ -1,3 +1,118 @@
+## v2.4.2 – Dual Device Detection Framework (2025-11-10)
+
+### Added
+* **Dual Device Detection Framework** – Comprehensive evidence-based device type classification system:
+  * **Phase 1: Core Framework** – Created `DeviceTypeClassifier` module (`bleep/analysis/device_type_classifier.py`):
+    * Evidence-based classification with weighted evidence (CONCLUSIVE, STRONG, WEAK, INCONCLUSIVE)
+    * 7 default evidence collectors (Classic: device_class, SDP records, service UUIDs; LE: address_type, GATT services, service UUIDs, advertising data)
+    * Mode-aware evidence collection (passive/naggy/pokey/bruteforce)
+    * Strict dual-detection logic requiring conclusive evidence from BOTH protocols
+    * Stateless classification (based ONLY on current device state, no database dependency for decisions)
+    * Code reuse leveraging existing BLEEP functions (`discover_services_sdp_connectionless()`, `device.services_resolved()`, `identify_uuid()`, etc.)
+    * UUID detection using existing BLEEP constants (`SPEC_UUID_NAMES__SERV_CLASS`, `SPEC_UUID_NAMES__SERV`) - no hardcoded patterns
+  * **Phase 2: Database Integration** – Schema v6 with evidence audit trail:
+    * Created `device_type_evidence` table for audit/debugging (NOT used for classification decisions)
+    * Database-first performance optimization with signature caching (1-5ms cache hits vs 100-5000ms full classification)
+    * Evidence storage functions (`store_device_type_evidence()`, `get_device_type_evidence()`, `get_device_evidence_signature()`)
+    * Automatic schema migration from v5 to v6
+    * Proper indexes for efficient evidence queries
+
+  * **Phase 3: D-Bus Layer Integration** – Fixed Type property access errors:
+    * Fixed `device_classic.get_device_type()` - removed incorrect `Type` property access, now uses evidence-based classification
+    * Fixed `device_le.check_device_type()` - removed incorrect `Type` property access, now uses evidence-based classification
+    * Fixed `adapter._determine_device_type()` - removed hardcoded UUID patterns, now uses DeviceTypeClassifier with existing BLEEP constants
+    * All methods maintain backward compatibility (return types unchanged)
+    * Proper context building from device properties for classifier
+
+  * **Phase 4: Mode-Aware Evidence Collection** – Scan mode integration:
+    * Updated all scan functions to pass appropriate `scan_mode` to device type classification
+    * `passive_scan_and_connect()` uses "passive" mode (advertising data only)
+    * `naggy_scan_and_connect()` uses "naggy" mode (passive + connection-based collectors)
+    * `pokey_scan_and_connect()` uses "pokey" mode (all collectors including SDP queries)
+    * `bruteforce_scan_and_connect()` uses "bruteforce" mode (all collectors, exhaustive testing)
+    * `connect_and_enumerate__bluetooth__classic()` uses "pokey" mode (SDP enumeration)
+    * Evidence collectors already mode-aware (implemented in Phase 1)
+    * Mode filtering ensures appropriate evidence collection based on scan aggressiveness
+
+  * **Phase 5: Documentation & Testing** – Comprehensive documentation and test suite:
+    * Created `device_type_classification.md` - Complete guide with examples, troubleshooting, and best practices
+    * Updated `observation_db.md` - Evidence-based classification system documentation
+    * Updated `observation_db_schema.md` - Schema v6 migration notes and device_type_evidence table documentation
+    * Created `test_device_type_integration.py` - Comprehensive integration test suite (21 tests)
+    * Tests cover: evidence collection, classification logic, mode-aware filtering, database integration, edge cases, schema migration
+    * All core functionality tests passing
+
+## v2.4.1 – Enhanced SDP Attribute Extraction, Connectionless Queries, Version Detection & Comprehensive SDP Analysis (2025-11-09)
+### Added
+* **Classic Integration Tests (bc-12)** – Comprehensive test suite covering:
+  * Enhanced SDP feature tests (Phase 1-4 features: enhanced attributes, connectionless queries, version detection, comprehensive analysis)
+  * PBAP comprehensive tests (multiple repositories, vCard formats, auto-auth, watchdog, output handling, database integration)
+  * CLI command tests (`classic-enum`, `classic-pbap`, `classic-ping`) in `tests/test_classic_cli.py`
+  * Debug mode command tests (`cscan`, `cconnect`, `cservices`, `csdp`, `pbap`) in `tests/test_classic_debug_mode.py`
+  * Error recovery & edge case tests (reconnection, concurrent operations, timeout handling, partial service discovery)
+  * Enhanced `tests/test_classic_integration.py` with comprehensive test coverage
+  * All tests follow existing patterns, use proper fixtures, and skip gracefully when hardware unavailable
+* **Debug Mode PBAP Command (bc-10)** – Added `pbap` command to debug mode:
+  * Interactive PBAP phonebook dumps from connected Classic devices
+  * Supports all CLI `classic-pbap` features (multiple repositories, vCard formats, auto-auth, watchdog)
+  * Automatic PBAP service detection from service map or SDP records
+  * Database integration for PBAP metadata (if enabled)
+  * Comprehensive error handling with helpful diagnostic messages
+  * Entry counting and file statistics display
+  * Follows existing debug mode command patterns and conventions
+* **Debug Mode Connectionless SDP Discovery** – Added `csdp` command to debug mode:
+  * SDP discovery for Classic devices without requiring full connection
+  * Connectionless mode with l2ping reachability check (matches CLI `--connectionless` flag)
+  * Configurable l2ping parameters (`--l2ping-count`, `--l2ping-timeout`)
+  * Detailed SDP record display with all enhanced attributes (handles, profile versions, service versions, descriptions)
+  * Automatic service map generation from discovered records
+  * Faster failure detection for unreachable devices (~13 seconds vs. 30+ seconds)
+  * Useful for reconnaissance before attempting connection
+* **Enhanced SDP Attribute Extraction** – Extended Classic Bluetooth SDP discovery:
+  * Extract Service Record Handle (0x0000) from SDP records
+  * Extract Bluetooth Profile Descriptor List (0x0009) with profile UUIDs and versions
+  * Extract Service Version (0x0300) when available
+  * Extract Service Description (0x0101) when available
+  * Enhanced both D-Bus XML parsing and sdptool text parsing to capture additional attributes
+* **Debug Mode for classic-enum** – Added `--debug` flag to `classic-enum` command:
+  * Displays enhanced SDP attributes (handles, profile versions, service versions, descriptions)
+  * Shows detailed parsing information
+  * Enables verbose logging to `/tmp/bti__logging__debug.txt`
+* **Connectionless SDP Fallback** – Improved `classic-enum` to work without full connection:
+  * SDP queries work connectionless (no pairing/connection required)
+  * If connection fails, still displays SDP enumeration results
+  * Useful for reconnaissance when devices are not available for full connection
+* **Connectionless Mode with Reachability Check** – Added `--connectionless` flag and `discover_services_sdp_connectionless()` function:
+  * Verifies device reachability using `l2ping` before attempting SDP queries
+  * Provides faster failure detection (~13 seconds vs. 30+ second SDP timeout)
+  * Better error messages distinguishing unreachable devices from SDP failures
+  * Configurable l2ping parameters (`l2ping_count`, `l2ping_timeout`)
+  * Graceful degradation if `classic_l2ping` module unavailable
+* **Bluetooth Version Detection** – Added `--version-info` flag and version detection capabilities:
+  * Device version information extraction (`get_vendor()`, `get_product()`, `get_version()`, `get_modalias()`)
+  * Dual-source extraction: Device1 properties with modalias fallback
+  * Profile version mapping from SDP records to Bluetooth spec versions (heuristic)
+  * Local HCI adapter version query via `hciconfig` (no sudo required)
+  * LMP version to Bluetooth Core Specification mapping (Bluetooth 1.0b through 5.6)
+  * Raw property preservation for offline analysis
+  * Created `bleep/ble_ops/classic_version.py` module for version detection helpers
+* **Comprehensive SDP Analysis** – Added `--analyze` flag and `SDPAnalyzer` class:
+  * Protocol analysis identifying all protocols used (RFCOMM, L2CAP, BNEP, OBEX, etc.)
+  * Profile version analysis with cross-referencing across services
+  * Advanced version inference engine using profile version patterns
+  * Anomaly detection for version inconsistencies and unusual patterns
+  * Service relationship analysis grouping related services
+  * Comprehensive reporting with human-readable and JSON output formats
+  * Created `bleep/analysis/sdp_analyzer.py` module for advanced SDP analysis
+
+### Enhanced
+* **SDP Record Structure** – Extended return structure with optional fields:
+  * `handle` – Service Record Handle
+  * `profile_descriptors` – List of profile UUID/version pairs
+  * `service_version` – Service version number
+  * `description` – Service description text
+  * All new fields are optional (None if not available) for backward compatibility
+
 ## v2.4.0 – Enhanced Pairing Agent (2025-10-01)
 ### Added
 * **Enhanced Pairing Agent** – Comprehensive Bluetooth pairing system:

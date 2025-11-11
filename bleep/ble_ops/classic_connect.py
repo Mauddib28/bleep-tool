@@ -172,6 +172,15 @@ def connect_and_enumerate__bluetooth__classic(
         LOG__GENERAL,
     )
 
+    # Perform device type classification with pokey mode
+    # (classic_connect performs SDP enumeration, similar to pokey mode thoroughness)
+    try:
+        device_type = device.get_device_type(scan_mode="pokey")
+        if device_type:
+            print_and_log(f"[*] Device type: {device_type}", LOG__GENERAL)
+    except Exception as e:
+        print_and_log(f"[*] Device type classification: {e}", LOG__DEBUG)
+
     if _obs and svc_items:
         try:
             _obs.upsert_classic_services(target_bt_addr, svc_items)  # type: ignore[attr-defined]

@@ -34,6 +34,10 @@ __all__ = [
     "get_aoi_analysis",
     "has_aoi_analysis",
     "get_aoi_analyzed_devices",
+    # Device Type Classification Evidence
+    "store_device_type_evidence",
+    "get_device_type_evidence",
+    "get_device_evidence_signature",
     # Database Maintenance and Performance
     "maintain_database",
     "explain_query",
@@ -44,7 +48,7 @@ _DB_CONN: sqlite3.Connection | None = None
 
 _DB_PATH = Path(os.getenv("BLEEP_DB_PATH", Path.home() / ".bleep" / "observations.db"))
 
-_SCHEMA_VERSION = 5  # Added performance indexes
+_SCHEMA_VERSION = 6  # Added device_type_evidence table for audit/debugging
 
 _SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -173,6 +177,22 @@ CREATE TABLE IF NOT EXISTS aoi_analysis (
     recommendations JSON,
     PRIMARY KEY (mac)
 );
+
+CREATE TABLE IF NOT EXISTS device_type_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mac TEXT REFERENCES devices(mac) ON DELETE CASCADE,
+    evidence_type TEXT NOT NULL,
+    evidence_weight TEXT NOT NULL,
+    source TEXT NOT NULL,
+    value TEXT,
+    metadata TEXT,
+    ts DATETIME NOT NULL,
+    UNIQUE(mac, evidence_type, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_type_evidence_mac ON device_type_evidence(mac);
+CREATE INDEX IF NOT EXISTS idx_device_type_evidence_type ON device_type_evidence(evidence_type);
+CREATE INDEX IF NOT EXISTS idx_device_type_evidence_ts ON device_type_evidence(ts);
 """
 
 
@@ -255,6 +275,34 @@ def _init_db() -> None:
                 current_version = 5
             except Exception as e:
                 print(f"Migration v4 to v5 failed: {e}")
+        
+        # Migration from v5 to v6 - Add device_type_evidence table
+        if current_version == 5:
+            try:
+                # Create device_type_evidence table for audit/debugging
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS device_type_evidence (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        mac TEXT REFERENCES devices(mac) ON DELETE CASCADE,
+                        evidence_type TEXT NOT NULL,
+                        evidence_weight TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        value TEXT,
+                        metadata TEXT,
+                        ts DATETIME NOT NULL,
+                        UNIQUE(mac, evidence_type, source)
+                    )
+                """)
+                
+                # Create indexes for device_type_evidence table
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_device_type_evidence_mac ON device_type_evidence(mac)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_device_type_evidence_type ON device_type_evidence(evidence_type)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_device_type_evidence_ts ON device_type_evidence(ts)")
+                
+                print("[+] Database schema v6: device_type_evidence table created for classification audit trail")
+                current_version = 6
+            except Exception as e:
+                print(f"Migration v5 to v6 failed: {e}")
 
         # Update schema version
         if not ver_row:
@@ -1026,6 +1074,175 @@ def get_aoi_analyzed_devices() -> List[Dict[str, Any]]:
     except Exception as e:
         print_and_log(f"Error retrieving AoI analyzed devices: {e}", LOG__DEBUG)
         return []
+
+# ---------------------------------------------------------------------------
+# Device Type Classification Evidence Functions ------------------------------
+# ---------------------------------------------------------------------------
+
+def store_device_type_evidence(
+    mac: str,
+    evidence_type: str,
+    evidence_weight: str,
+    source: str,
+    value: Any = None,
+    metadata: Optional[Dict[str, Any]] = None
+) -> None:
+    """
+    Store device type classification evidence in the database for audit/debugging.
+    
+    **Note:** This function is for audit trail purposes only. Evidence stored here
+    is NOT used for classification decisions - classification is stateless and based
+    only on current device properties.
+    
+    Args:
+        mac: Device MAC address
+        evidence_type: Type of evidence (e.g., 'classic_device_class', 'le_addr_random')
+        evidence_weight: Weight of evidence ('conclusive', 'strong', 'weak', 'inconclusive')
+        source: Source of evidence (e.g., 'dbus_property', 'sdp_query', 'gatt_enumeration')
+        value: Evidence value (will be converted to string/JSON)
+        metadata: Optional metadata dictionary (will be stored as JSON)
+    """
+    mac = _normalize_mac(mac)
+    now = datetime.utcnow().isoformat()
+    
+    # Convert value to string representation
+    if value is not None:
+        if isinstance(value, (dict, list)):
+            value_str = json_dumps(value)
+        else:
+            value_str = str(value)
+    else:
+        value_str = None
+    
+    # Convert metadata to JSON string
+    metadata_str = json_dumps(metadata) if metadata else None
+    
+    try:
+        with _DB_LOCK, _db_cursor() as cur:
+            # Use INSERT OR REPLACE to handle UNIQUE constraint
+            cur.execute("""
+                INSERT OR REPLACE INTO device_type_evidence 
+                (mac, evidence_type, evidence_weight, source, value, metadata, ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (mac, evidence_type, evidence_weight, source, value_str, metadata_str, now))
+    except Exception as e:
+        print_and_log(
+            f"Error storing device type evidence for {mac}: {e}",
+            LOG__DEBUG
+        )
+
+
+def get_device_type_evidence(mac: str) -> List[Dict[str, Any]]:
+    """
+    Retrieve all device type classification evidence for a device.
+    
+    **Note:** This is for audit/debugging purposes only. Evidence retrieved here
+    is NOT used for classification decisions.
+    
+    Args:
+        mac: Device MAC address
+        
+    Returns:
+        List of evidence dictionaries, ordered by timestamp (newest first)
+    """
+    mac = _normalize_mac(mac)
+    
+    try:
+        with _DB_LOCK, _db_cursor() as cur:
+            cur.execute("""
+                SELECT * FROM device_type_evidence
+                WHERE mac = ?
+                ORDER BY ts DESC
+            """, (mac,))
+            
+            rows = cur.fetchall()
+            evidence_list = []
+            for row in rows:
+                evidence = dict(row)
+                # Parse JSON metadata if present
+                if evidence.get('metadata'):
+                    try:
+                        evidence['metadata'] = json.loads(evidence['metadata'])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                evidence_list.append(evidence)
+            
+            return evidence_list
+    except Exception as e:
+        print_and_log(
+            f"Error retrieving device type evidence for {mac}: {e}",
+            LOG__DEBUG
+        )
+        return []
+
+
+def get_device_evidence_signature(mac: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve the most recent evidence signature for a device.
+    
+    This is used for database-first caching in the classifier. The signature
+    represents a snapshot of device properties at classification time.
+    
+    **Note:** This signature is used for performance optimization (caching) only.
+    Classification decisions are still stateless and based on current device state.
+    
+    Args:
+        mac: Device MAC address
+        
+    Returns:
+        Dictionary with signature data (device_class, address_type, uuid_hash, etc.)
+        or None if no signature exists
+    """
+    mac = _normalize_mac(mac)
+    
+    try:
+        # Get the most recent evidence entries
+        evidence_list = get_device_type_evidence(mac)
+        if not evidence_list:
+            return None
+        
+        # Build signature from evidence
+        signature = {
+            'device_class': None,
+            'address_type': None,
+            'has_classic_uuids': False,
+            'has_le_uuids': False,
+            'uuid_hash': None,
+        }
+        
+        # Extract signature components from evidence
+        for evidence in evidence_list:
+            ev_type = evidence.get('evidence_type', '')
+            ev_value = evidence.get('value', '')
+            ev_metadata = evidence.get('metadata', {})
+            
+            if ev_type == 'classic_device_class' and ev_value:
+                try:
+                    signature['device_class'] = int(ev_value)
+                except (ValueError, TypeError):
+                    pass
+            
+            if ev_type in ['le_address_type_random', 'le_address_type_public']:
+                signature['address_type'] = 'random' if 'random' in ev_type else 'public'
+            
+            if ev_type == 'classic_service_uuids' and ev_metadata:
+                signature['has_classic_uuids'] = ev_metadata.get('uuid_count', 0) > 0
+            
+            if ev_type == 'le_service_uuids' and ev_metadata:
+                signature['has_le_uuids'] = ev_metadata.get('uuid_count', 0) > 0
+        
+        # Check if signature has meaningful data
+        if any(v is not None and v is not False for v in signature.values()):
+            return signature
+        
+        return None
+        
+    except Exception as e:
+        print_and_log(
+            f"Error retrieving evidence signature for {mac}: {e}",
+            LOG__DEBUG
+        )
+        return None
 
 # ---------------------------------------------------------------------------
 # Data retrieval functions --------------------------------------------------

@@ -13,7 +13,8 @@ BLEEP maintains a local SQLite database (`~/.bleep/observations.db`) that automa
 | `media_players` / `media_transports` | AVRCP & A2DP state snapshots |
 | `classic_services` | RFCOMM-based service → channel mapping (SDP) |
 | `pbap_metadata` | Phone-book repository metadata (entries, hash) |
-| `aoi_analysis` | *NEW* – Assets-of-Interest analysis results (security concerns, unusual characteristics) |
+| `aoi_analysis` | Assets-of-Interest analysis results (security concerns, unusual characteristics) |
+| `device_type_evidence` | *NEW* – Device type classification evidence for audit/debugging (Schema v6) |
 
 ## Automatic logging
 
@@ -45,6 +46,8 @@ The database schema is versioned to allow for smooth migrations:
 | v2 | Renamed columns to avoid Python keyword conflicts (`class` → `device_class`, `state` → `transport_state`) |
 | v3 | Added `device_type` field for improved device type classification |
 | v4 | Added `aoi_analysis` table for Assets-of-Interest integration |
+| v5 | Added performance indexes for frequently queried fields |
+| v6 | Added `device_type_evidence` table for classification audit trail and signature caching |
 
 Migrations occur transparently when the schema version changes. For detailed migration history, see [README.refactor-migrations.md](../../README.refactor-migrations.md).
 
@@ -101,19 +104,40 @@ analyzed_devices = observations.get_aoi_analyzed_devices()
 
 ## Device Type Classification
 
-BLEEP uses a sophisticated approach to classify Bluetooth devices:
+BLEEP uses an **evidence-based, stateless classification system** (Schema v6). Classification decisions are based **only** on current device properties and active queries, never on historical database data. This prevents false positives from MAC address collisions.
 
-| Device Type | Description | Identification Method |
-|-------------|-------------|----------------------|
-| `unknown` | Not enough information to determine type | Default when no definitive evidence exists |
-| `classic` | BR/EDR (Classic Bluetooth) device | Device has Class property, SDP services, or Classic-specific UUIDs |
-| `le` | Bluetooth Low Energy device | Device has random AddressType or BLE-specific UUIDs (like GAP 0x1800) |
-| `dual` | Dual-mode device supporting both Classic and BLE | Evidence of both Classic and BLE capabilities |
+| Device Type | Description | Detection Criteria |
+|-------------|-------------|-------------------|
+| `unknown` | Unable to determine device type | Insufficient evidence available |
+| `classic` | BR/EDR (Classic Bluetooth) only | Requires conclusive Classic evidence (device_class OR SDP records) |
+| `le` | Bluetooth Low Energy only | Requires conclusive LE evidence (random address OR GATT services) |
+| `dual` | Dual-mode device (both Classic and BLE) | **Strict requirement**: Conclusive evidence from BOTH protocols |
 
-The classification system is designed to handle various device identification challenges:
-- BLE devices may have zero GATT services (e.g., some BLE media devices)
-- Classic devices will have SDP records but not GATT services
-- Devices start as `unknown` until evidence confirms their type
+### Evidence-Based Detection
+
+**Classic Evidence (Conclusive):**
+- `device_class` property present (Classic device class code)
+- SDP records discovered via `GetServiceRecords()` or connectionless SDP queries
+
+**LE Evidence (Conclusive):**
+- `AddressType` = "random" (LE random addresses are conclusive)
+- GATT services resolved via `services_resolved()`
+
+**Important Notes:**
+- `AddressType` = "public" is **inconclusive** (default for both Classic and LE)
+- Dual-mode detection requires **conclusive evidence from BOTH** protocols
+- Database history is **NOT** used for classification (stateless system)
+- Evidence is stored in `device_type_evidence` table for audit/debugging only
+
+### Mode-Aware Collection
+
+Evidence collection adapts to scan mode aggressiveness:
+
+- **Passive Mode**: Only advertising data (device_class, UUIDs, address_type)
+- **Naggy Mode**: Passive + connection-based (GATT services if connected)
+- **Pokey/Bruteforce Modes**: All collectors enabled (including SDP queries)
+
+For detailed information, see [Device Type Classification Guide](device_type_classification.md).
 
 ## Database CLI Filters
 

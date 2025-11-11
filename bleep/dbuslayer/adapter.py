@@ -189,7 +189,10 @@ class system_dbus__bluez_adapter:
 
     def _determine_device_type(self, properties: dict) -> str:
         """
-        Determine device type using multiple heuristics.
+        Determine device type using evidence-based classification.
+        
+        **Fixed:** Replaced hardcoded UUID patterns with DeviceTypeClassifier.
+        Now uses existing BLEEP constants and stateless evidence-based classification.
         
         Args:
             properties: Device properties from BlueZ
@@ -197,42 +200,36 @@ class system_dbus__bluez_adapter:
         Returns:
             Device type: 'unknown', 'classic', 'le', or 'dual'
         """
-        # Get key properties
-        address_type = properties.get("AddressType")
-        device_class = properties.get("Class")
-        uuids = properties.get("UUIDs", [])
-        
-        # Evidence for different device types
-        has_classic_evidence = False
-        has_le_evidence = False
-        
-        # Check for BLE evidence
-        if address_type == "random":
-            has_le_evidence = True
-        
-        # Check for common BLE service UUIDs (GAP 0x1800, GATT 0x1801)
-        if any("1800" in str(uuid).lower() or "1801" in str(uuid).lower() for uuid in uuids):
-            has_le_evidence = True
+        try:
+            from bleep.analysis.device_type_classifier import DeviceTypeClassifier
             
-        # Check for Classic Bluetooth evidence
-        if device_class is not None:
-            has_classic_evidence = True
+            # Extract MAC address from properties (required for classifier)
+            mac = properties.get("Address", "")
+            if not mac:
+                return BT_DEVICE_TYPE_UNKNOWN
             
-        # Check for SDP-related properties indicating Classic BT
-        # We don't currently have direct access to SDP records in properties,
-        # but the presence of traditional Classic Bluetooth service UUIDs is a hint
-        classic_service_prefixes = ["1101", "1103", "110A", "110B", "110C", "110E", "1112", "1115", "111F", "112F"]
-        if any(str(uuid).upper().startswith(prefix) for prefix in classic_service_prefixes for uuid in uuids):
-            has_classic_evidence = True
+            # Build context from properties
+            context = {
+                "device_class": properties.get("Class"),
+                "address_type": properties.get("AddressType"),
+                "uuids": [str(uuid) for uuid in properties.get("UUIDs", [])],
+                "connected": properties.get("Connected", False),
+            }
             
-        # Determine device type
-        if has_classic_evidence and has_le_evidence:
-            return BT_DEVICE_TYPE_DUAL
-        elif has_classic_evidence:
-            return BT_DEVICE_TYPE_CLASSIC
-        elif has_le_evidence:
-            return BT_DEVICE_TYPE_LE
-        else:
+            # Use classifier to determine device type
+            # Use 'passive' mode since we're just scanning/discovering
+            classifier = DeviceTypeClassifier()
+            result = classifier.classify_with_mode(
+                mac=mac,
+                context=context,
+                scan_mode="passive",
+                use_database_cache=True
+            )
+            
+            return result.device_type
+            
+        except Exception as e:
+            logger.debug(f"Error classifying device type: {e}")
             return BT_DEVICE_TYPE_UNKNOWN
 
     def is_ready(self) -> bool:

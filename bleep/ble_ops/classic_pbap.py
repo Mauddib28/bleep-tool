@@ -15,6 +15,12 @@ Returned structure::
     }
 
 Raises *RuntimeError* on unrecoverable errors (missing obexftp, no PBAP svc,…).
+
+**Known Issue - "Too short header in packet" Error:**
+This OBEX error occurs when the device has stale OBEX state (e.g., from a previous
+aborted transfer). SOLUTION CONFIRMED: Restarting the target device clears the OBEX
+buffers and resolves this issue. The error handling in pbap_dump_async() provides
+clear guidance when this occurs.
 """
 
 from __future__ import annotations
@@ -315,7 +321,49 @@ def pbap_dump_async(
         except Exception:
             agent = None  # Ignore agent errors; continue without auth helper
 
-    session_path = client.CreateSession(mac_address, {"Target": "PBAP"})
+    # Create PBAP session with error handling
+    # Note: "Too short header in packet" error indicates stale OBEX state on the device.
+    # Manual testing confirmed: RESTARTING THE TARGET DEVICE resolves this issue.
+    # This clears the device's OBEX buffers and allows a fresh session to be established.
+    try:
+        session_path = client.CreateSession(mac_address, {"Target": "PBAP"})
+    except dbus.exceptions.DBusException as exc:
+        msg = str(exc)
+        from bleep.core.log import print_and_log, LOG__GENERAL
+        
+        # Handle "Too short header" error - indicates stale OBEX state on device
+        # SOLUTION CONFIRMED: Restarting the target device clears OBEX buffers and resolves this.
+        if "Too short header" in msg or "too short header" in msg.lower():
+            print_and_log(
+                f"[-] OBEX CreateSession failed: 'Too short header in packet'\n"
+                f"    This indicates stale OBEX state on the device.\n"
+                f"    SOLUTION: Restart the target device to clear OBEX buffers.\n"
+                f"    Alternative: Disconnect and reconnect via 'bluetoothctl disconnect {mac_address}'",
+                LOG__GENERAL
+            )
+            raise RuntimeError(
+                f"OBEX CreateSession failed: Too short header in packet. "
+                f"This indicates stale OBEX state on device {mac_address}. "
+                f"SOLUTION: Restart the target device to clear OBEX buffers and retry."
+            ) from exc
+        
+        # Handle other common OBEX errors
+        if "NoReply" in msg or "Timed out" in msg:
+            print_and_log(
+                f"[-] OBEX CreateSession failed: Device not responding\n"
+                f"    Solutions:\n"
+                f"    1. Ensure device is in range and Bluetooth is enabled\n"
+                f"    2. Disconnect and reconnect: bluetoothctl disconnect {mac_address}\n"
+                f"    3. Restart the target device",
+                LOG__GENERAL
+            )
+            raise RuntimeError(
+                f"OBEX CreateSession failed: Device not responding. "
+                f"Ensure {mac_address} is in range and Bluetooth is enabled."
+            ) from exc
+        
+        # Re-raise other errors
+        raise
     pbap = _PbapClientAsync(session_path)
     loop = GLib.MainLoop()
     last_activity = _time.time()

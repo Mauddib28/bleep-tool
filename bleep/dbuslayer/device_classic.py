@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dbus
 import time
+import re
 from typing import Dict, Any, Optional, List, Tuple
 
 from bleep.bt_ref.constants import (
@@ -266,18 +267,212 @@ class system_dbus__bluez_device__classic:
         except (dbus.exceptions.DBusException, KeyError, ValueError):
             return None
             
-    def get_device_type(self) -> Optional[str]:
-        """Get the device type.
+    def get_device_type(self, scan_mode: str = "passive") -> Optional[str]:
+        """
+        Get the device type using evidence-based classification.
+        
+        **Fixed:** Removed incorrect `Type` property access (Device1 interface doesn't expose Type).
+        Now uses stateless evidence-based classification via DeviceTypeClassifier.
+        
+        Parameters
+        ----------
+        scan_mode : str, optional
+            Scan mode for evidence collection ('passive', 'naggy', 'pokey', 'bruteforce'),
+            by default 'passive'
         
         Returns
         -------
         Optional[str]
-            Device type ('dual', 'br/edr', 'le') or None if not available
+            Device type ('unknown', 'classic', 'le', 'dual') or None if classification fails
         """
         try:
-            return str(self._props_iface.Get(DEVICE_INTERFACE, "Type"))         # Note: DEVICE_INTERFACE does NOT have a "Type" property; ToDo: Fix the determination logic for figuring out device type
+            from bleep.analysis.device_type_classifier import DeviceTypeClassifier
+            
+            # Build context from device properties
+            context = {
+                "device_class": self.get_device_class(),
+                "address_type": None,  # Classic devices don't have AddressType
+            }
+            
+            # Get UUIDs if available
+            try:
+                uuids = self._props_iface.Get(DEVICE_INTERFACE, "UUIDs")
+                context["uuids"] = [str(uuid) for uuid in uuids] if uuids else []
+            except (dbus.exceptions.DBusException, KeyError):
+                context["uuids"] = []
+            
+            # Check if device is connected (for more aggressive evidence collection)
+            context["connected"] = self.is_connected()
+            
+            # Use classifier to determine device type
+            classifier = DeviceTypeClassifier()
+            result = classifier.classify_with_mode(
+                mac=self.mac_address,
+                context=context,
+                scan_mode=scan_mode,
+                use_database_cache=True
+            )
+            
+            return result.device_type
+            
+        except Exception as e:
+            print_and_log(
+                f"[device_classic] Error classifying device type for {self.mac_address}: {e}",
+                LOG__DEBUG
+            )
+            return None
+    
+    # ---------------------------------------------------------------------
+    # Version Information (Phase 3)
+    # ---------------------------------------------------------------------
+    
+    def get_modalias(self) -> Optional[str]:
+        """Get the device modalias string.
+        
+        Returns
+        -------
+        Optional[str]
+            Modalias string (e.g., "bluetooth:v000Ap0000d0000") or None if not available
+        """
+        try:
+            return str(self._props_iface.Get(DEVICE_INTERFACE, "Modalias"))
         except (dbus.exceptions.DBusException, KeyError):
             return None
+    
+    def get_vendor(self) -> Optional[int]:
+        """Get the vendor ID from Device1.Vendor property or Modalias.
+        
+        Returns
+        -------
+        Optional[int]
+            Vendor ID (16-bit) or None if not available
+        """
+        # Try Device1.Vendor property first (if available)
+        try:
+            vendor = self._props_iface.Get(DEVICE_INTERFACE, "Vendor")
+            if vendor is not None:
+                return int(vendor)
+        except (dbus.exceptions.DBusException, KeyError, ValueError):
+            pass
+        
+        # Fallback: parse from Modalias (format: "bluetooth:v000Ap0000d0000")
+        modalias = self.get_modalias()
+        if modalias:
+            try:
+                # Modalias format: bluetooth:vVVVVpPPPPdDDDD
+                # Extract vendor (v) field
+                match = re.search(r'v([0-9A-Fa-f]{4})', modalias)
+                if match:
+                    return int(match.group(1), 16)
+            except (ValueError, AttributeError):
+                pass
+        
+        return None
+    
+    def get_product(self) -> Optional[int]:
+        """Get the product ID from Device1.Product property or Modalias.
+        
+        Returns
+        -------
+        Optional[int]
+            Product ID (16-bit) or None if not available
+        """
+        # Try Device1.Product property first (if available)
+        try:
+            product = self._props_iface.Get(DEVICE_INTERFACE, "Product")
+            if product is not None:
+                return int(product)
+        except (dbus.exceptions.DBusException, KeyError, ValueError):
+            pass
+        
+        # Fallback: parse from Modalias (format: "bluetooth:v000Ap0000d0000")
+        modalias = self.get_modalias()
+        if modalias:
+            try:
+                # Modalias format: bluetooth:vVVVVpPPPPdDDDD
+                # Extract product (p) field
+                match = re.search(r'p([0-9A-Fa-f]{4})', modalias)
+                if match:
+                    return int(match.group(1), 16)
+            except (ValueError, AttributeError):
+                pass
+        
+        return None
+    
+    def get_version(self) -> Optional[int]:
+        """Get the version from Device1.Version property or Modalias.
+        
+        Returns
+        -------
+        Optional[int]
+            Version (16-bit) or None if not available
+        """
+        # Try Device1.Version property first (if available)
+        try:
+            version = self._props_iface.Get(DEVICE_INTERFACE, "Version")
+            if version is not None:
+                return int(version)
+        except (dbus.exceptions.DBusException, KeyError, ValueError):
+            pass
+        
+        # Fallback: parse from Modalias (format: "bluetooth:v000Ap0000d0000")
+        modalias = self.get_modalias()
+        if modalias:
+            try:
+                # Modalias format: bluetooth:vVVVVpPPPPdDDDD
+                # Extract device (d) field - sometimes used for version
+                match = re.search(r'd([0-9A-Fa-f]{4})', modalias)
+                if match:
+                    return int(match.group(1), 16)
+            except (ValueError, AttributeError):
+                pass
+        
+        return None
+    
+    def get_device_version_info(self) -> Dict[str, Any]:
+        """Get comprehensive version information for the device.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary containing:
+            - vendor: Optional[int] - Vendor ID
+            - product: Optional[int] - Product ID
+            - version: Optional[int] - Version
+            - modalias: Optional[str] - Full modalias string
+            - raw_properties: Dict - Raw property values for analysis
+        """
+        info: Dict[str, Any] = {
+            "vendor": self.get_vendor(),
+            "product": self.get_product(),
+            "version": self.get_version(),
+            "modalias": self.get_modalias(),
+            "raw_properties": {},
+        }
+        
+        # Try to get raw property values for offline analysis
+        try:
+            # Try Vendor property
+            try:
+                info["raw_properties"]["Vendor"] = self._props_iface.Get(DEVICE_INTERFACE, "Vendor")
+            except (dbus.exceptions.DBusException, KeyError):
+                pass
+            
+            # Try Product property
+            try:
+                info["raw_properties"]["Product"] = self._props_iface.Get(DEVICE_INTERFACE, "Product")
+            except (dbus.exceptions.DBusException, KeyError):
+                pass
+            
+            # Try Version property
+            try:
+                info["raw_properties"]["Version"] = self._props_iface.Get(DEVICE_INTERFACE, "Version")
+            except (dbus.exceptions.DBusException, KeyError):
+                pass
+        except Exception:
+            pass  # Ignore errors when collecting raw properties
+        
+        return info
             
     # ---------------------------------------------------------------------
     # Profile Management

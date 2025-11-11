@@ -141,6 +141,10 @@ def parse_args(args=None):
     # Classic enumerate
     cen_parser = subparsers.add_parser("classic-enum", help="Enumerate Classic RFCOMM services")
     cen_parser.add_argument("address", help="Target MAC address")
+    cen_parser.add_argument("--debug", "-d", action="store_true", help="Enable verbose debug output")
+    cen_parser.add_argument("--connectionless", action="store_true", help="Verify device reachability via l2ping before SDP query (faster failure detection)")
+    cen_parser.add_argument("--version-info", action="store_true", help="Display Bluetooth version information (HCI/LMP versions, vendor/product IDs, profile versions)")
+    cen_parser.add_argument("--analyze", action="store_true", help="Perform comprehensive SDP analysis (protocol analysis, version inference, anomaly detection)")
     # Phonebook dump
     pbap_parser = subparsers.add_parser(
         "classic-pbap",
@@ -626,7 +630,7 @@ def main(args=None):
 
         elif args.mode == "explore":
             # For the explore command, we need to override sys.argv
-            import sys
+            #import sys
             original_argv = sys.argv
             
             # Build new argv for the exploration module
@@ -675,7 +679,7 @@ def main(args=None):
 
         elif args.mode == "aoi":
             from bleep.modes.aoi import main as _aoi_main
-            import sys  # Ensure sys is available in this scope
+            #import sys  # Ensure sys is available in this scope
 
             # Check if the first argument is a recognized subcommand
             known_subcommands = ["scan", "analyze", "list", "report", "export"]
@@ -846,13 +850,196 @@ def main(args=None):
 
         elif args.mode == "classic-enum":
             from bleep.ble_ops import connect_and_enumerate__bluetooth__classic as _c_enum
+            from bleep.ble_ops.classic_sdp import discover_services_sdp
+            from bleep.ble_ops.classic_version import (
+                query_hci_version,
+                map_lmp_version_to_spec,
+                map_profile_version_to_spec,
+            )
+            from bleep.analysis.sdp_analyzer import SDPAnalyzer, analyze_sdp_records
+            from bleep.dbuslayer.device_classic import system_dbus__bluez_device__classic
+            from bleep.core.log import print_and_log, LOG__DEBUG, LOG__GENERAL
+            from typing import Dict, Any
+            import json
+            
+            # Enable debug output if requested
+            debug_mode = getattr(args, "debug", False)
+            version_info_mode = getattr(args, "version_info", False)
+            analyze_mode = getattr(args, "analyze", False)
+            if debug_mode:
+                print_and_log("[classic-enum] Debug mode enabled", LOG__GENERAL)
+                print_and_log(f"[classic-enum] Enumerating SDP records for {args.address}", LOG__GENERAL)
+                # Set logging level to DEBUG for this session
+                import logging
+                logging.getLogger("bleep").setLevel(logging.DEBUG)
+                # Also enable DEBUG messages to print to stdout
+                print("[*] Debug output enabled - check /tmp/bti__logging__debug.txt for detailed logs")
+            
+            # Get version information if requested
+            version_info_data: Dict[str, Any] = {}
+            if version_info_mode:
+                try:
+                    # Get device version info from D-Bus
+                    device = system_dbus__bluez_device__classic(args.address)
+                    version_info_data = device.get_device_version_info()
+                    
+                    # Query local HCI adapter version (for reference)
+                    hci_info = query_hci_version()
+                    if hci_info:
+                        version_info_data["local_adapter"] = {
+                            "hci_version": hci_info.get("hci_version"),
+                            "hci_revision": hci_info.get("hci_revision"),
+                            "lmp_version": hci_info.get("lmp_version"),
+                            "lmp_subversion": hci_info.get("lmp_subversion"),
+                            "manufacturer": hci_info.get("manufacturer"),
+                            "lmp_spec": map_lmp_version_to_spec(hci_info.get("lmp_version")),
+                        }
+                except Exception as ver_exc:
+                    if debug_mode:
+                        print_and_log(f"[classic-enum] Version info collection failed: {ver_exc}", LOG__GENERAL)
+                    version_info_data["error"] = str(ver_exc)
+            
+            # Get SDP records with enhanced attributes (connectionless - works without full connection)
+            records = []
+            connectionless_mode = getattr(args, "connectionless", False)
+            try:
+                records = discover_services_sdp(args.address, connectionless=connectionless_mode)
+                
+                if debug_mode and records:
+                    print_and_log(f"[classic-enum] Found {len(records)} SDP records", LOG__GENERAL)
+                    for idx, rec in enumerate(records, 1):
+                        debug_info = f"  [{idx}] {rec.get('name', 'Unknown')} (UUID: {rec.get('uuid', 'N/A')}, Channel: {rec.get('channel', 'N/A')})"
+                        if rec.get('handle') is not None:
+                            debug_info += f" [Handle: {rec.get('handle')}]"
+                        if rec.get('profile_descriptors'):
+                            profiles = rec.get('profile_descriptors', [])
+                            debug_info += f" [Profiles: {len(profiles)}]"
+                            for p in profiles:
+                                profile_ver = p.get('version')
+                                spec_hint = map_profile_version_to_spec(profile_ver) if version_info_mode else None
+                                ver_str = f"Ver: {profile_ver}"
+                                if spec_hint:
+                                    ver_str += f" (~{spec_hint})"
+                                debug_info += f" (UUID: {p.get('uuid')}, {ver_str})"
+                        if rec.get('service_version') is not None:
+                            debug_info += f" [SvcVer: {rec.get('service_version')}]"
+                        if rec.get('description'):
+                            debug_info += f" [Desc: {rec.get('description')[:50]}...]"
+                        print_and_log(debug_info, LOG__GENERAL)
+                
+                # Display version information if requested (before connection attempt)
+                if version_info_mode:
+                    print("\n=== Version Information ===")
+                    if version_info_data.get("error"):
+                        print(f"Error collecting version info: {version_info_data['error']}")
+                    else:
+                        if version_info_data.get("vendor") is not None:
+                            print(f"Vendor ID: 0x{version_info_data['vendor']:04X}")
+                        if version_info_data.get("product") is not None:
+                            print(f"Product ID: 0x{version_info_data['product']:04X}")
+                        if version_info_data.get("version") is not None:
+                            print(f"Version: 0x{version_info_data['version']:04X}")
+                        if version_info_data.get("modalias"):
+                            print(f"Modalias: {version_info_data['modalias']}")
+                        
+                        # Show profile versions from SDP records
+                        if records:
+                            print("\nProfile Versions (from SDP):")
+                            profile_specs: Dict[str, list] = {}
+                            for rec in records:
+                                if rec.get('profile_descriptors'):
+                                    for p in rec.get('profile_descriptors', []):
+                                        uuid = p.get('uuid', 'Unknown')
+                                        ver = p.get('version')
+                                        if ver is not None:
+                                            spec_hint = map_profile_version_to_spec(ver)
+                                            if uuid not in profile_specs:
+                                                profile_specs[uuid] = []
+                                            profile_specs[uuid].append({
+                                                "version": ver,
+                                                "spec_hint": spec_hint,
+                                            })
+                            
+                            for uuid, vers in profile_specs.items():
+                                for v_info in vers:
+                                    ver_str = f"0x{v_info['version']:04X}"
+                                    if v_info['spec_hint']:
+                                        ver_str += f" (~Bluetooth {v_info['spec_hint']})"
+                                    print(f"  {uuid}: {ver_str}")
+                        
+                        # Show local adapter info (for reference)
+                        if version_info_data.get("local_adapter"):
+                            local = version_info_data["local_adapter"]
+                            print("\nLocal Adapter (for reference):")
+                            if local.get("lmp_version") is not None:
+                                lmp_spec = local.get("lmp_spec", "Unknown")
+                                print(f"  LMP Version: {local['lmp_version']} ({lmp_spec})")
+                            if local.get("hci_version") is not None:
+                                print(f"  HCI Version: {local['hci_version']}")
+                            if local.get("manufacturer") is not None:
+                                print(f"  Manufacturer ID: {local['manufacturer']}")
+                        
+                        # Show raw properties if available (for offline analysis)
+                        if version_info_data.get("raw_properties"):
+                            print("\nRaw Properties (for analysis):")
+                            for key, value in version_info_data["raw_properties"].items():
+                                print(f"  {key}: {value}")
+                    
+                    print("=" * 28 + "\n")
+                
+                # Perform comprehensive SDP analysis if requested
+                if analyze_mode and records:
+                    try:
+                        analyzer = SDPAnalyzer(records)
+                        analysis = analyzer.analyze()
+                        report = analyzer.generate_report()
+                        print(report)
+                        
+                        # Also show detailed analysis in JSON if debug mode
+                        if debug_mode:
+                            print("\n=== Detailed Analysis (JSON) ===")
+                            print(json.dumps(analysis, indent=2, default=str))
+                            print("=" * 35 + "\n")
+                    except Exception as analysis_exc:
+                        if debug_mode:
+                            print_and_log(f"[classic-enum] SDP analysis failed: {analysis_exc}", LOG__GENERAL)
+                            import traceback
+                            traceback.print_exc()
+            
+            except Exception as sdp_exc:
+                if debug_mode:
+                    print_and_log(f"[classic-enum] SDP discovery failed: {sdp_exc}", LOG__GENERAL)
+                # Continue to try connection-based enumeration
+            
+            # Try to connect and enumerate (requires full connection)
             try:
                 _, svc_map = _c_enum(args.address)
-                import json
                 print(json.dumps(svc_map, indent=2))
                 return 0
-            except Exception as exc:
-                print(f"Error: {exc}", file=sys.stderr)
+            except Exception as conn_exc:
+                # Connection failed, but if we have SDP records, show those instead
+                if records:
+                    # Build service map from SDP records (connectionless fallback)
+                    svc_map_fallback: Dict[str, int] = {}
+                    for rec in records:
+                        if rec.get("channel") is not None:
+                            key = rec.get("name") or rec.get("uuid") or f"channel_{rec['channel']}"
+                            svc_map_fallback[key] = rec["channel"]
+                    
+                    if svc_map_fallback:
+                        print_and_log(
+                            f"[!] Connection failed ({conn_exc}), but SDP enumeration succeeded (connectionless)",
+                            LOG__GENERAL
+                        )
+                        print(json.dumps(svc_map_fallback, indent=2))
+                        return 0
+                
+                # No SDP records and connection failed - show error
+                import sys as _sys_module
+                print(f"Error: {conn_exc}", file=_sys_module.stderr)
+                if debug_mode:
+                    import traceback
+                    traceback.print_exc(file=_sys_module.stderr)
                 return 1
 
         elif args.mode == "classic-pbap":
@@ -869,7 +1056,8 @@ def main(args=None):
                     watchdog=args.watchdog,
                 )
             except Exception as exc:
-                print(f"Error: {exc}", file=sys.stderr)
+                import sys as _sys_module
+                print(f"Error: {exc}", file=_sys_module.stderr)
                 return 1
 
             base = args.address.replace(":", "").lower()
@@ -944,11 +1132,11 @@ def main(args=None):
             return _interactive_main() or 0
 
     except KeyboardInterrupt:
-        import sys  # Ensure sys is available in this scope
+        #import sys  # Ensure sys is available in this scope
         print("\nOperation cancelled by user")
         return 1
     except Exception as e:
-        import sys  # Ensure sys is available in this scope
+        #import sys  # Ensure sys is available in this scope
         print(f"Error: {e}", file=sys.stderr)
         return 1
 

@@ -14,6 +14,8 @@ The observation database is a SQLite database located at `~/.bleep/observations.
 | 2 | Renamed problematic column names to avoid Python keyword conflicts:<br>- `class` → `device_class` in devices table<br>- `state` → `transport_state` in media_transports table | Backward compatibility maintained |
 | 3 | Added `device_type` field for improved device classification:<br>- Values: 'unknown', 'classic', 'le', or 'dual' | Basic classification added |
 | 4 | Added `aoi_analysis` table for storing Assets of Interest analysis results | |
+| 5 | Added performance indexes for frequently queried fields | Indexes on device_type, last_seen, adv_reports, char_history |
+| 6 | Added `device_type_evidence` table for classification audit trail and signature caching | Evidence-based classification system, stateless classification |
 
 ## Database Relationship Diagram
 
@@ -124,12 +126,24 @@ erDiagram
         json recommendations
     }
     
+    device_type_evidence {
+        int id PK
+        string mac FK
+        string evidence_type
+        string evidence_weight
+        string source
+        text value
+        text metadata
+        datetime ts
+    }
+    
     devices ||--o{ adv_reports : "captures"
     devices ||--o{ services : "provides"
     devices ||--o{ classic_services : "offers"
     devices ||--o{ pbap_metadata : "stores"
     devices ||--o{ char_history : "tracks"
     devices ||--o{ aoi_analysis : "analyzes"
+    devices ||--o{ device_type_evidence : "classifies"
     services ||--o{ characteristics : "contains"
 ```
 
@@ -300,26 +314,71 @@ Stores Assets of Interest analysis results.
 | notable_services | JSON | Notable services identified |
 | recommendations | JSON | Security recommendations |
 
+### device_type_evidence
+
+Stores device type classification evidence for audit/debugging and signature caching (Schema v6).
+
+**Important**: This table is for audit trail purposes only. Evidence stored here is **NOT used for classification decisions** - classification is stateless and based only on current device properties.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INTEGER PRIMARY KEY | Auto-incrementing identifier |
+| mac | TEXT REFERENCES devices(mac) ON DELETE CASCADE | Device MAC address (foreign key) |
+| evidence_type | TEXT NOT NULL | Type of evidence (e.g., 'classic_device_class', 'le_addr_random') |
+| evidence_weight | TEXT NOT NULL | Weight of evidence ('conclusive', 'strong', 'weak', 'inconclusive') |
+| source | TEXT NOT NULL | Source of evidence (e.g., 'dbus_property', 'sdp_query', 'gatt_enumeration') |
+| value | TEXT | Evidence value (JSON or string representation) |
+| metadata | TEXT | Additional context (JSON format) |
+| ts | DATETIME NOT NULL | Timestamp when evidence was collected |
+| UNIQUE(mac, evidence_type, source) | | Prevents duplicate evidence entries |
+
+**Indexes:**
+- `idx_device_type_evidence_mac` on `mac` - Fast lookups by device
+- `idx_device_type_evidence_type` on `evidence_type` - Filter by evidence type
+- `idx_device_type_evidence_ts` on `ts` - Time-based queries
+
+**Usage:**
+- Audit trail: Track what evidence was collected for debugging
+- Signature caching: Build device signatures for performance optimization
+- Historical tracking: Detect MAC address collisions (same MAC, different evidence over time)
+
 ## Device Type Classification Logic
 
-The `device_type` field uses the following classification criteria:
+BLEEP uses an **evidence-based, stateless classification system** (Schema v6). Classification decisions are based **only** on current device properties and active queries, never on historical database data. This prevents false positives from MAC address collisions.
 
-1. **'unknown'** - Default value when not enough information is available to determine type
-2. **'classic'** - Determined by:
-   - Presence of `device_class` or Classic-specific UUIDs
-   - No BLE-specific identifiers (like `address_type`)
-   - Presence of `classic_services` entries
-3. **'le'** - Determined by:
-   - Presence of `address_type` ('public' or 'random')
-   - GATT services but no Classic services
-   - BLE-specific UUIDs in advertising data
-4. **'dual'** - Determined by conclusive evidence of both protocols:
-   - Both Classic and BLE-specific identifiers present
-   - Must have either:
-     - Both GATT services and Classic services, or
-     - Both device_class and BLE address_type ('public' or 'random')
+### Classification Criteria
 
-Device type classification occurs during device insertion/update and can be refined over time as more information is collected.
+1. **'unknown'** - Default value when not enough evidence is available
+   - No conclusive evidence from either protocol
+   - Insufficient information to make a determination
+
+2. **'classic'** - Requires conclusive Classic evidence:
+   - **Conclusive**: `device_class` property present OR SDP records discovered
+   - **Strong**: Classic service UUIDs detected (from `SPEC_UUID_NAMES__SERV_CLASS`)
+   - Requires at least one conclusive piece of evidence
+
+3. **'le'** - Requires conclusive LE evidence:
+   - **Conclusive**: `AddressType` = "random" OR GATT services resolved
+   - **Strong**: LE service UUIDs detected (from `SPEC_UUID_NAMES__SERV`)
+   - **Note**: `AddressType` = "public" is **inconclusive** (default for both Classic and LE)
+   - Requires at least one conclusive piece of evidence OR multiple strong pieces
+
+4. **'dual'** - **Strict requirement**: Conclusive evidence from BOTH protocols:
+   - **MUST** have conclusive Classic evidence (device_class OR SDP records)
+   - **MUST** have conclusive LE evidence (random address OR GATT services)
+   - Both protocols must be confirmed independently
+   - Prevents false positives from MAC address collisions
+
+### Evidence Storage
+
+The `device_type_evidence` table stores evidence for audit/debugging purposes:
+
+- **NOT used for classification decisions** (stateless system)
+- Tracks what evidence was collected and when
+- Enables debugging classification decisions
+- Supports signature caching for performance
+
+For detailed information, see [Device Type Classification Guide](device_type_classification.md).
 
 ## Query Examples
 
@@ -334,6 +393,33 @@ SELECT * FROM devices WHERE device_type = 'classic' OR device_type = 'dual';
 
 -- Get only dual-mode devices
 SELECT * FROM devices WHERE device_type = 'dual';
+```
+
+### Querying Device Type Evidence
+
+```sql
+-- Get all evidence for a device
+SELECT * FROM device_type_evidence
+WHERE mac = '00:11:22:33:44:55'
+ORDER BY ts DESC;
+
+-- Get evidence by type
+SELECT * FROM device_type_evidence
+WHERE mac = '00:11:22:33:44:55'
+AND evidence_type = 'classic_device_class'
+ORDER BY ts DESC;
+
+-- Get classification results
+SELECT * FROM device_type_evidence
+WHERE mac = '00:11:22:33:44:55'
+AND evidence_type = 'classification_result'
+ORDER BY ts DESC;
+
+-- Get conclusive evidence only
+SELECT * FROM device_type_evidence
+WHERE mac = '00:11:22:33:44:55'
+AND evidence_weight = 'conclusive'
+ORDER BY ts DESC;
 ```
 
 ### Characteristic Timeline with Filtering

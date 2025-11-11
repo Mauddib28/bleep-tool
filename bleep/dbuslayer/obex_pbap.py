@@ -80,6 +80,8 @@ def pull_phonebook_vcf(
         pass
 
     # 4. Start transfer – PullAll ensures full phonebook even if PB.vcf path unsupported
+    # Note: "Too short header" error can also occur during PullAll (not just CreateSession).
+    # SOLUTION CONFIRMED: Restarting the target device clears OBEX buffers and resolves this.
     try:
         transfer_path = pbap.PullAll("", {"Format": "vcard21"})
     except dbus.exceptions.DBusException as exc:

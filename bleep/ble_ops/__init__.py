@@ -16,8 +16,13 @@ from bleep.ble_ops.scan_modes import (
     POKEY_MODE,
     BRUTEFORCE_MODE,
 )
-from bleep.ble_ops.classic_sdp import discover_services_sdp
+from bleep.ble_ops.classic_sdp import discover_services_sdp, discover_services_sdp_connectionless
 from bleep.ble_ops.classic_connect import connect_and_enumerate__bluetooth__classic
+from bleep.ble_ops.classic_version import (
+    query_hci_version,
+    map_lmp_version_to_spec,
+    map_profile_version_to_spec,
+)
 
 __all__ = [
     # From scan.py
@@ -38,5 +43,10 @@ __all__ = [
     "BRUTEFORCE_MODE",
     # Classic helpers
     "discover_services_sdp",
+    "discover_services_sdp_connectionless",
     "connect_and_enumerate__bluetooth__classic",
+    # Classic version helpers
+    "query_hci_version",
+    "map_lmp_version_to_spec",
+    "map_profile_version_to_spec",
 ]

@@ -200,6 +200,16 @@ def passive_scan_and_connect(
     # Trigger enumeration and build compatibility maps
     _ = device.services_resolved()
     
+    # Perform device type classification with passive mode
+    # (passive_scan_and_connect is fast, single-attempt scan)
+    try:
+        if hasattr(device, "get_device_type"):
+            device_type = device.get_device_type(scan_mode="passive")
+            if device_type:
+                print_and_log(f"[*] Device type: {device_type}", LOG__GENERAL)
+    except Exception as e:
+        print_and_log(f"[*] Device type classification: {e}", LOG__DEBUG)
+    
     # Log device type information for user visibility
     if hasattr(device, "device_type_flags"):
         types = device.device_type_flags
@@ -290,6 +300,20 @@ def naggy_scan_and_connect(
                 if _wait_for_services(device, timeout=20):
                     # Services resolved successfully
                     _ = device.services_resolved()
+                    
+                    # Perform device type classification with naggy mode
+                    # (naggy_scan_and_connect uses persistent connection attempts)
+                    try:
+                        if hasattr(device, "get_device_type"):
+                            device_type = device.get_device_type(scan_mode="naggy")
+                            if device_type:
+                                print_and_log(f"[*] Device type: {device_type}", LOG__GENERAL)
+                        elif hasattr(device, "check_device_type"):
+                            # LE device - check_device_type is called internally
+                            device.check_device_type()
+                    except Exception as e:
+                        print_and_log(f"[*] Device type classification: {e}", LOG__DEBUG)
+                    
                     print_and_log(f"[+] Services resolved successfully after {attempt + 1} attempts", LOG__GENERAL)
                     return (
                         device,
@@ -387,6 +411,19 @@ def pokey_scan_and_connect(
         
         # Trigger enumeration and build compatibility maps
         services_json = device.services_resolved()
+        
+        # Perform device type classification with pokey mode
+        # (pokey_scan_and_connect uses extended timeouts and thorough enumeration)
+        try:
+            if hasattr(device, "get_device_type"):
+                device_type = device.get_device_type(scan_mode="pokey")
+                if device_type:
+                    print_and_log(f"[*] Device type: {device_type}", LOG__GENERAL)
+            elif hasattr(device, "check_device_type"):
+                # LE device - check_device_type is called internally
+                device.check_device_type()
+        except Exception as e:
+            print_and_log(f"[*] Device type classification: {e}", LOG__DEBUG)
         
         # In pokey mode, we read value/properties of each characteristic 
         # to ensure maximum information gathering
@@ -561,6 +598,19 @@ def bruteforce_scan_and_connect(
         perm_map[uuid] = ["read"]
     
     print_and_log(f"[+] Bruteforce scan complete. Discovered {len(bruteforce_discovered)} additional handles", LOG__GENERAL)
+    
+    # Perform device type classification with bruteforce mode
+    # (bruteforce_scan_and_connect uses exhaustive characteristic testing)
+    try:
+        if hasattr(device, "get_device_type"):
+            device_type = device.get_device_type(scan_mode="bruteforce")
+            if device_type:
+                print_and_log(f"[*] Device type: {device_type}", LOG__GENERAL)
+        elif hasattr(device, "check_device_type"):
+            # LE device - check_device_type is called internally
+            device.check_device_type()
+    except Exception as e:
+        print_and_log(f"[*] Device type classification: {e}", LOG__DEBUG)
     
     # Return tuple in monolith order
     return device, mapping, mine_map, perm_map

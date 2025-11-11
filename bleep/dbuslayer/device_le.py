@@ -2115,13 +2115,49 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                 services = self.services_resolved(skip_device_type_check=True)
                 result["is_gatt_server"] = len(services) > 0
             
-            # Check device type from BlueZ      # Nota Bene: DEVICE_INTERFACE does NOT have a "Type" property.... Needs to be updated; ToDo: Fix device type identification
+            # Check device type using evidence-based classification
+            # **Fixed:** Removed incorrect `Type` property access (Device1 interface doesn't expose Type)
             try:
-                device_type = self._props_iface.Get(DEVICE_INTERFACE, "Type")
-                if str(device_type) in ["br/edr", "dual"]:
+                from bleep.analysis.device_type_classifier import DeviceTypeClassifier
+                
+                # Build context from device properties
+                context = {
+                    "device_class": self.get_device_class(),
+                    "address_type": self.get_address_type(),
+                    "connected": self.is_connected(),
+                    "device": self,  # Pass device object for GATT enumeration if needed
+                }
+                
+                # Get UUIDs if available
+                uuids = self.get_uuids()
+                context["uuids"] = uuids if uuids else []
+                
+                # Get GATT services if already resolved (to avoid re-enumeration)
+                if len(self._services) > 0:
+                    context["gatt_services"] = self._services
+                
+                # Use classifier to determine device type
+                # Use 'naggy' mode since we're already connected/checking
+                classifier = DeviceTypeClassifier()
+                classification_result = classifier.classify_with_mode(
+                    mac=self.mac_address,
+                    context=context,
+                    scan_mode="naggy" if self.is_connected() else "passive",
+                    use_database_cache=True
+                )
+                
+                # Update result based on classification
+                device_type = classification_result.device_type
+                if device_type in ["classic", "dual"]:
                     result["is_classic_device"] = True
-            except (dbus.exceptions.DBusException, KeyError) as e:
-                print_and_log(f"[*] Could not determine device type: {e}", LOG__DEBUG)
+                if device_type in ["le", "dual"]:
+                    result["is_le_device"] = True
+                    
+            except Exception as e:
+                print_and_log(
+                    f"[device_le] Error classifying device type for {self.mac_address}: {e}",
+                    LOG__DEBUG
+                )
             
             # Check for media interfaces
             try:
