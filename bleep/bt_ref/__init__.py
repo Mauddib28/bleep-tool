@@ -37,6 +37,13 @@ except (SyntaxError, IndentationError):
 
 __all__ = ["constants", "exceptions", "utils", "uuids"]
 
+# Export UUID translator if available
+try:
+    from . import uuid_translator  # noqa: F401
+    __all__.append("uuid_translator")
+except (ImportError, SyntaxError):
+    pass
+
 # NOTE: Legacy module loading logic commented out to prevent circular imports
 # and dependency on root-level legacy files. The refactored code now uses
 # internal imports (bleep.bt_ref.constants, etc.) instead of legacy root files.

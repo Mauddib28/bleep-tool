@@ -40,6 +40,28 @@ def _cmd_connect(args: List[str]):
         print(f"[-] Connect failed: {exc}")
 
 
+def _cmd_uuid(args: List[str]):
+    """Translate UUID(s) to human-readable format."""
+    if not args:
+        print("Usage: uuid <UUID> [UUID2 ...]")
+        print("Example: uuid 180a")
+        print("Example: uuid 0000180a-0000-1000-8000-00805f9b34fb")
+        return
+    
+    from bleep.bt_ref.uuid_translator import translate_uuid
+    from bleep.modes.uuid_translate import format_text_output
+    
+    for uuid_input in args:
+        try:
+            result = translate_uuid(uuid_input)
+            output = format_text_output(result, verbose=False)
+            print(output)
+            if len(args) > 1 and uuid_input != args[-1]:
+                print()  # Add spacing between multiple UUIDs
+        except Exception as exc:
+            print(f"[-] Error translating UUID '{uuid_input}': {exc}")
+
+
 def _repl_device(dev, mapping):
     while True:
         try:
@@ -79,6 +101,7 @@ def _repl_device(dev, mapping):
 _CMDS = {
     "scan": _cmd_scan,
     "connect": _cmd_connect,
+    "uuid": _cmd_uuid,
 }
 
 
@@ -97,7 +120,7 @@ def main():  # entry point for CLI
         if cmd in {"quit", "exit"}:
             break
         if cmd == "help":
-            print("Available commands: scan | connect <MAC> | quit")
+            print("Available commands: scan | connect <MAC> | uuid <UUID> | quit")
             continue
         handler = _CMDS.get(cmd)
         if not handler:

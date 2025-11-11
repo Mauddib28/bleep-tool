@@ -299,6 +299,28 @@ def connect_to_device(address: str) -> Tuple[Optional[system_dbus__bluez_device_
         return None, None
 
 
+def translate_uuid_interactive() -> None:
+    """Interactive UUID translation function for user mode."""
+    uuid_input = input("Enter UUID to translate (16-bit, 32-bit, or 128-bit): ").strip()
+    
+    if not uuid_input:
+        print("No UUID provided")
+        return
+    
+    try:
+        from bleep.bt_ref.uuid_translator import translate_uuid
+        from bleep.modes.uuid_translate import format_text_output
+        
+        result = translate_uuid(uuid_input)
+        output = format_text_output(result, verbose=True)
+        print("\n" + output)
+        
+        input("\nPress Enter to continue...")
+    except Exception as e:
+        print(f"Error translating UUID: {e}")
+        input("\nPress Enter to continue...")
+
+
 def display_device_info() -> None:
     """Display detailed information about the connected device."""
     global _current_device, _services
@@ -1258,17 +1280,22 @@ def main_menu() -> UserMenu:
         ),
         UserMenuOption(
             key="5",
+            label="Translate UUID",
+            action=translate_uuid_interactive
+        ),
+        UserMenuOption(
+            key="6",
             label="Configure Signal Capture",
             action=configure_signal_capture
         ),
         UserMenuOption(
-            key="6",
+            key="7",
             label="Export Device Data",
             action=export_device_data,
             requires_device=True
         ),
         UserMenuOption(
-            key="7",
+            key="8",
             label="Disconnect",
             action=disconnect_device,
             requires_device=True

@@ -127,6 +127,13 @@ def parse_args(args=None):
     sigconf_parser.add_argument("command", nargs="?", help="Sub-command (if omitted, shows help)")
     sigconf_parser.add_argument("args", nargs=argparse.REMAINDER, help="Command arguments")
 
+    # UUID translation mode
+    uuid_parser = subparsers.add_parser("uuid-translate", help="Translate UUID(s) to human-readable format", aliases=["uuid-lookup"])
+    uuid_parser.add_argument("uuids", nargs="+", help="UUID(s) to translate (16-bit, 32-bit, or 128-bit format)")
+    uuid_parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+    uuid_parser.add_argument("--verbose", "-v", action="store_true", help="Show detailed information including source databases")
+    uuid_parser.add_argument("--include-unknown", action="store_true", help="Include 'Unknown' entries in results")
+
     # Classic scan
     cscan_parser = subparsers.add_parser("classic-scan", help="Passive Classic (BR/EDR) scan")
     cscan_parser.add_argument("--timeout", type=int, default=10, help="Scan timeout seconds")
@@ -753,6 +760,20 @@ def main(args=None):
             # Pass the command and args
             opts = [args.command] + args.args
             return _sigconf_main(opts) or 0
+
+        elif args.mode in ["uuid-translate", "uuid-lookup"]:
+            from bleep.modes.uuid_translate import main as _uuid_translate_main
+            
+            # Build arguments list
+            uuid_opts = list(args.uuids)
+            if args.json:
+                uuid_opts.append("--json")
+            if args.verbose:
+                uuid_opts.append("--verbose")
+            if getattr(args, "include_unknown", False):
+                uuid_opts.append("--include-unknown")
+            
+            return _uuid_translate_main(uuid_opts) or 0
 
         elif args.mode == "classic-scan":
             # Use the adapter directly to avoid pulling in BLE-specific

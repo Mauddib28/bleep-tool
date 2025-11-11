@@ -587,6 +587,18 @@ This page aggregates open tasks referenced across the project so contributors ha
 
 ## CLI Command Enhancements (Completed)
 
+- [x] **UUID Translation System** – Comprehensive UUID translation functionality:
+  - [x] Core translation engine (`bleep/bt_ref/uuid_translator.py`) with modular architecture
+  - [x] Support for 16-bit, 32-bit, and 128-bit UUID formats
+  - [x] Automatic expansion of 16-bit UUIDs to find all potential matches
+  - [x] Searches across all BLEEP UUID databases (Services, Characteristics, Descriptors, Members, SDOs, Service Classes, Custom)
+  - [x] CLI command (`bleep uuid-translate` / `bleep uuid-lookup`) with JSON and verbose options
+  - [x] Interactive mode integration (`uuid` command)
+  - [x] User mode integration (menu option 5)
+  - [x] Comprehensive documentation (`uuid_translation.md`, `uuid_translation_plan.md`)
+  - [x] Complete test suite with all tests passing
+  - [x] Modular design for easy extension (custom format handlers, new database sources)
+
 - [x] **Explore Command Fixes**
   - [x] Fix parameter conflict between CLI mode and connection mode
   - [x] Improve passive scan reliability with better timeout distribution
@@ -644,7 +656,11 @@ This page aggregates open tasks referenced across the project so contributors ha
        - Correctly identify and display Device ID information from PnP ID and modalias
    [ ] Add functionality to re-read/refresh the device interface information
        - Note: This is most likely where the D-Bus can read the GAP information (i.e. 0x1800)
-   [ ] Add read-in and generation of UUIDs to create UUID Check lists (Servce, Characteristic, Descriptor)
+   [x] Add read-in and generation of UUIDs to create UUID Check lists (Service, Characteristic, Descriptor)
+       - [x] Implemented comprehensive UUID translation system with CLI command
+       - [x] Supports all UUID types (Service, Characteristic, Descriptor, Member, SDO, Service Class)
+       - [x] Interactive and programmatic access via `bleep uuid-translate` command
+       - [x] Integrated into interactive and user modes
    [ ] Make use of the "ARDUINO_BLE__BLE_UUID__MASK" variable to identify "groupings" of UUIDs
        - Note: May be using the same Bluetooth SIG default UUID structure
    [ ] Determine why pairing a device causes BIP to lose conneciton to the device

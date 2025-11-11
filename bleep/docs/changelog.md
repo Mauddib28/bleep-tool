@@ -1,3 +1,66 @@
+## v2.4.3 – UUID Translation System (2025-11-XX)
+
+### Added
+* **UUID Translation Functionality** – Comprehensive UUID translation system for quick lookups:
+  * **Core Translation Engine** (`bleep/bt_ref/uuid_translator.py`):
+    * Modular architecture with pluggable format handlers for extensibility
+    * Support for 16-bit, 32-bit, and 128-bit UUID formats
+    * Automatic expansion of 16-bit UUIDs to find all potential matches
+    * Searches across all BLEEP UUID databases (Services, Characteristics, Descriptors, Members, SDOs, Service Classes, Custom)
+    * Handles multiple input formats (with/without dashes, case-insensitive, hex prefixes)
+    * Structured output with categorized matches and metadata
+  * **CLI Command** (`bleep uuid-translate` / `bleep uuid-lookup`):
+    * Standalone command for quick UUID lookups
+    * Support for single or multiple UUIDs in one command
+    * JSON output option for programmatic use (`--json`)
+    * Verbose mode for detailed information including source databases (`--verbose`)
+    * Human-readable text output with categorized results
+  * **Interactive Mode Integration**:
+    * Added `uuid` command to interactive mode for quick translations
+    * Supports multiple UUIDs: `uuid 180a 2a00 2a01`
+    * Integrated into help system
+  * **User Mode Integration**:
+    * Added "Translate UUID" menu option (option 5) to user-friendly menu mode
+    * Interactive UUID translation with verbose output
+    * User-friendly prompts and error handling
+  * **Comprehensive Documentation**:
+    * Created `uuid_translation.md` with usage guide, examples, and architecture details
+    * Created `uuid_translation_plan.md` with detailed implementation plan
+    * Updated CLI usage documentation
+  * **Test Suite**:
+    * Added comprehensive unit tests in `tests/test_uuid_translation.py`
+    * Tests cover 16-bit, 32-bit, and 128-bit UUID formats
+    * Tests for custom UUIDs, unknown UUIDs, and edge cases
+    * Tests for case-insensitive handling and multiple format normalization
+    * All tests passing
+
+### Enhanced
+* **Modularity & Extensibility**:
+  * Designed with modular architecture for easy extension
+  * `UUIDFormatHandler` base class allows adding support for non-standard UUID formats
+  * `UUIDDatabase` class provides unified interface to all UUID sources
+  * Simple registration system for custom format handlers
+  * Future-proof design for handling non-standard 128-bit UUID formats
+
+### Technical Details
+* **Database Integration**: Leverages existing BLEEP UUID databases:
+  * `constants.UUID_NAMES` (custom UUIDs)
+  * `uuids.SPEC_UUID_NAMES__SERV` (Services)
+  * `uuids.SPEC_UUID_NAMES__CHAR` (Characteristics)
+  * `uuids.SPEC_UUID_NAMES__DESC` (Descriptors)
+  * `uuids.SPEC_UUID_NAMES__MEMB` (Members)
+  * `uuids.SPEC_UUID_NAMES__SDO` (SDOs)
+  * `uuids.SPEC_UUID_NAMES__SERV_CLASS` (Service Classes)
+* **Format Support**: Handles various UUID input formats:
+  * 16-bit: `180a`, `0x180a`, `0x180A`
+  * 32-bit: `0000180a`
+  * 128-bit: `0000180a-0000-1000-8000-00805f9b34fb` (with dashes)
+  * 128-bit: `0000180a00001000800000805f9b34fb` (without dashes)
+* **Output Formats**: Provides both human-readable and JSON output:
+  * Text output with categorized matches grouped by type
+  * JSON output with structured data for programmatic use
+  * Verbose mode includes source database information
+
 ## v2.4.2 – Dual Device Detection Framework (2025-11-10)
 
 ### Added
