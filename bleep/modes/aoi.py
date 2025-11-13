@@ -494,7 +494,7 @@ def main(argv: list[str] | None = None):
             print_and_log(f"{i}. {address} - {name} ({status})", LOG__GENERAL)
     
     elif args.command == "report":
-        # Generate a report for a device
+        # Generate a report for a device using AOIAnalyser.generate_report()
         print_and_log(f"[*] Generating {args.format} report for device: {args.address}", LOG__GENERAL)
         
         try:
@@ -504,32 +504,28 @@ def main(argv: list[str] | None = None):
                 print_and_log(f"[-] No data found for device {args.address}", LOG__GENERAL)
                 return 1
             
-            # Generate report based on format
-            if args.format == "markdown":
-                report = _generate_markdown_report(device_data)
-            elif args.format == "json":
-                report = _generate_json_report(device_data)
-            else:  # text format
-                report = _generate_text_report(device_data)
+            # Use AOIAnalyser.generate_report() method as documented
+            # This ensures consistency with the documented API
+            report = analyzer.generate_report(
+                device_address=args.address,
+                device_data=device_data,
+                format=args.format
+            )
             
             if args.output:
                 # Save to specified file
-                with open(args.output, 'w') as f:
-                    f.write(report)
+                analyzer.save_report(report, filename=args.output, device_address=args.address)
                 print_and_log(f"[+] Report saved to {args.output}", LOG__GENERAL)
             else:
-                # Save to auto-generated file
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                safe_addr = args.address.replace(":", "").lower()
-                output_file = f"{safe_addr}_report_{timestamp}.{args.format}"
-                output_path = analyzer.aoi_dir / output_file
-                
-                with open(output_path, 'w') as f:
-                    f.write(report)
-                print_and_log(f"[+] Report saved to {output_path}", LOG__GENERAL)
+                # Save to auto-generated file using analyzer's save_report method
+                report_path = analyzer.save_report(report, device_address=args.address)
+                print_and_log(f"[+] Report saved to {report_path}", LOG__GENERAL)
                 
         except Exception as e:
             print_and_log(f"[-] Error generating report: {e}", LOG__GENERAL)
+            import traceback
+            if hasattr(args, 'debug') and args.debug:
+                traceback.print_exc()
             return 1
     
     elif args.command == "export":
