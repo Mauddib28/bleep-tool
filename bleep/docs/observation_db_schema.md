@@ -16,6 +16,7 @@ The observation database is a SQLite database located at `~/.bleep/observations.
 | 4 | Added `aoi_analysis` table for storing Assets of Interest analysis results | |
 | 5 | Added performance indexes for frequently queried fields | Indexes on device_type, last_seen, adv_reports, char_history |
 | 6 | Added `device_type_evidence` table for classification audit trail and signature caching | Evidence-based classification system, stateless classification |
+| 6.1 | **Fix (2025-11-27)**: Corrected database operation sequencing to prevent FOREIGN KEY constraint violations | Device insertion now occurs before classification evidence storage. Modified `adapter.get_discovered_devices()`, `scan._native_scan()`, and `scan._base_enum()` to ensure proper sequencing |
 
 ## Database Relationship Diagram
 

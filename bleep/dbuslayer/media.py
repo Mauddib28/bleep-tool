@@ -587,7 +587,7 @@ class MediaPlayer:
         ----------
         position : int
             Playback position in milliseconds. Must be between 0 and the
-            maximum value of an unsigned 32-bit integer (\(2^32 − 1\)).
+            maximum value of an unsigned 32-bit integer (2^32 − 1).
 
             Note: Changing the position may generate additional events that will be sent to the remote device.
                 - Even if duration is not available in metadata it is possible to signal its end by setting the position to the maximum value of an unsigned 32-bit integer.

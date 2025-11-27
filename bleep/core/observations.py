@@ -1128,6 +1128,15 @@ def store_device_type_evidence(
                 (mac, evidence_type, evidence_weight, source, value, metadata, ts)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (mac, evidence_type, evidence_weight, source, value_str, metadata_str, now))
+    except sqlite3.IntegrityError as e:
+        # FOREIGN KEY constraint - device doesn't exist yet
+        # This should NOT happen with proper sequencing, but handle defensively
+        print_and_log(
+            f"[WARNING] Device {mac} not in database when storing evidence. "
+            f"This indicates improper call sequencing. Evidence type: {evidence_type}. Error: {e}",
+            LOG__DEBUG
+        )
+        raise  # Re-raise to surface the issue rather than silently failing
     except Exception as e:
         print_and_log(
             f"Error storing device type evidence for {mac}: {e}",

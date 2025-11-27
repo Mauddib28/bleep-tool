@@ -1,3 +1,24 @@
+## v2.4.4 – Database Foreign Key Constraint Fix (2025-11-27)
+
+### Fixed
+* **FOREIGN KEY Constraint Errors During Scan** – Fixed critical database integrity issue:
+  * **Root Cause**: Device type classifier was storing evidence before devices were inserted into database
+  * **Solution**: Restructured database operation sequence to insert device first, then classify, then update
+  * **Files Modified**:
+    * `bleep/dbuslayer/adapter.py` – Removed premature classification from `get_discovered_devices()`
+    * `bleep/ble_ops/scan.py` – Restructured `_native_scan()` and `_base_enum()` for proper sequencing
+    * `bleep/core/observations.py` – Added defensive IntegrityError handling
+    * `bleep/dbuslayer/media.py` – Fixed SyntaxWarning from invalid escape sequences
+  * **Impact**: All scan operations now complete without foreign key errors
+  * **Backward Compatibility**: `_determine_device_type()` method preserved for other callers
+
+### Enhanced
+* **Database Operation Sequencing** – Improved architectural flow:
+  * Device insertion happens BEFORE classification evidence storage
+  * Classification performed AFTER device exists in database
+  * Database caching enabled safely after initial device insert
+  * Two `upsert_device()` calls per device (minimal performance impact)
+
 ## v2.4.3 – UUID Translation System (2025-11-XX)
 
 ### Added

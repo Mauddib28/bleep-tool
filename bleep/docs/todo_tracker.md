@@ -244,13 +244,13 @@ This page aggregates open tasks referenced across the project so contributors ha
   * Future telemetry table & migrations – tracked separately  
   * Write migration note in README.refactor
   * Device type classification improvements:
-    - [x] **Dual Device Detection Framework (In Progress)** – Comprehensive evidence-based classification system:
+    - [x] **Dual Device Detection Framework (Completed)** – Comprehensive evidence-based classification system:
       - [x] Plan created for modular, expandable dual device detection framework (`bleep/docs/DUAL_DEVICE_DETECTION_PLAN.md`)
       - [x] Design includes database-first performance optimization with signature caching
       - [x] Design includes mode-aware classification (passive/naggy/pokey/bruteforce)
       - [x] Design includes code reuse leveraging existing SDP, GATT, and database functions
       - [x] Design includes stateless classification to prevent false positives from MAC collisions
-      - [x] Phase 1: Core framework implementation (DeviceTypeClassifier module) - IN PROGRESS
+      - [x] Phase 1: Core framework implementation (DeviceTypeClassifier module) - COMPLETED
         - [x] Created `bleep/analysis/device_type_classifier.py` module (~800 lines)
         - [x] Implemented `EvidenceType` and `EvidenceWeight` enums
         - [x] Implemented `EvidenceSet` class for evidence collection
@@ -263,7 +263,7 @@ This page aggregates open tasks referenced across the project so contributors ha
         - [x] Implemented strict dual-detection logic
         - [x] Code reuse integration (SDP, GATT, database functions)
         - [x] Updated `bleep/analysis/__init__.py` to export new classifier
-        - [ ] Unit tests for evidence collection, classification, and mode awareness
+        - [x] Unit tests for evidence collection, classification, and mode awareness
       - [x] Phase 2: Database integration (schema v6, evidence table, signature caching) - COMPLETED
         - [x] Updated schema version to v6
         - [x] Created `device_type_evidence` table with proper indexes
@@ -299,6 +299,16 @@ This page aggregates open tasks referenced across the project so contributors ha
         - [x] Created integration test suite (`test_device_type_integration.py`)
         - [x] Tests cover evidence collection, classification logic, mode filtering, database integration, edge cases
         - [x] All tests passing (20/21 tests, 1 test requires hardware-specific setup)
+      - [x] Phase 6: Foreign Key Constraint Fix (2025-11-27) - COMPLETED
+        - [x] Fixed FOREIGN KEY constraint violations during device scanning
+        - [x] Restructured database operation sequence: insert device → classify → update type
+        - [x] Modified `adapter.get_discovered_devices()` to defer classification
+        - [x] Updated `scan._native_scan()` for proper sequencing
+        - [x] Updated `scan._base_enum()` for consistency
+        - [x] Fixed SyntaxWarning in `media.py` docstring
+        - [x] Added defensive IntegrityError handling in `observations.py`
+        - [x] Preserved backward compatibility (`_determine_device_type()` method retained)
+        - [x] Created comprehensive documentation (`CHANGES_APPLIED.md`)
     - [x] Enhance 'dual' device detection to require conclusive evidence from both protocols (addressed in framework) - COMPLETED
     - [x] Only set device_type='dual' when both BLE and Classic aspects are confirmed (addressed in framework) - COMPLETED
     - [x] Document specific detection criteria for each device type category (addressed in framework) - COMPLETED

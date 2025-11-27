@@ -72,36 +72,55 @@ def _native_scan(device: str | None, timeout: int, transport: str = "auto", quie
     
     # Always update observations if available
     if raw and _obs:
+        from bleep.analysis.device_type_classifier import DeviceTypeClassifier
+        classifier = DeviceTypeClassifier()  # Create once, reuse for all devices
+        
         for entry in raw:
             addr = entry.get("address", "??")
+            if addr == "??":
+                continue
+                
             name = entry.get("name") or entry.get("alias") or "?"
             rssi_val = entry.get("rssi")
-            device_type = entry.get("type")
-            
-            # Extract device information
             addr_type = entry.get("address_type")
-            device_type = entry.get("device_type", BT_DEVICE_TYPE_UNKNOWN)
+            device_class = entry.get("device_class")
             
-            # Fallback logic if address_type is not available but device is LE
-            if not addr_type and device_type == BT_DEVICE_TYPE_LE:
-                addr_type = "random" if entry.get("address", "").startswith("random") else "public"
-                
             try:
-                # Collect all relevant device information for accurate classification
+                # STEP 1: Insert device with minimal info (NO device_type yet)
+                # This creates the parent row for foreign key relationships
                 device_info = {
                     'name': name,
                     'rssi_last': rssi_val,
                     'addr_type': addr_type
                 }
                 
-                # Add device_class if available (important for dual-mode detection)
-                if 'device_class' in entry:
-                    device_info['device_class'] = entry.get('device_class')
+                if device_class is not None:
+                    device_info['device_class'] = device_class
                 
-                # Let the enhanced upsert_device function handle classification
+                # Insert/update device WITHOUT device_type (uses default 'unknown')
                 _obs.upsert_device(addr, **device_info)
+                
+                # STEP 2: NOW perform classification with database cache enabled
+                # Device exists in DB, so foreign key constraints will be satisfied
+                context = {
+                    "device_class": device_class,
+                    "address_type": addr_type,
+                    "uuids": entry.get("uuids", []),
+                    "connected": entry.get("connected", False),
+                }
+                
+                result = classifier.classify_with_mode(
+                    mac=addr,
+                    context=context,
+                    scan_mode="passive",
+                    use_database_cache=True  # Safe now - device exists in DB
+                )
+                
+                # STEP 3: Update device with classified device_type
+                _obs.upsert_device(addr, device_type=result.device_type)
+                
             except Exception as e:
-                print_and_log(f"[-] Error upserting device in database: {str(e)}", LOG__DEBUG)
+                print_and_log(f"[-] Error processing device {addr}: {str(e)}", LOG__DEBUG)
 
     # Convert raw device list to dictionary format expected by higher-level code
     devices = {}
@@ -329,27 +348,59 @@ def _base_enum(target_bt_addr: str, *, deep: bool = False):
     # Persist to observation DB if available
     if _obs:
         try:
-            # Get device properties for classification
+            from bleep.analysis.device_type_classifier import DeviceTypeClassifier
+            
+            # Get device properties
             addr = device.get_address()
             name = device.get_name()
             addr_type = device.get_address_type() if hasattr(device, 'get_address_type') else None
+            device_class = device.get_device_class() if hasattr(device, 'get_device_class') else None
             
-            # Collect information to determine device type accurately
+            # STEP 1: Insert device with basic info first
             device_info = {
                 'name': name,
                 'addr_type': addr_type
             }
             
-            # Check if device has Classic Bluetooth capabilities
-            # For most devices, enum-scan is for BLE devices, but some may be dual-mode
-            if hasattr(device, 'get_device_class') and device.get_device_class():
-                device_info['device_class'] = device.get_device_class()
+            if device_class is not None:
+                device_info['device_class'] = device_class
             
-            # Let upsert_device function handle classification logic
             _obs.upsert_device(addr, **device_info)
             
-            # Save services and characteristics
+            # STEP 2: Save services and characteristics (creates more classification evidence)
             _persist_mapping(addr, mapping)
+            
+            # STEP 3: Perform classification with full context (including services)
+            # Use 'naggy' mode since we just connected and enumerated
+            classifier = DeviceTypeClassifier()
+            
+            # Get UUIDs from device if available
+            uuids = []
+            if hasattr(device, 'get_uuids'):
+                try:
+                    uuids = device.get_uuids() or []
+                except:
+                    pass
+            
+            context = {
+                "device_class": device_class,
+                "address_type": addr_type,
+                "uuids": uuids,
+                "connected": True,  # We just connected
+                "device": device,  # Pass device object for GATT enumeration
+                "gatt_services": list(mapping.keys()) if mapping else [],
+            }
+            
+            result = classifier.classify_with_mode(
+                mac=addr,
+                context=context,
+                scan_mode="naggy",  # More aggressive mode for connected devices
+                use_database_cache=True
+            )
+            
+            # STEP 4: Update with classified type
+            _obs.upsert_device(addr, device_type=result.device_type)
+            
         except Exception as e:
             print_and_log(f"[-] Error saving to database: {str(e)}", LOG__DEBUG)
     

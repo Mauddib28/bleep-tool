@@ -118,7 +118,11 @@ class system_dbus__bluez_adapter:
             return None
 
     def get_discovered_devices(self):
-        """Get list of discovered devices."""
+        """Get list of discovered devices with raw properties (no classification).
+        
+        Device type classification is deferred until after the device is inserted
+        into the database to avoid foreign key constraint violations.
+        """
         try:
             managed_objects = self.get_managed_objects()
             if not managed_objects:
@@ -137,10 +141,12 @@ class system_dbus__bluez_adapter:
                         "name": properties.get("Name", ""),
                         "rssi": properties.get("RSSI") if "RSSI" in properties else None,
                         "alias": properties.get("Alias", ""),
-                        # Determine device type using multiple heuristics
-                        "device_type": self._determine_device_type(properties),
-                        # Store original AddressType property regardless of device type
-                        "address_type": properties.get("AddressType")
+                        # Store raw properties for later classification (after device is inserted)
+                        "address_type": properties.get("AddressType"),
+                        "device_class": properties.get("Class"),
+                        "uuids": [str(uuid) for uuid in properties.get("UUIDs", [])] if properties.get("UUIDs") else [],
+                        "connected": properties.get("Connected", False),
+                        # NO device_type determination here - deferred until after upsert_device
                     }
                 )
 

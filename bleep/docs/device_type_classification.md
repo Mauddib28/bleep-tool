@@ -521,10 +521,31 @@ The `device_type_evidence` table is automatically created during database initia
    - Use passive mode when possible
    - Cache classification results in application layer
 
+## Known Issues & Fixes
+
+### Foreign Key Constraint Fix (2025-11-27)
+
+**Issue**: FOREIGN KEY constraint violations during scan operations when storing classification evidence.
+
+**Root Cause**: The classifier was storing evidence before devices were inserted into the database, violating the foreign key constraint in the `device_type_evidence` table.
+
+**Solution**: Restructured database operation sequencing:
+1. Insert device into database FIRST (creates parent row)
+2. Perform classification SECOND (with database cache enabled)
+3. Update device with classified type THIRD
+
+**Files Modified**:
+- `bleep/dbuslayer/adapter.py` - Deferred classification from `get_discovered_devices()`
+- `bleep/ble_ops/scan.py` - Restructured `_native_scan()` and `_base_enum()` for proper sequencing
+- `bleep/core/observations.py` - Added defensive IntegrityError handling
+
+**Impact**: All scan operations now complete without foreign key errors while maintaining classification accuracy and backward compatibility.
+
 ## References
 
 - **Implementation Plan**: `bleep/docs/DUAL_DEVICE_DETECTION_PLAN.md`
 - **Type Property Fix**: `bleep/docs/TYPE_PROPERTY_FIX_PLAN.md`
 - **Database Schema**: `bleep/docs/observation_db_schema.md`
 - **Source Code**: `bleep/analysis/device_type_classifier.py`
+- **Changelog**: `bleep/docs/changelog.md` (v2.4.4)
 
