@@ -41,7 +41,8 @@ MEDIA_ITEM_INTERFACE = BLUEZ_SERVICE_NAME + ".MediaItem1"
 # Agent/Mesh Constants
 AGENT_NAMESPACE = "/test/agent"
 MESH_AGENT_NAMESPACE = "/mesh/test/agent"
-AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".mesh.ProvisioningAgent1"
+# AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".mesh.ProvisioningAgent1"  # WRONG: This is for mesh provisioning, not standard pairing
+AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".Agent1"  # Correct: Standard BlueZ pairing agent interface (org.bluez.Agent1)
 MESH_AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".mesh.ProvisioningAgent1"
 MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".AgentManager1"
 

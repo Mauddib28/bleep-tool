@@ -186,9 +186,13 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
                 self._notify_signal = None
         try:
             self._char_iface.StopNotify()
-        except dbus.exceptions.DBusException:
-            # Likely not supported; ignore
-            pass
+        except dbus.exceptions.DBusException as e:
+            # StopNotify is not supported on some stacks; keep behavior (ignore)
+            # but log structured reason for debugging.
+            print_and_log(
+                f"[DEBUG] StopNotify failed ({self.path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
         print_and_log(
             f"[DEBUG] Notifications disabled for characteristic {self.uuid}", LOG__DEBUG
         )

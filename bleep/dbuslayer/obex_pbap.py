@@ -51,21 +51,28 @@ def pull_phonebook_vcf(
         client_obj = bus.get_object(_OBEX_SERVICE, "/org/bluez/obex")
         client = dbus.Interface(client_obj, _OBEX_CLIENT_IFACE)
     except dbus.exceptions.DBusException as exc:
-        raise RuntimeError("BlueZ obexd service not running or DBus error: " + str(exc)) from exc
+        raise RuntimeError(
+            "BlueZ obexd service not running or DBus error: {}: {}".format(
+                exc.get_dbus_name(), exc.get_dbus_message() or ""
+            )
+        ) from exc
 
     # 2. Create PBAP session – first param destination, second param options dict
     try:
         session_path = client.CreateSession(mac_address, {"Target": "PBAP"})
     except dbus.exceptions.DBusException as exc:
-        msg = str(exc)
+        error_name = exc.get_dbus_name() or "unknown"
+        error_msg = exc.get_dbus_message() or ""
+        error_str = f"{error_name}: {error_msg}" if error_msg else error_name
         # Provide friendlier diagnostics for common obexd errors.
-        if "NoReply" in msg or "Timed out waiting for response" in msg:
+        if "NoReply" in error_msg or "Timed out waiting for response" in error_msg:
             raise RuntimeError(
-                "PBAP CreateSession failed (controller probably stuck). Work-around: in a *separate*"
-                " terminal run `bluetoothctl disconnect {} ` and retry, or toggle the phone’s"
-                " Bluetooth.  Full DBus error: {}".format(mac_address, msg)
+                f"PBAP CreateSession failed (controller probably stuck). Work-around: in a *separate*"
+                f" terminal run `bluetoothctl disconnect {mac_address} ` and retry, or toggle the phone's"
+                f" Bluetooth. Full D-Bus error: {error_str}"
             ) from exc
-        raise
+        # Preserve D-Bus name and message in raised RuntimeError diagnostics
+        raise RuntimeError(f"PBAP CreateSession failed: {error_str}") from exc
 
     # 3. Obtain PhonebookAccess1 interface on the session path
     pbap_obj = bus.get_object(_OBEX_SERVICE, session_path)
@@ -85,13 +92,16 @@ def pull_phonebook_vcf(
     try:
         transfer_path = pbap.PullAll("", {"Format": "vcard21"})
     except dbus.exceptions.DBusException as exc:
-        msg = str(exc)
-        if "Too short header" in msg:
+        error_name = exc.get_dbus_name() or "unknown"
+        error_msg = exc.get_dbus_message() or ""
+        error_str = f"{error_name}: {error_msg}" if error_msg else error_name
+        if "Too short header" in error_msg:
             raise RuntimeError(
-                "Remote device signalled 'Too short header'. On many feature-phones this"
-                " indicates a stale OBEX state – power-cycle the phone and retry."
+                f"Remote device signalled 'Too short header'. On many feature-phones this"
+                f" indicates a stale OBEX state – power-cycle the phone and retry. D-Bus error: {error_str}"
             ) from exc
-        raise
+        # Preserve D-Bus name and message in raised RuntimeError diagnostics
+        raise RuntimeError(f"PBAP PullAll failed: {error_str}") from exc
 
     transfer_obj = bus.get_object(_OBEX_SERVICE, transfer_path)
     props_iface = dbus.Interface(transfer_obj, "org.freedesktop.DBus.Properties")

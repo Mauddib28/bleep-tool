@@ -27,7 +27,7 @@ from xml.dom import minidom
 import json
 import datetime
 
-from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__ENUM
+from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__ENUM, LOG__AGENT
 from bleep.dbuslayer.adapter import system_dbus__bluez_adapter
 from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy
 from bleep.ble_ops.scan import passive_scan
@@ -37,6 +37,7 @@ from bleep.bt_ref.utils import get_name_from_uuid
 from bleep.ble_ops.uuid_utils import identify_uuid
 from bleep.ble_ops.conversion import format_device_class, decode_appearance, decode_pnp_id
 from bleep.ble_ops.modalias import format_modalias_info
+import socket
 from bleep.ble_ops.enum_helpers import multi_read_all, small_write_probe, build_payload_iterator, brute_write_range
 from bleep.analysis.aoi_analyser import AOIAnalyser, analyse_aoi_data
 from bleep.modes.debug_multiread import _cmd_multiread, _cmd_multiread_all, _cmd_brutewrite
@@ -71,6 +72,8 @@ _DEVICE_PROMPT = "BLEEP-DEBUG[{}]> "
 _current_device = None  # BLE or Classic device wrapper
 _current_mapping = None  # BLE: svc→chars map, Classic: service→channel map
 _current_mode = "ble"   # "ble" or "classic" – helps commands adapt output
+# Keep-alive socket for Classic ACL preservation
+_keepalive_sock = None  # type: Optional["socket.socket"]
 _current_path = None    # Current D-Bus object path
 _monitoring = False
 _monitor_thread = None
@@ -86,6 +89,82 @@ _current_mine_map = None  # landmine mapping
 _current_perm_map = None  # permission mapping
 
 
+def _format_dbus_error(exc: Exception) -> str:
+    """Format a D-Bus exception as 'name: message' for concise logging.
+    
+    If the exception is not a DBusException, returns str(exc).
+    Follows the error handling pattern used throughout BLEEP.
+    
+    Parameters
+    ----------
+    exc : Exception
+        The exception to format
+        
+    Returns
+    -------
+    str
+        Formatted error string in 'name: message' format, or str(exc) for non-D-Bus exceptions
+    """
+    if isinstance(exc, dbus.exceptions.DBusException):
+        error_name = exc.get_dbus_name()
+        error_msg = exc.get_dbus_message()
+        
+        # Extract error name and message from exception args (most reliable source)
+        # exc.args typically contains (name, message) tuple for manually created exceptions
+        # or the actual values for real D-Bus exceptions
+        msg_str = None
+        if exc.args:
+            if len(exc.args) >= 2:
+                # Second arg is typically the message
+                msg_str = str(exc.args[1]) if exc.args[1] is not None else None
+                # First arg might be the error name if get_dbus_name() returned None
+                if not error_name and isinstance(exc.args[0], str) and exc.args[0].startswith("org."):
+                    error_name = exc.args[0]
+            elif len(exc.args) == 1:
+                arg = exc.args[0]
+                # If single arg, check if it's the name or message
+                if isinstance(arg, str):
+                    if arg.startswith("org."):
+                        error_name = arg if not error_name else error_name
+                    else:
+                        msg_str = arg
+        
+        # Use get_dbus_message() result if it's a proper string and we don't have a message yet
+        if msg_str is None and error_msg is not None:
+            if isinstance(error_msg, str):
+                # Check if it looks like a tuple string representation
+                if error_msg.startswith("(") and error_msg.endswith(")"):
+                    # Try to parse tuple string - extract second element if possible
+                    # Format: "('name', 'message')" or "('name', message)"
+                    import ast
+                    try:
+                        parsed = ast.literal_eval(error_msg)
+                        if isinstance(parsed, tuple) and len(parsed) > 1:
+                            msg_str = str(parsed[1]) if parsed[1] is not None else None
+                            if not error_name and isinstance(parsed[0], str) and parsed[0].startswith("org."):
+                                error_name = parsed[0]
+                    except (ValueError, SyntaxError):
+                        # If parsing fails, use the string as-is but try to extract message
+                        msg_str = error_msg
+                else:
+                    msg_str = error_msg
+            elif isinstance(error_msg, tuple):
+                # If it's actually a tuple (shouldn't happen but handle it)
+                if len(error_msg) > 1:
+                    msg_str = str(error_msg[1]) if error_msg[1] is not None else None
+        
+        # Final fallback
+        if msg_str is None:
+            msg_str = str(exc)
+        
+        # Format as 'name: message' if we have both, otherwise just message
+        if error_name:
+            return f"{error_name}: {msg_str}"
+        else:
+            return msg_str
+    return str(exc)
+
+
 def _print_detailed_dbus_error(exc: Exception) -> None:
     """Print detailed information about a D-Bus exception.
 
@@ -99,7 +178,7 @@ def _print_detailed_dbus_error(exc: Exception) -> None:
 
     if isinstance(exc, dbus.exceptions.DBusException):
         error_name = exc.get_dbus_name()
-        error_msg = str(exc)
+        error_msg = exc.get_dbus_message() or str(exc)
 
         print(f"[-] D-Bus Error: {error_name}")
         print(f"[-] Message: {error_msg}")
@@ -417,6 +496,8 @@ def _cmd_help(_: List[str]) -> None:
     print("  cconnect <mac>             - Connect to a Classic device & enumerate RFCOMM")
     print("  disconnect                 - Disconnect from current device")
     print("  cservices                  - List RFCOMM service→channel map for Classic device")
+    print("  ckeep [--first|--svc NAME|CHANNEL]|--close - Open/close keep-alive RFCOMM socket")
+    print("  agent status|register|unregister - Pairing agent visibility/control (debug)")
     print("  csdp <mac> [--connectionless] [--l2ping-count N] [--l2ping-timeout N] - SDP discovery (connectionless with l2ping reachability check)")
     print("  pbap [--repos PB,ICH] [--format vcard21] [--auto-auth] [--watchdog 8] [--out /path/to/file.vcf] - Dump phonebook via PBAP")
     print("  info                       - Show device information")
@@ -454,6 +535,122 @@ def _cmd_help(_: List[str]) -> None:
     print("\nOther commands:")
     print("  quit                       - Exit debug mode")
     print()
+
+
+def _cmd_agent(args: List[str]) -> None:
+    """Agent visibility/control for debug mode.
+
+    Usage:
+        agent status
+        agent register [--cap kbdisp|keyboard|yesno|display|none] [--default] [--interactive|--auto]
+        agent unregister
+    """
+    import argparse
+    from bleep.dbuslayer.agent import ensure_default_pairing_agent, clear_default_pairing_agent
+
+    parser = argparse.ArgumentParser(prog="agent", add_help=False)
+    sub = parser.add_subparsers(dest="subcmd", required=True)
+
+    p_status = sub.add_parser("status", add_help=False)
+    p_register = sub.add_parser("register", add_help=False)
+    p_register.add_argument("--cap", default="kbdisp", choices=["none", "display", "yesno", "keyboard", "kbdisp"])
+    p_register.add_argument("--default", action="store_true")
+    mode = p_register.add_mutually_exclusive_group()
+    mode.add_argument("--interactive", action="store_true")
+    mode.add_argument("--auto", action="store_true")
+
+    sub.add_parser("unregister", add_help=False)
+
+    try:
+        opts = parser.parse_args(args)
+    except SystemExit:
+        return
+
+    if opts.subcmd == "status":
+        try:
+            from bleep.dbuslayer import agent as _agent_mod
+            a = getattr(_agent_mod, "_DEFAULT_AGENT", None)
+            if a is None:
+                print("[*] Default pairing agent: not created")
+                print("[*] Use 'agent register' to create and register an agent")
+            else:
+                agent_path = getattr(a, 'agent_path', 'unknown')
+                is_registered = a.is_registered()
+                agent_class = a.__class__.__name__
+                
+                # Try to get capabilities and other details
+                capabilities = getattr(a, '_capabilities', 'unknown')
+                default_requested = getattr(a, '_default_requested', False)
+                auto_accept = getattr(a, '_auto_accept', 'unknown')
+                io_handler_type = 'unknown'
+                if hasattr(a, '_io_handler'):
+                    io_handler = a._io_handler
+                    io_handler_type = io_handler.__class__.__name__
+                    if hasattr(io_handler, 'auto_accept'):
+                        auto_accept = io_handler.auto_accept
+                
+                print(f"[*] Default pairing agent status:")
+                print(f"    class: {agent_class}")
+                print(f"    path: {agent_path}")
+                print(f"    registered: {is_registered}")
+                print(f"    capabilities: {capabilities}")
+                print(f"    default_requested: {default_requested}")
+                print(f"    auto_accept: {auto_accept}")
+                print(f"    io_handler: {io_handler_type}")
+                if not is_registered:
+                    print("[*] Agent exists but is not registered with BlueZ")
+                    print("[*] Use 'agent register' to register the agent")
+        except Exception as exc:
+            error_str = _format_dbus_error(exc) if isinstance(exc, dbus.exceptions.DBusException) else str(exc)
+            print(f"[-] Agent status failed: {error_str}")
+        return
+
+    if opts.subcmd == "register":
+        # Map short caps to BlueZ strings (matches modes/agent.py mapping)
+        cap_map = {
+            "none": "NoInputNoOutput",
+            "display": "DisplayOnly",
+            "yesno": "DisplayYesNo",
+            "keyboard": "KeyboardOnly",
+            "kbdisp": "KeyboardDisplay",
+        }
+        cap = cap_map[opts.cap]
+
+        io_handler = None
+        if opts.interactive:
+            from bleep.dbuslayer.agent_io import create_io_handler
+            io_handler = create_io_handler("cli")
+            auto_accept = False
+        else:
+            # Default to auto unless explicit interactive requested
+            from bleep.dbuslayer.agent_io import create_io_handler
+            io_handler = create_io_handler("auto")
+            auto_accept = True
+
+        ensure_default_pairing_agent(capabilities=cap, auto_accept=auto_accept, io_handler=io_handler)
+        
+        # Get agent details for logging
+        from bleep.dbuslayer import agent as _agent_mod
+        a = getattr(_agent_mod, "_DEFAULT_AGENT", None)
+        agent_path = getattr(a, 'agent_path', 'unknown') if a else 'unknown'
+        agent_class = a.__class__.__name__ if a else 'unknown'
+        io_handler_type = io_handler.__class__.__name__ if io_handler else 'unknown'
+        
+        print_and_log(
+            f"[+] Default pairing agent registered: agent_type={agent_class}, capabilities={cap}, "
+            f"default={opts.default}, auto_accept={auto_accept}, agent_path={agent_path}, "
+            f"io_handler={io_handler_type}",
+            LOG__AGENT
+        )
+        return
+
+    if opts.subcmd == "unregister":
+        try:
+            clear_default_pairing_agent()
+            print("[+] Default pairing agent cleared")
+        except Exception as exc:
+            print(f"[-] Agent unregister failed: {exc}")
+        return
 
 
 def _cmd_scan(_: List[str]) -> None:
@@ -565,8 +762,51 @@ def _enum_common(mac: str, variant: str, **opts) -> None:
     _current_mode = "ble"
     _current_path = device._device_path
 
-    svc_cnt = len(mapping)
-    char_cnt = sum(len(s.get("chars", {})) for s in mapping.values())
+    # Safely compute service and characteristic counts with format-agnostic handling
+    def _safe_count_characteristics(mapping: Dict[str, Any]) -> Tuple[int, int]:
+        """Count services and characteristics, handling multiple mapping formats.
+        
+        Returns:
+            (service_count, characteristic_count)
+        """
+        if not isinstance(mapping, dict):
+            print_and_log(
+                f"[DEBUG] Unexpected mapping type: {type(mapping).__name__}, expected dict",
+                LOG__DEBUG
+            )
+            return 0, 0
+        
+        svc_cnt = len(mapping)
+        char_cnt = 0
+        
+        for svc_uuid, svc_data in mapping.items():
+            # Handle malformed service data (strings, None, etc.)
+            if not isinstance(svc_data, dict):
+                print_and_log(
+                    f"[DEBUG] Non-dictionary service data for {svc_uuid}: {type(svc_data).__name__}={svc_data!r}",
+                    LOG__DEBUG
+                )
+                continue
+            
+            # Support both normal enumeration format ("chars") and deep enumeration format ("Characteristics")
+            chars_data = None
+            if "chars" in svc_data:
+                chars_data = svc_data.get("chars", {})
+            elif "Characteristics" in svc_data:
+                chars_data = svc_data.get("Characteristics", {})
+            
+            if chars_data and isinstance(chars_data, dict):
+                char_cnt += len(chars_data)
+            elif chars_data is not None:
+                # Log unexpected characteristic data type
+                print_and_log(
+                    f"[DEBUG] Unexpected characteristic data type for {svc_uuid}: {type(chars_data).__name__}",
+                    LOG__DEBUG
+                )
+        
+        return svc_cnt, char_cnt
+    
+    svc_cnt, char_cnt = _safe_count_characteristics(mapping)
     print_and_log(
         f"[enum-{variant}] services={svc_cnt} chars={char_cnt} mine={len(mine_map)} perm={len(perm_map)}",
         LOG__GENERAL,
@@ -688,7 +928,26 @@ def _cmd_cscan(_: List[str]) -> None:
             pass
 
         adapter.run_scan__timed(duration=10)
-        devices = [d for d in adapter.get_discovered_devices() if d["type"].lower() == "br/edr"]
+        # print(f"[!!] Devices: {adapter.get_discovered_devices()}")
+        def _is_classic(dev: dict) -> bool:
+            """Return True if *dev* appears to be a BR/EDR (Classic) device.
+
+            BlueZ ≤5.66 exposed a ``Type`` property ("BR/EDR" / "LE" / "Dual").
+            Newer releases dropped it from `GetManagedObjects()`, so we need a
+            heuristic.  We consider a device Classic when:
+            • explicit ``type`` key == "br/edr"  (old behaviour)
+            • or it has a non-null ``device_class`` (only BR/EDR assigns it)
+            """
+            if "type" in dev:
+                try:
+                    return dev["type"].lower() == "br/edr"
+                except Exception:
+                    return False
+            # Heuristic fallback – LE devices never carry a device class.
+            return dev.get("device_class") is not None
+
+        raw_devices = adapter.get_discovered_devices()
+        devices = [d for d in raw_devices if _is_classic(d)]
 
         if not devices:
             print("No Classic devices found")
@@ -751,6 +1010,128 @@ def _cmd_cservices(_: List[str]) -> None:
     for svc, ch in _current_mapping.items():
         print(f"  {svc:25} → {ch}")
     print()
+
+
+def _cmd_ckeep(args: List[str]) -> None:
+    """Open/close keep-alive RFCOMM socket to prevent Classic ACL drop.
+
+    Usage examples:
+        ckeep 3                       # open channel 3 on currently connected device
+        ckeep --first                 # first channel from service map
+        ckeep --svc PBAP              # match service name/uuid fragment
+        ckeep CC:50:E3:B6:BC:A6 --first  # quick connect + keep-alive
+        ckeep --close                 # close existing keep-alive socket
+    """
+    global _keepalive_sock, _current_device, _current_mapping, _current_mode, _current_path
+
+    import argparse
+
+    # Extract optional MAC address (first positional token that contains ':')
+    mac_token = None
+    if args and not args[0].startswith("-") and ":" in args[0]:
+        mac_token = args[0].strip()
+        args = args[1:]
+
+    # Build CLI parser for selector flags / --close
+    parser = argparse.ArgumentParser(prog="ckeep", add_help=False)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("channel", nargs="?", help="RFCOMM channel number")
+    group.add_argument("--first", action="store_true")
+    group.add_argument("--svc")
+    group.add_argument("--close", action="store_true")
+    try:
+        opts = parser.parse_args(args)
+    except SystemExit:
+        return
+
+    # Handle close request up-front
+    if opts.close:
+        if _keepalive_sock:
+            try:
+                _keepalive_sock.close()
+            except Exception:
+                pass
+            _keepalive_sock = None
+            print("[+] Keep-alive socket closed")
+        else:
+            print("[*] No keep-alive socket open")
+        return
+
+    # Ensure we have the correct Classic device connected; quick-connect if needed
+    need_connect = (
+        _current_mode != "classic" or not _current_device or
+        (mac_token and _current_device.mac_address.upper() != mac_token.upper())
+    )
+    if need_connect:
+        if not mac_token:
+            print("[-] No Classic device connected – supply MAC or run cconnect first")
+            return
+        print_and_log(f"[*] Quick connect to {mac_token} for keep-alive", LOG__GENERAL)
+        try:
+            from bleep.ble_ops import connect_and_enumerate__bluetooth__classic as _c_enum
+            dev, svc_map = _c_enum(mac_token)
+            _current_device = dev
+            _current_mapping = svc_map
+            _current_mode = "classic"
+            _current_path = _current_device._device_path
+        except Exception as exc:
+            error_str = _format_dbus_error(exc)
+            print(f"[-] Connect failed: {error_str}")
+            print_and_log(f"[-] Connect failed: {error_str}", LOG__DEBUG)
+            return
+
+    if _keepalive_sock:
+        print("[*] Keep-alive already active – use 'ckeep --close' first")
+        return
+
+    # If selector needs service map ensure we have one
+    if (opts.first or opts.svc) and not _current_mapping:
+        try:
+            from bleep.ble_ops.classic_sdp import discover_services_sdp
+            records = discover_services_sdp(_current_device.mac_address)
+            _current_mapping = { (r["name"] or r["uuid"]): r["channel"] for r in records if r.get("channel") }
+        except Exception as exc:
+            error_str = _format_dbus_error(exc)
+            print(f"[-] SDP discovery failed: {error_str}")
+            print_and_log(f"[-] SDP discovery failed: {error_str}", LOG__DEBUG)
+            return
+
+    # Resolve channel
+    channel: Optional[int] = None
+    if opts.channel:
+        try:
+            channel = int(opts.channel)
+        except ValueError:
+            print("[-] CHANNEL must be numeric")
+            return
+    elif opts.svc:
+        key = opts.svc.lower()
+        for name, ch in _current_mapping.items():
+            if key in name.lower() or key in str(ch):
+                channel = ch; break
+        if channel is None:
+            print("[-] Service not found – run 'cservices' first")
+            return
+    elif opts.first:
+        if _current_mapping:
+            channel = next(iter(_current_mapping.values()))
+        else:
+            print("[-] Service map empty – run 'cservices' or specify channel")
+            return
+
+    if channel is None:
+        print("[-] Could not resolve RFCOMM channel")
+        return
+
+    from bleep.ble_ops.classic_connect import classic_rfccomm_open
+    try:
+        _keepalive_sock = classic_rfccomm_open(_current_device.mac_address, channel, timeout=5.0)
+        print(f"[+] Keep-alive socket opened on RFCOMM channel {channel}")
+    except Exception as exc:
+        error_str = _format_dbus_error(exc)
+        print(f"[-] Failed to open keep-alive socket: {error_str}")
+        print_and_log(f"[-] Failed to open keep-alive socket: {error_str}", LOG__DEBUG)
+        _keepalive_sock = None
 
 
 def _cmd_csdp(args: List[str]) -> None:
@@ -2675,6 +3056,7 @@ _CMDS = {
     "cscan": _cmd_cscan,
     "cconnect": _cmd_cconnect,
     "cservices": _cmd_cservices,
+    "ckeep": _cmd_ckeep,
     "csdp": _cmd_csdp,
     "pbap": _cmd_pbap,
     "scann": _cmd_scann,
@@ -2690,6 +3072,7 @@ _CMDS = {
     "multiread": lambda args: _cmd_multiread(args, _current_device, _current_mapping, _DB_AVAILABLE, _DB_SAVE_ENABLED, _obs, _print_detailed_dbus_error),
     "multiread_all": lambda args: _cmd_multiread_all(args, _current_device, _current_mapping, _DB_AVAILABLE, _DB_SAVE_ENABLED, _print_detailed_dbus_error),
     "brutewrite": lambda args: _cmd_brutewrite(args, _current_device, _current_mapping, _DB_AVAILABLE, _DB_SAVE_ENABLED, _obs, _print_detailed_dbus_error),
+    "agent": _cmd_agent,
 }
 
 
@@ -2726,6 +3109,11 @@ def debug_shell() -> None:
         cmd, *rest = parts
 
         if cmd.lower() in {"quit", "exit"}:
+            if _keepalive_sock:
+                try:
+                    _keepalive_sock.close()
+                except Exception:
+                    pass
             # Clean up before exiting
             if _monitoring:
                 _monitor_stop_event.set()

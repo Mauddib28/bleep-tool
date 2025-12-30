@@ -140,17 +140,22 @@ def connect_and_enumerate__bluetooth__low_energy(
     device = _LEDevice(target_bt_addr)
 
     # ------------------------------------------------------------------
+    # 0. Register pairing agent BEFORE connecting
+    # ------------------------------------------------------------------
+    # BlueZ may trigger pairing during Connect() call itself, so we must
+    # register the agent proactively, not reactively after an exception.
+    from bleep.dbuslayer.agent import ensure_default_pairing_agent  # inline import to avoid cycles
+    ensure_default_pairing_agent()
+
+    # ------------------------------------------------------------------
     # 1. Connect (with retry)
     # ------------------------------------------------------------------
-    from bleep.dbuslayer.agent import ensure_default_pairing_agent  # inline import to avoid cycles
-
     try:
         if not device.connect(retry=5):
             raise _errors.ConnectionError(target_bt_addr, "connect failed")
     except (_errors.NotAuthorizedError, _errors.PermissionError):
-        # Likely needs pairing – attempt once with auto-agent
-        print_and_log("[*] Connection requires pairing – attempting auto-pair", LOG__GENERAL)
-        ensure_default_pairing_agent()
+        # Connection failed due to authorization – attempt explicit pairing
+        print_and_log("[*] Connection requires pairing – attempting explicit pair", LOG__GENERAL)
         try:
             device.pair(timeout=30)
             device.set_trusted(True)

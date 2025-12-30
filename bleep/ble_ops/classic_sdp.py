@@ -90,7 +90,14 @@ def _discover_services_dbus(mac_address: str, timeout: int = 5) -> List[Dict[str
             # has key "Record" containing XML (string) – tolerate both ay and s.
             records_variant = dev_iface.GetServiceRecords()
         except dbus.exceptions.DBusException as exc:
-            print_and_log(f"[classic_sdp] GetServiceRecords failed: {exc}", LOG__DEBUG)
+            print_and_log(
+                "[classic_sdp] GetServiceRecords failed ({}): {}: {}".format(
+                    device_path,
+                    getattr(exc, "get_dbus_name", lambda: "unknown")(),
+                    getattr(exc, "get_dbus_message", lambda: "")() or "",
+                ),
+                LOG__DEBUG,
+            )
             return []
 
         parsed: List[Dict[str, Any]] = []
@@ -436,7 +443,12 @@ def discover_services_sdp(
 
     dbus_res = _discover_services_dbus(mac_address)
     if dbus_res:
+        # Store SDP records in database if available
+        _store_sdp_records(mac_address, dbus_res)
         return dbus_res
+    
+    # Track successful parsed records for storage
+    successful_records: Optional[List[Dict[str, Any]]] = None
 
     # ------------------------------------------------------------------
     # 2. Fallback to external sdptool binary
@@ -515,12 +527,51 @@ def discover_services_sdp(
                     for rec in parsed
                 )
                 if pbap_present:
-                    return parsed
+                    successful_records = parsed
+                    break  # Exit loop - we have valid records
                 last_error = "PBAP not in browse output"
                 continue
-            # otherwise continue loop to try the next command variant
+            # If we have parsed records but no channels, save them for potential return
+            successful_records = parsed
+            if idx == len(cmds_to_try):
+                # Last command - return what we have
+                break
             last_error = "No RFCOMM channels in browse output"
             continue
         last_error = "No services found"
+    
+    # If we successfully parsed records, store and return them
+    if successful_records:
+        _store_sdp_records(mac_address, successful_records)
+        return successful_records
 
     raise RuntimeError(f"sdptool failed: {last_error}") 
+
+
+def _store_sdp_records(mac_address: str, records: List[Dict[str, Any]]) -> None:
+    """Store SDP records in the database if available.
+    
+    Parameters
+    ----------
+    mac_address : str
+        Device MAC address
+    records : List[Dict[str, Any]]
+        List of SDP records to store
+    """
+    try:
+        from bleep.core import observations as _obs
+        if _obs:
+            for record in records:
+                try:
+                    _obs.upsert_sdp_record(mac_address, record)
+                except Exception as e:
+                    print_and_log(
+                        f"[classic_sdp] Failed to store SDP record: {e}",
+                        LOG__DEBUG
+                    )
+    except ImportError:
+        # Database module not available - graceful degradation
+        pass
+    except Exception:
+        # Any other error - don't fail SDP discovery
+        pass 

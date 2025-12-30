@@ -23,6 +23,7 @@ __all__ = [
     "upsert_services",
     "upsert_characteristics",
     "upsert_classic_services",
+    "upsert_sdp_record",
     "upsert_pbap_metadata",
     "insert_char_history",
     "snapshot_media_player",
@@ -51,7 +52,7 @@ _DB_CONN: sqlite3.Connection | None = None
 
 _DB_PATH = Path(os.getenv("BLEEP_DB_PATH", Path.home() / ".bleep" / "observations.db"))
 
-_SCHEMA_VERSION = 6  # Added device_type_evidence table for audit/debugging
+_SCHEMA_VERSION = 7  # Added sdp_records table for full SDP record snapshots
 
 _SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS devices (
     last_seen  DATETIME,
     notes TEXT,
     device_type TEXT   -- Added in schema v3: 'unknown', 'classic', 'le', or 'dual'
+    -- Schema v7: Added sdp_records table for full SDP record snapshots
 );
 
 CREATE TABLE IF NOT EXISTS adv_reports (
@@ -162,6 +164,27 @@ CREATE INDEX IF NOT EXISTS idx_char_history_mac_service_char ON char_history(mac
 CREATE INDEX IF NOT EXISTS idx_char_history_ts ON char_history(ts);
 CREATE INDEX IF NOT EXISTS idx_char_history_source ON char_history(source);
 
+-- sdp_records table (added in schema v7) - Full SDP record snapshots with all attributes
+CREATE TABLE IF NOT EXISTS sdp_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mac TEXT REFERENCES devices(mac) ON DELETE CASCADE,
+    service_record_handle INT,
+    uuid TEXT,
+    channel INT,
+    name TEXT,
+    profile_descriptors JSON,
+    service_version INT,
+    service_description TEXT,
+    protocol_descriptors JSON,
+    raw_record TEXT,
+    ts DATETIME,
+    UNIQUE(mac, service_record_handle)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sdp_records_mac ON sdp_records(mac);
+CREATE INDEX IF NOT EXISTS idx_sdp_records_uuid ON sdp_records(uuid);
+CREATE INDEX IF NOT EXISTS idx_sdp_records_ts ON sdp_records(ts);
+
 CREATE TABLE IF NOT EXISTS media_transports (
     path TEXT PRIMARY KEY,
     mac TEXT,
@@ -196,6 +219,26 @@ CREATE TABLE IF NOT EXISTS device_type_evidence (
 CREATE INDEX IF NOT EXISTS idx_device_type_evidence_mac ON device_type_evidence(mac);
 CREATE INDEX IF NOT EXISTS idx_device_type_evidence_type ON device_type_evidence(evidence_type);
 CREATE INDEX IF NOT EXISTS idx_device_type_evidence_ts ON device_type_evidence(ts);
+
+CREATE TABLE IF NOT EXISTS sdp_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mac TEXT REFERENCES devices(mac) ON DELETE CASCADE,
+    service_record_handle INT,
+    uuid TEXT,
+    channel INT,
+    name TEXT,
+    profile_descriptors JSON,
+    service_version INT,
+    service_description TEXT,
+    protocol_descriptors JSON,
+    raw_record TEXT,
+    ts DATETIME,
+    UNIQUE(mac, service_record_handle)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sdp_records_mac ON sdp_records(mac);
+CREATE INDEX IF NOT EXISTS idx_sdp_records_uuid ON sdp_records(uuid);
+CREATE INDEX IF NOT EXISTS idx_sdp_records_ts ON sdp_records(ts);
 """
 
 
@@ -306,7 +349,39 @@ def _init_db() -> None:
                 current_version = 6
             except Exception as e:
                 print(f"Migration v5 to v6 failed: {e}")
-
+        
+        # Migration from v6 to v7 - Add sdp_records table for full SDP record snapshots
+        if current_version == 6:
+            try:
+                # Create sdp_records table for storing full SDP record snapshots
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS sdp_records (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        mac TEXT REFERENCES devices(mac) ON DELETE CASCADE,
+                        service_record_handle INT,
+                        uuid TEXT,
+                        channel INT,
+                        name TEXT,
+                        profile_descriptors JSON,
+                        service_version INT,
+                        service_description TEXT,
+                        protocol_descriptors JSON,
+                        raw_record TEXT,
+                        ts DATETIME,
+                        UNIQUE(mac, service_record_handle)
+                    )
+                """)
+                
+                # Create indexes for sdp_records table
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_sdp_records_mac ON sdp_records(mac)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_sdp_records_uuid ON sdp_records(uuid)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_sdp_records_ts ON sdp_records(ts)")
+                
+                print("[+] Database schema v7: sdp_records table created for full SDP record snapshots")
+                current_version = 7
+            except Exception as e:
+                print(f"Migration v6 to v7 failed: {e}")
+        
         # Update schema version
         if not ver_row:
             conn.execute("INSERT INTO schema_version(version) VALUES (?)", (_SCHEMA_VERSION,))
@@ -635,6 +710,94 @@ def insert_char_history(mac: str, service_uuid: str, char_uuid: str, value: byte
         )
     
     # Commit the transaction to persist the changes
+    if _DB_CONN is not None:
+        _DB_CONN.commit()
+
+
+def upsert_sdp_record(mac: str, record: Dict[str, Any]):
+    """Store a full SDP record snapshot in the database.
+    
+    Parameters
+    ----------
+    mac : str
+        Device MAC address
+    record : Dict[str, Any]
+        SDP record dictionary with keys:
+        - handle (int): Service Record Handle (0x0000)
+        - uuid (str): Service UUID
+        - channel (int): RFCOMM channel (if applicable)
+        - name (str): Service name
+        - profile_descriptors (List[Dict]): Profile descriptor list with uuid and version
+        - service_version (int): Service version (0x0300)
+        - description (str): Service description (0x0101)
+        - raw (str): Full raw record (XML or text)
+        
+    Notes
+    -----
+    This function stores full SDP record snapshots with all attributes.
+    The basic UUID/channel mapping is still stored separately in classic_services
+    table for backward compatibility.
+    """
+    mac = _normalize_mac(mac)
+    
+    # Extract fields from record
+    handle = record.get("handle")
+    uuid = record.get("uuid")
+    channel = record.get("channel")
+    name = record.get("name")
+    profile_descriptors = record.get("profile_descriptors")
+    service_version = record.get("service_version")
+    description = record.get("description")
+    raw_record = record.get("raw")
+    
+    # Convert profile_descriptors to JSON if present
+    profile_descriptors_json = None
+    if profile_descriptors:
+        try:
+            profile_descriptors_json = _json.dumps(profile_descriptors)
+        except (TypeError, ValueError):
+            pass
+    
+    # Extract protocol descriptors from raw record if available
+    # This is a simplified extraction - full protocol parsing would require more complex logic
+    protocol_descriptors_json = None
+    # For now, we'll store None and let future enhancements parse protocol descriptors
+    
+    with _DB_LOCK, _db_cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO sdp_records(
+                mac, service_record_handle, uuid, channel, name,
+                profile_descriptors, service_version, service_description,
+                protocol_descriptors, raw_record, ts
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(mac, service_record_handle) DO UPDATE SET
+                uuid=excluded.uuid,
+                channel=excluded.channel,
+                name=excluded.name,
+                profile_descriptors=excluded.profile_descriptors,
+                service_version=excluded.service_version,
+                service_description=excluded.service_description,
+                protocol_descriptors=excluded.protocol_descriptors,
+                raw_record=excluded.raw_record,
+                ts=excluded.ts
+            """,
+            (
+                mac,
+                handle,
+                uuid,
+                channel,
+                name,
+                profile_descriptors_json,
+                service_version,
+                description,
+                protocol_descriptors_json,
+                raw_record,
+                datetime.utcnow().isoformat(),
+            ),
+        )
+    # Ensure visibility for external readers
     if _DB_CONN is not None:
         _DB_CONN.commit()
 
@@ -1352,6 +1515,7 @@ def get_device_detail(mac: str) -> Dict[str, Any]:
         'services': [],
         'characteristics': [],
         'classic_services': [],
+        'sdp_records': [],
         'pbap_metadata': [],
         'media_players': [],
         'media_transports': []
@@ -1381,6 +1545,27 @@ def get_device_detail(mac: str) -> Dict[str, Any]:
             # Get classic services
             cur.execute("SELECT * FROM classic_services WHERE mac=?", (mac,))
             result['classic_services'] = [dict(row) for row in cur.fetchall()]
+            
+            # Get SDP records (full snapshots)
+            cur.execute("SELECT * FROM sdp_records WHERE mac=? ORDER BY ts DESC", (mac,))
+            sdp_rows = cur.fetchall()
+            # Parse JSON fields for SDP records
+            sdp_records = []
+            for row in sdp_rows:
+                rec = dict(row)
+                # Parse JSON fields
+                if rec.get('profile_descriptors'):
+                    try:
+                        rec['profile_descriptors'] = _json.loads(rec['profile_descriptors'])
+                    except (TypeError, ValueError, KeyError):
+                        pass
+                if rec.get('protocol_descriptors'):
+                    try:
+                        rec['protocol_descriptors'] = _json.loads(rec['protocol_descriptors'])
+                    except (TypeError, ValueError, KeyError):
+                        pass
+                sdp_records.append(rec)
+            result['sdp_records'] = sdp_records
             
             # Get PBAP metadata
             cur.execute("SELECT * FROM pbap_metadata WHERE mac=?", (mac,))

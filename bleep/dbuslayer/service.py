@@ -36,7 +36,7 @@ def _print_detailed_dbus_error(exc: Exception) -> None:
     """
     if isinstance(exc, dbus.exceptions.DBusException):
         error_name = exc.get_dbus_name()
-        error_msg = str(exc)
+        error_msg = exc.get_dbus_message() or str(exc)
         
         print_and_log(f"[-] D-Bus Error: {error_name}", LOG__DEBUG)
         print_and_log(f"[-] Message: {error_msg}", LOG__DEBUG)

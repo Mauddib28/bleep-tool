@@ -328,7 +328,8 @@ def pbap_dump_async(
     try:
         session_path = client.CreateSession(mac_address, {"Target": "PBAP"})
     except dbus.exceptions.DBusException as exc:
-        msg = str(exc)
+        name = exc.get_dbus_name()
+        msg = exc.get_dbus_message() or str(exc)
         from bleep.core.log import print_and_log, LOG__GENERAL
         
         # Handle "Too short header" error - indicates stale OBEX state on device
@@ -344,7 +345,8 @@ def pbap_dump_async(
             raise RuntimeError(
                 f"OBEX CreateSession failed: Too short header in packet. "
                 f"This indicates stale OBEX state on device {mac_address}. "
-                f"SOLUTION: Restart the target device to clear OBEX buffers and retry."
+                f"SOLUTION: Restart the target device to clear OBEX buffers and retry. "
+                f"Full D-Bus error: {name}: {msg}"
             ) from exc
         
         # Handle other common OBEX errors
@@ -359,7 +361,8 @@ def pbap_dump_async(
             )
             raise RuntimeError(
                 f"OBEX CreateSession failed: Device not responding. "
-                f"Ensure {mac_address} is in range and Bluetooth is enabled."
+                f"Ensure {mac_address} is in range and Bluetooth is enabled. "
+                f"Full D-Bus error: {name}: {msg}"
             ) from exc
         
         # Re-raise other errors

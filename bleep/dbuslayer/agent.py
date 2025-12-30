@@ -16,7 +16,7 @@ import dbus.service
 
 from bleep.bt_ref.constants import *
 from bleep.bt_ref.exceptions import *
-from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
+from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__AGENT
 from bleep.core import errors as _errors
 
 # ---------------------------------------------------------------------------
@@ -39,6 +39,79 @@ __all__ = [
     "create_agent",
     "ensure_default_pairing_agent",
 ]
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+def _format_dbus_error(exc: Exception) -> str:
+    """Format a D-Bus exception as 'name: message' for concise logging.
+    
+    If the exception is not a DBusException, returns str(exc).
+    Follows the error handling pattern used throughout BLEEP.
+    
+    Parameters
+    ----------
+    exc : Exception
+        The exception to format
+        
+    Returns
+    -------
+    str
+        Formatted error string in 'name: message' format, or str(exc) for non-D-Bus exceptions
+    """
+    if isinstance(exc, dbus.exceptions.DBusException):
+        error_name = exc.get_dbus_name()
+        error_msg = exc.get_dbus_message()
+        
+        # Extract error name and message from exception args (most reliable source)
+        msg_str = None
+        if exc.args:
+            if len(exc.args) >= 2:
+                # Second arg is typically the message
+                msg_str = str(exc.args[1]) if exc.args[1] is not None else None
+                # First arg might be the error name if get_dbus_name() returned None
+                if not error_name and isinstance(exc.args[0], str) and exc.args[0].startswith("org."):
+                    error_name = exc.args[0]
+            elif len(exc.args) == 1:
+                arg = exc.args[0]
+                if isinstance(arg, str):
+                    if arg.startswith("org."):
+                        error_name = arg if not error_name else error_name
+                    else:
+                        msg_str = arg
+        
+        # Use get_dbus_message() result if it's a proper string and we don't have a message yet
+        if msg_str is None and error_msg is not None:
+            if isinstance(error_msg, str):
+                # Check if it looks like a tuple string representation
+                if error_msg.startswith("(") and error_msg.endswith(")"):
+                    import ast
+                    try:
+                        parsed = ast.literal_eval(error_msg)
+                        if isinstance(parsed, tuple) and len(parsed) > 1:
+                            msg_str = str(parsed[1]) if parsed[1] is not None else None
+                            if not error_name and isinstance(parsed[0], str) and parsed[0].startswith("org."):
+                                error_name = parsed[0]
+                    except (ValueError, SyntaxError):
+                        msg_str = error_msg
+                else:
+                    msg_str = error_msg
+            elif isinstance(error_msg, tuple):
+                if len(error_msg) > 1:
+                    msg_str = str(error_msg[1]) if error_msg[1] is not None else None
+        
+        # Final fallback
+        if msg_str is None:
+            msg_str = str(exc)
+        
+        # Format as 'name: message' if we have both, otherwise just message
+        if error_name:
+            return f"{error_name}: {msg_str}"
+        else:
+            return msg_str
+    return str(exc)
+
 
 # ---------------------------------------------------------------------------
 # Lazy default agent helper (used by both LE and Classic helpers)
@@ -77,7 +150,16 @@ def ensure_default_pairing_agent(*, capabilities: str = "KeyboardDisplay", auto_
         return
 
     global _DEFAULT_AGENT
-    if _DEFAULT_AGENT is not None and _DEFAULT_AGENT.is_registered():
+    # If we already created an agent object for this process, re-use it.
+    # dbus-python only allows one handler per object path per connection, so
+    # creating a second agent object at the same path raises:
+    # "there is already a handler".
+    if _DEFAULT_AGENT is not None:
+        if _DEFAULT_AGENT.is_registered():
+            return
+        # Re-register existing object rather than creating a new one.
+        _DEFAULT_AGENT.register(capabilities=capabilities, default=True)
+        print_and_log("[*] Default pairing agent registered (reused existing object)", LOG__AGENT)
         return
 
     _DEFAULT_AGENT = create_agent(
@@ -90,7 +172,18 @@ def ensure_default_pairing_agent(*, capabilities: str = "KeyboardDisplay", auto_
         storage_path=storage_path,
         encryption_key=encryption_key,
     )
-    print_and_log("[*] Default pairing agent registered", LOG__DEBUG)
+    print_and_log("[*] Default pairing agent registered", LOG__AGENT)
+
+
+def clear_default_pairing_agent() -> None:
+    """Unregister and remove the process-global default agent (if present)."""
+    global _DEFAULT_AGENT
+    if _DEFAULT_AGENT is None:
+        return
+    try:
+        _DEFAULT_AGENT.unregister()
+    finally:
+        _DEFAULT_AGENT = None
 
 
 class BlueZAgent(dbus.service.Object):
@@ -133,18 +226,67 @@ class BlueZAgent(dbus.service.Object):
             obj = self._bus.get_object(BLUEZ_SERVICE_NAME, "/org/bluez")
             self._agent_manager = dbus.Interface(obj, MANAGER_INTERFACE)
         except dbus.exceptions.DBusException as e:
-            raise _errors.FailedException(f"Failed to setup agent manager: {str(e)}")
+            error_str = _format_dbus_error(e)
+            print_and_log(
+                f"[-] AgentManager setup failed: {error_str} (agent_path={self.agent_path})",
+                LOG__AGENT,
+            )
+            raise _errors.FailedException(f"Failed to setup agent manager (agent_path={self.agent_path}): {error_str}")
 
     def register(self, capabilities="NoInputNoOutput", default=False):
         """Register the agent with BlueZ."""
         try:
+            print_and_log(
+                f"[*] Registering agent: path={self.agent_path}, capabilities={capabilities}, default_requested={default}",
+                LOG__AGENT
+            )
+            
             self._agent_manager.RegisterAgent(self.agent_path, capabilities)
+            print_and_log(f"[+] Agent registered successfully: path={self.agent_path}, capabilities={capabilities}", LOG__AGENT)
+            
             if default:
-                self._agent_manager.RequestDefaultAgent(self.agent_path)
+                try:
+                    self._agent_manager.RequestDefaultAgent(self.agent_path)
+                    print_and_log(
+                        f"[+] RequestDefaultAgent called: path={self.agent_path} (Note: BlueZ may select a different default agent)",
+                        LOG__AGENT
+                    )
+                except dbus.exceptions.DBusException as e:
+                    error_str = _format_dbus_error(e)
+                    print_and_log(
+                        f"[!] RequestDefaultAgent failed: {error_str} (agent_path={self.agent_path}, agent still registered but may not be default)",
+                        LOG__AGENT
+                    )
+                    # Don't fail registration if RequestDefaultAgent fails
+            
             self._is_registered = True
-            print_and_log(f"[+] Agent registered with capabilities: {capabilities}", LOG__DEBUG)
+            print_and_log(
+                f"[+] Agent registration complete: path={self.agent_path}, capabilities={capabilities}, "
+                f"default_requested={default}, registered={self._is_registered}",
+                LOG__AGENT
+            )
+            
+            # Enable unified D-Bus monitoring when agent is registered
+            try:
+                from bleep.dbuslayer.signals import system_dbus__bluez_signals
+                # Get or create signals instance
+                signals_instance = system_dbus__bluez_signals()
+                signals_instance.enable_unified_dbus_monitoring(True)
+            except Exception as e:
+                print_and_log(
+                    f"[!] Failed to enable unified D-Bus monitoring: {e} "
+                    f"(agent registration continues)",
+                    LOG__AGENT
+                )
         except dbus.exceptions.DBusException as e:
-            raise _errors.FailedException(f"Failed to register agent: {str(e)}")
+            error_str = _format_dbus_error(e)
+            print_and_log(
+                f"[-] Agent register failed: {error_str} (agent_path={self.agent_path}, capabilities={capabilities}, default={default})",
+                LOG__AGENT,
+            )
+            raise _errors.FailedException(
+                f"Failed to register agent (agent_path={self.agent_path}, capabilities={capabilities}, default={default}): {error_str}"
+            )
 
     def unregister(self):
         """Unregister the agent from BlueZ."""
@@ -154,9 +296,19 @@ class BlueZAgent(dbus.service.Object):
         try:
             self._agent_manager.UnregisterAgent(self.agent_path)
             self._is_registered = False
-            print_and_log("[+] Agent unregistered", LOG__DEBUG)
+            print_and_log("[+] Agent unregistered", LOG__AGENT)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to unregister agent: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to unregister agent ({self.agent_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
+        finally:
+            # Also un-export the object path from this process so future agent
+            # registrations can reuse the same path without "handler exists".
+            try:
+                self.remove_from_connection()
+            except Exception:
+                pass
 
     def is_registered(self):
         """Check if the agent is registered."""
@@ -188,12 +340,21 @@ class BlueZAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="", out_signature="")
     def Release(self):
         """Release the agent."""
+        print_and_log(
+            f"[*] Release METHOD CALLED by BlueZ: agent_path={self.agent_path}, registered={self._is_registered}",
+            LOG__AGENT
+        )
         print_and_log("[+] Agent released", LOG__DEBUG)
         self._is_registered = False
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def AuthorizeService(self, device, uuid):
         """Authorize a service before the device can use it."""
+        print_and_log(
+            f"[*] AuthorizeService METHOD CALLED by BlueZ: device_path={device}, uuid={uuid}, agent_path={self.agent_path}, registered={self._is_registered}",
+            LOG__AGENT
+        )
+        
         device_info = self._get_device_info(device)
         
         try:
@@ -211,68 +372,96 @@ class BlueZAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="s")
     def RequestPinCode(self, device):
         """Request PIN code for pairing."""
+        print_and_log(
+            f"[*] RequestPinCode METHOD CALLED by BlueZ: device_path={device}, agent_path={self.agent_path}, registered={self._is_registered}",
+            LOG__AGENT
+        )
+        
         device_info = self._get_device_info(device)
         
         try:
             pin_code = self._io_handler.request_pin_code(device_info)
-            print_and_log(f"[+] PIN code provided for {device_info}", LOG__DEBUG)
+            print_and_log(f"[+] PIN code provided for {device_info}: {pin_code}", LOG__AGENT)
             return pin_code
         except Exception as e:
-            print_and_log(f"[-] PIN code request error: {str(e)}", LOG__DEBUG)
+            print_and_log(f"[-] PIN code request error: {str(e)}", LOG__AGENT)
             raise RejectedException("PIN code request rejected")
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="u")
     def RequestPasskey(self, device):
         """Request passkey for pairing."""
+        print_and_log(
+            f"[*] RequestPasskey METHOD CALLED by BlueZ: device_path={device}, agent_path={self.agent_path}, registered={self._is_registered}",
+            LOG__AGENT
+        )
+        
         device_info = self._get_device_info(device)
         
         try:
             passkey = self._io_handler.request_passkey(device_info)
-            print_and_log(f"[+] Passkey provided for {device_info}", LOG__DEBUG)
+            print_and_log(f"[+] Passkey provided for {device_info}: {passkey:06d}", LOG__AGENT)
             return dbus.UInt32(passkey)
         except Exception as e:
-            print_and_log(f"[-] Passkey request error: {str(e)}", LOG__DEBUG)
+            print_and_log(f"[-] Passkey request error: {str(e)}", LOG__AGENT)
             raise RejectedException("Passkey request rejected")
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="ouq", out_signature="")
     def DisplayPasskey(self, device, passkey, entered):
         """Display passkey on agent."""
+        print_and_log(
+            f"[*] DisplayPasskey METHOD CALLED by BlueZ: device_path={device}, passkey={passkey:06d}, entered={entered}, agent_path={self.agent_path}, registered={self._is_registered}",
+            LOG__AGENT
+        )
+        
         device_info = self._get_device_info(device)
         
         try:
             self._io_handler.display_passkey(device_info, int(passkey), int(entered))
         except Exception as e:
-            print_and_log(f"[-] Display passkey error: {str(e)}", LOG__DEBUG)
+            print_and_log(f"[-] Display passkey error: {str(e)}", LOG__AGENT)
         
         # Fallback logging in case IO handler doesn't log
-        print_and_log(f"[+] DisplayPasskey: {device_info} - {passkey} ({entered} digits entered)", LOG__DEBUG)
+        if int(entered) > 0:
+            print_and_log(f"[+] DisplayPasskey: {device_info} - Passkey: {passkey:06d} ({entered} digits entered)", LOG__AGENT)
+        else:
+            print_and_log(f"[+] DisplayPasskey: {device_info} - Passkey: {passkey:06d}", LOG__AGENT)
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def DisplayPinCode(self, device, pincode):
         """Display PIN code on agent."""
+        print_and_log(
+            f"[*] DisplayPinCode METHOD CALLED by BlueZ: device_path={device}, pincode={pincode}, agent_path={self.agent_path}, registered={self._is_registered}",
+            LOG__AGENT
+        )
+        
         device_info = self._get_device_info(device)
         
         try:
             self._io_handler.display_pin_code(device_info, pincode)
         except Exception as e:
-            print_and_log(f"[-] Display PIN code error: {str(e)}", LOG__DEBUG)
+            print_and_log(f"[-] Display PIN code error: {str(e)}", LOG__AGENT)
         
         # Fallback logging in case IO handler doesn't log
-        print_and_log(f"[+] DisplayPinCode: {device_info} - {pincode}", LOG__DEBUG)
+        print_and_log(f"[+] DisplayPinCode: {device_info} - PIN: {pincode}", LOG__AGENT)
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="ou", out_signature="")
     def RequestConfirmation(self, device, passkey):
         """Request confirmation of passkey."""
+        print_and_log(
+            f"[*] RequestConfirmation METHOD CALLED by BlueZ: device_path={device}, passkey={passkey:06d}, agent_path={self.agent_path}, registered={self._is_registered}",
+            LOG__AGENT
+        )
+        
         device_info = self._get_device_info(device)
         
         try:
             result = self._io_handler.request_confirmation(device_info, int(passkey))
             if not result:
-                print_and_log(f"[-] Passkey confirmation rejected for {device_info}", LOG__DEBUG)
+                print_and_log(f"[-] Passkey confirmation rejected for {device_info} (passkey: {passkey:06d})", LOG__AGENT)
                 raise RejectedException("Passkey confirmation rejected by user")
-            print_and_log(f"[+] Passkey confirmed for {device_info}: {passkey}", LOG__DEBUG)
+            print_and_log(f"[+] Passkey confirmed for {device_info}: {passkey:06d}", LOG__AGENT)
         except Exception as e:
-            print_and_log(f"[-] Passkey confirmation error: {str(e)}", LOG__DEBUG)
+            print_and_log(f"[-] Passkey confirmation error: {str(e)}", LOG__AGENT)
             if not isinstance(e, RejectedException):
                 raise RejectedException("Passkey confirmation rejected")
             raise
@@ -280,16 +469,21 @@ class BlueZAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="")
     def RequestAuthorization(self, device):
         """Request authorization for pairing."""
+        print_and_log(
+            f"[*] RequestAuthorization METHOD CALLED by BlueZ: device_path={device}, agent_path={self.agent_path}, registered={self._is_registered}",
+            LOG__AGENT
+        )
+        
         device_info = self._get_device_info(device)
         
         try:
             result = self._io_handler.request_authorization(device_info)
             if not result:
-                print_and_log(f"[-] Pairing authorization rejected for {device_info}", LOG__DEBUG)
+                print_and_log(f"[-] Pairing authorization rejected for {device_info}", LOG__AGENT)
                 raise RejectedException("Pairing authorization rejected by user")
-            print_and_log(f"[+] Pairing authorized for {device_info}", LOG__DEBUG)
+            print_and_log(f"[+] Pairing authorized for {device_info}", LOG__AGENT)
         except Exception as e:
-            print_and_log(f"[-] Pairing authorization error: {str(e)}", LOG__DEBUG)
+            print_and_log(f"[-] Pairing authorization error: {str(e)}", LOG__AGENT)
             if not isinstance(e, RejectedException):
                 raise RejectedException("Pairing authorization rejected")
             raise
@@ -297,6 +491,11 @@ class BlueZAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="", out_signature="")
     def Cancel(self):
         """Cancel any pending request."""
+        print_and_log(
+            f"[*] Cancel METHOD CALLED by BlueZ: agent_path={self.agent_path}, registered={self._is_registered}",
+            LOG__AGENT
+        )
+        
         try:
             self._io_handler.cancel()
         except Exception as e:
@@ -587,9 +786,8 @@ class PairingAgent(EnhancedAgent):
             return True
             
         except dbus.exceptions.DBusException as e:
-            error_name = e.get_dbus_name()
-            error_msg = e.get_dbus_message()
-            print_and_log(f"[-] Pairing failed: {error_name} - {error_msg}", LOG__GENERAL)
+            error_str = _format_dbus_error(e)
+            print_and_log(f"[-] Pairing failed: method=Pair, device_path={device_path}, error={error_str}", LOG__GENERAL)
             
             try:
                 metrics.record_operation("pair_failed")

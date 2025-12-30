@@ -69,7 +69,32 @@ def parse_args(args=None):
 
     # Agent mode
     agent_parser = subparsers.add_parser("agent", help="Run pairing agent")
-    agent_parser.add_argument("--mode", choices=["simple", "interactive"], default="simple")
+    agent_parser.add_argument("--mode", choices=["simple", "interactive", "enhanced", "pairing"], 
+                             default="simple", help="Agent mode: simple, interactive, enhanced, or pairing")
+    agent_parser.add_argument("--cap", choices=["none", "display", "yesno", "keyboard", "kbdisp"], 
+                             default="none", help="Agent capabilities: none, display, yesno, keyboard, kbdisp")
+    agent_parser.add_argument("--default", action="store_true", 
+                             help="Request as default agent")
+    agent_parser.add_argument("--auto-accept", action="store_true", default=True,
+                             help="Auto-accept pairing requests (for enhanced and pairing agents)")
+    agent_parser.add_argument("--pair", metavar="MAC", 
+                             help="Pair with a device (only in pairing mode)")
+    agent_parser.add_argument("--trust", metavar="MAC", 
+                             help="Set a device as trusted")
+    agent_parser.add_argument("--untrust", metavar="MAC", 
+                             help="Set a device as untrusted")
+    agent_parser.add_argument("--list-trusted", action="store_true", 
+                             help="List all trusted devices")
+    agent_parser.add_argument("--list-bonded", action="store_true", 
+                             help="List all bonded devices (with stored keys)")
+    agent_parser.add_argument("--remove-bond", metavar="MAC", 
+                             help="Remove bonding information for a device")
+    agent_parser.add_argument("--storage-path", 
+                             help="Path to store bonding information")
+    agent_parser.add_argument("--timeout", type=int, default=30,
+                             help="Timeout for pairing operations (seconds)")
+    agent_parser.add_argument("--status", action="store_true",
+                             help="Check BLEEP agent registration status")
 
     # Explore mode
     explore_parser = subparsers.add_parser("explore", help="Scan & dump GATT database to JSON for offline analysis")
@@ -306,27 +331,86 @@ def main(args=None):
             return 0
 
         elif args.mode == "connect":
-            # Native path first – falls back to monolith only on explicit failure
+            # Native connection path using refactored dbuslayer stack
             try:
                 from bleep.ble_ops.connect import (
                     connect_and_enumerate__bluetooth__low_energy as _connect_enum,
                 )
+                from bleep.core.errors import (
+                    DeviceNotFoundError,
+                    ConnectionError,
+                    NotReadyError,
+                    NotAuthorizedError,
+                    ServicesNotResolvedError,
+                )
 
                 _connect_enum(args.address)
+                print(f"[+] Successfully connected to {args.address}", file=sys.stdout)
                 return 0
-            except Exception as exc:  # noqa: BLE001 – any native failure triggers fallback
+            except DeviceNotFoundError as exc:
                 print(
-                    f"[!] Native connect failed ({exc}); attempting legacy monolith fallback…",
+                    f"[!] Device {args.address} not found during scan",
                     file=sys.stderr,
                 )
-                try:
-                    from bleep.ble_ops.scan import _load_monolith  # reuse loader
-
-                    mono = _load_monolith()
-                    mono.connect_and_enumerate__bluetooth__low_energy(args.address)
-                    return 0
-                except Exception as e:  # noqa: BLE001
-                    print(f"Legacy fallback also failed: {e}", file=sys.stderr)
+                print(
+                    "[*] Suggestions: Ensure the device is powered on, in range, and advertising.",
+                    file=sys.stderr,
+                )
+                print(
+                    "[*] Try running 'bleep scan' first to verify the device is discoverable.",
+                    file=sys.stderr,
+                )
+                return 1
+            except NotReadyError as exc:
+                print(
+                    "[!] Bluetooth adapter not ready",
+                    file=sys.stderr,
+                )
+                print(
+                    "[*] Ensure the adapter is powered on: 'bluetoothctl power on'",
+                    file=sys.stderr,
+                )
+                return 1
+            except NotAuthorizedError as exc:
+                print(
+                    f"[!] Connection requires pairing/authorization: {exc}",
+                    file=sys.stderr,
+                )
+                print(
+                    "[*] The device may require pairing. Try pairing first or use 'bleep agent' mode.",
+                    file=sys.stderr,
+                )
+                return 1
+            except ConnectionError as exc:
+                print(
+                    f"[!] Connection failed: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            except ServicesNotResolvedError as exc:
+                print(
+                    f"[!] Services not resolved for device {args.address}",
+                    file=sys.stderr,
+                )
+                print(
+                    "[*] The device connected but GATT services did not resolve in time.",
+                    file=sys.stderr,
+                )
+                print(
+                    "[*] This may indicate the device is slow to respond or has connectivity issues.",
+                    file=sys.stderr,
+                )
+                return 1
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[!] Connection error: {exc}",
+                    file=sys.stderr,
+                )
+                import traceback
+                print(
+                    f"[DEBUG] Traceback:\n{traceback.format_exc()}",
+                    file=sys.stderr,
+                )
                 return 1
 
         elif args.mode == "gatt-enum":
@@ -617,10 +701,11 @@ def main(args=None):
                     subargv += ["--limit", str(args.limit)]
             return _db_mode.main(subargv)
 
-        elif args.mode == "agent":
+        elif len(sys.argv) > 1 and sys.argv[1] == "agent":
             from bleep.modes.agent import main as _agent_main
-
-            return _agent_main(["--mode", args.mode]) or 0
+            # Pass all arguments after 'agent' subcommand
+            agent_args = sys.argv[2:] if len(sys.argv) > 2 else []
+            return _agent_main(agent_args) or 0
             
         elif args.mode == "user":
             from bleep.modes.user import main as _user_main

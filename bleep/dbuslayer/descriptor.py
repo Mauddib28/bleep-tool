@@ -80,6 +80,13 @@ class Descriptor:  # noqa: N801
                     return bytes(raw)
                 if isinstance(raw, (list, tuple, dbus.Array)) and raw:
                     return bytes(raw)  # convert list[int] → bytes
+            except dbus.exceptions.DBusException as e:
+                # Preserve silent-failure behavior (fallback to next attempt),
+                # but log structured diagnostics for debugging.
+                print_and_log(
+                    f"[DEBUG] Descriptor ReadValue failed ({self.path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                    LOG__DEBUG,
+                )
             except Exception:
                 pass
             return b""

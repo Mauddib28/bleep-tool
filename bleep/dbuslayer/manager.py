@@ -125,6 +125,13 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
             print_and_log("[*] Discovery started", LOG__DEBUG)
         except dbus.exceptions.DBusException as e:
             mapped = _error_from_dbus_error(e)
+            error_name = e.get_dbus_name() or "unknown"
+            error_msg = e.get_dbus_message() or ""
+            error_str = f"{error_name}: {error_msg}" if error_msg else error_name
+            print_and_log(
+                f"[DEBUG] StartDiscovery failed: method=StartDiscovery, adapter_path={self._adapter_path}, error={error_str}",
+                LOG__DEBUG,
+            )
             # Gracefully degrade when the adapter or BlueZ stub lacks the
             # StartDiscovery method (common on CI runners without real BlueZ
             # or when the test-suite injects a minimal stub).  Treat the
@@ -148,8 +155,15 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
     def stop_discovery(self):
         try:
             self._adapter.StopDiscovery()
-        except dbus.exceptions.DBusException:
-            pass  # not fatal if discovery already stopped
+        except dbus.exceptions.DBusException as e:
+            # Preserve behavior (ignore), but add structured diagnostics.
+            error_name = e.get_dbus_name() or "unknown"
+            error_msg = e.get_dbus_message() or ""
+            error_str = f"{error_name}: {error_msg}" if error_msg else error_name
+            print_and_log(
+                f"[DEBUG] StopDiscovery failed: method=StopDiscovery, adapter_path={self._adapter_path}, error={error_str}",
+                LOG__DEBUG,
+            )
         # The original monolith did not emit a line for the stop event; skip
         # this message to keep log parity.
         # print_and_log("[*] Discovery stopped", LOG__DEBUG)

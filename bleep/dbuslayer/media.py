@@ -69,7 +69,10 @@ class MediaControl:
             self._properties = dbus.Interface(self._object, DBUS_PROPERTIES)
             self._introspection = self._interface.Introspect(dbus_interface=INTROSPECT_INTERFACE)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] MediaControl interface not available: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] MediaControl interface not available ({device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
             
     def get_properties(self) -> Dict[str, Any]:
@@ -84,7 +87,10 @@ class MediaControl:
             props = self._properties.GetAll(MEDIA_CONTROL_INTERFACE)
             return dbus_to_python(props)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get MediaControl properties: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaControl properties ({self.device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
     
     def is_connected(self) -> bool:
@@ -99,7 +105,10 @@ class MediaControl:
             connected = self._properties.Get(MEDIA_CONTROL_INTERFACE, "Connected")
             return bool(connected)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get Connected property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaControl.Connected ({self.device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
     
     def get_player(self) -> Optional[str]:
@@ -114,7 +123,10 @@ class MediaControl:
             player = self._properties.Get(MEDIA_CONTROL_INTERFACE, "Player")
             return str(player) if player else None
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get Player property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaControl.Player ({self.device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
 
     # ------------------------------------------------------------------
@@ -127,7 +139,10 @@ class MediaControl:
             print_and_log(f"[+] MediaControl.{method}() executed", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] MediaControl.{method}() failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] MediaControl.{method}() failed ({self.device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
 
     def play(self) -> bool:
@@ -178,7 +193,10 @@ class MediaEndpoint:
             self._properties = dbus.Interface(self._object, DBUS_PROPERTIES)
             self._introspection = self._interface.Introspect(dbus_interface=INTROSPECT_INTERFACE)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] MediaEndpoint interface not available: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] MediaEndpoint interface not available ({endpoint_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
     
     def get_properties(self) -> Dict[str, Any]:
@@ -193,7 +211,10 @@ class MediaEndpoint:
             props = self._properties.GetAll(MEDIA_ENDPOINT_INTERFACE)
             return dbus_to_python(props)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get MediaEndpoint properties: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaEndpoint properties ({self.endpoint_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
     
     def get_uuid(self) -> Optional[str]:
@@ -208,7 +229,10 @@ class MediaEndpoint:
             uuid = self._properties.Get(MEDIA_ENDPOINT_INTERFACE, "UUID")
             return str(uuid) if uuid else None
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get UUID property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaEndpoint.UUID ({self.endpoint_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
     
     def get_codec(self) -> Optional[int]:
@@ -223,7 +247,10 @@ class MediaEndpoint:
             codec = self._properties.Get(MEDIA_ENDPOINT_INTERFACE, "Codec")
             return int(codec) if codec is not None else None
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get Codec property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaEndpoint.Codec ({self.endpoint_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
     
     def get_capabilities(self) -> Optional[bytes]:
@@ -238,7 +265,10 @@ class MediaEndpoint:
             capabilities = self._properties.Get(MEDIA_ENDPOINT_INTERFACE, "Capabilities")
             return bytes(capabilities) if capabilities else None
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get Capabilities property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaEndpoint.Capabilities ({self.endpoint_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
     
     def get_device(self) -> Optional[str]:
@@ -253,7 +283,10 @@ class MediaEndpoint:
             device = self._properties.Get(MEDIA_ENDPOINT_INTERFACE, "Device")
             return str(device) if device else None
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get Device property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaEndpoint.Device ({self.endpoint_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
 
     def _get_property(self, name: str):
@@ -261,7 +294,10 @@ class MediaEndpoint:
             value = self._properties.Get(MEDIA_ENDPOINT_INTERFACE, name)
             return dbus_to_python(value)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get {name} property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaEndpoint.{name} ({self.endpoint_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
 
     # Convenience getters -------------------------------------------------
@@ -312,7 +348,10 @@ class MediaTransport:
             self._properties = dbus.Interface(self._object, DBUS_PROPERTIES)
             self._introspection = self._interface.Introspect(dbus_interface=INTROSPECT_INTERFACE)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] MediaTransport interface not available: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] MediaTransport interface not available ({transport_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
     
     # ------------------------------------------------------------------
@@ -324,7 +363,10 @@ class MediaTransport:
             value = self._properties.Get(MEDIA_TRANSPORT_INTERFACE, name)
             return dbus_to_python(value)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get {name} property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaTransport.{name} ({self.transport_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
 
     def _set_property(self, name: str, value) -> bool:
@@ -333,7 +375,10 @@ class MediaTransport:
             print_and_log(f"[+] Set {name} to {value}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to set {name} property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to set MediaTransport.{name} ({self.transport_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
 
     # ------------------------------------------------------------------
@@ -387,7 +432,10 @@ class MediaTransport:
             props = self._properties.GetAll(MEDIA_TRANSPORT_INTERFACE)
             return dbus_to_python(props)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get MediaTransport properties: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaTransport properties ({self.transport_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
     
     def get_device(self) -> Optional[str]:
@@ -402,7 +450,10 @@ class MediaTransport:
             device = self._properties.Get(MEDIA_TRANSPORT_INTERFACE, "Device")
             return str(device) if device else None
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get Device property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaTransport.Device ({self.transport_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
     
     def get_state(self) -> Optional[str]:
@@ -417,7 +468,10 @@ class MediaTransport:
             state = self._properties.Get(MEDIA_TRANSPORT_INTERFACE, "State")
             return str(state) if state else None
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get State property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaTransport.State ({self.transport_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
     
     def get_volume(self) -> Optional[int]:
@@ -432,7 +486,10 @@ class MediaTransport:
             volume = self._properties.Get(MEDIA_TRANSPORT_INTERFACE, "Volume")
             return int(volume) if volume is not None else None
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get Volume property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaTransport.Volume ({self.transport_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
     
     def set_volume(self, volume: int) -> bool:
@@ -457,7 +514,10 @@ class MediaTransport:
             print_and_log(f"[+] Set volume to {volume}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to set Volume property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to set MediaTransport.Volume ({self.transport_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
     
     def acquire(self) -> Tuple[int, int, int]:
@@ -477,7 +537,10 @@ class MediaTransport:
             fd, read_mtu, write_mtu = self._interface.Acquire()
             return int(fd), int(read_mtu), int(write_mtu)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to acquire transport: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to acquire transport ({self.transport_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
     
     def release(self) -> None:
@@ -491,7 +554,10 @@ class MediaTransport:
         try:
             self._interface.Release()
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to release transport: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to release transport ({self.transport_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
 
 
@@ -515,7 +581,10 @@ class MediaPlayer:
             self._properties = dbus.Interface(self._object, DBUS_PROPERTIES)
             self._introspection = self._interface.Introspect(dbus_interface=INTROSPECT_INTERFACE)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] MediaPlayer interface not available: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] MediaPlayer interface not available ({player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
     
     def get_properties(self) -> Dict[str, Any]:
@@ -530,7 +599,10 @@ class MediaPlayer:
             props = self._properties.GetAll(MEDIA_PLAYER_INTERFACE)
             return dbus_to_python(props)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get MediaPlayer properties: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaPlayer properties ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
     
     def get_name(self) -> Optional[str]:
@@ -545,7 +617,10 @@ class MediaPlayer:
             name = self._properties.Get(MEDIA_PLAYER_INTERFACE, "Name")
             return str(name) if name else None
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get Name property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaPlayer.Name ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
     
     def get_status(self) -> Optional[str]:
@@ -560,7 +635,10 @@ class MediaPlayer:
             status = self._properties.Get(MEDIA_PLAYER_INTERFACE, "Status")
             return str(status) if status else None
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get Status property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaPlayer.Status ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
 
     def get_position(self) -> int:
@@ -578,7 +656,10 @@ class MediaPlayer:
             position = self._properties.Get(MEDIA_PLAYER_INTERFACE, "Position")
             return int(position) if position else None
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Falied to get Position property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaPlayer.Position ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
 
     def set_position(self, position: int) -> bool:
         """Set the current playback position (in milliseconds)
@@ -630,7 +711,10 @@ class MediaPlayer:
             return True
         except dbus.exceptions.DBusException as e:
             # Some players expose Position as read-only – map error and fall back.
-            print_and_log(f"[-] Failed to set Position property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to set MediaPlayer.Position ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
     
     def get_track(self) -> Dict[str, Any]:
@@ -645,7 +729,10 @@ class MediaPlayer:
             track = self._properties.Get(MEDIA_PLAYER_INTERFACE, "Track")
             return dbus_to_python(track) if track else {}
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get Track property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaPlayer.Track ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return {}
     
     def play(self) -> bool:
@@ -661,7 +748,10 @@ class MediaPlayer:
             print_and_log(f"[+] Started playback", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to start playback: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to start playback ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
     
     def pause(self) -> bool:
@@ -677,7 +767,10 @@ class MediaPlayer:
             print_and_log(f"[+] Paused playback", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to pause playback: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to pause playback ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
     
     def stop(self) -> bool:
@@ -693,7 +786,10 @@ class MediaPlayer:
             print_and_log(f"[+] Stopped playback", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to stop playback: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to stop playback ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
     
     def next(self) -> bool:
@@ -709,7 +805,10 @@ class MediaPlayer:
             print_and_log(f"[+] Skipped to next track", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to skip to next track: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to skip to next track ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
     
     def previous(self) -> bool:
@@ -725,7 +824,10 @@ class MediaPlayer:
             print_and_log(f"[+] Skipped to previous track", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to skip to previous track: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to skip to previous track ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
     
     def fast_forward(self) -> bool:
@@ -741,7 +843,10 @@ class MediaPlayer:
             print_and_log(f"[+] Fast-forwarding", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to fast-forward: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to fast-forward ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
     
     def rewind(self) -> bool:
@@ -757,7 +862,10 @@ class MediaPlayer:
             print_and_log(f"[+] Rewinding", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to rewind: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to rewind ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
 
     # ------------------------------------------------------------------
@@ -770,7 +878,10 @@ class MediaPlayer:
             value = self._properties.Get(MEDIA_PLAYER_INTERFACE, name)
             return dbus_to_python(value)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get {name} property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaPlayer.{name} ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
 
     def _set_property(self, name: str, value) -> bool:
@@ -780,7 +891,10 @@ class MediaPlayer:
             print_and_log(f"[+] Set {name} to {value}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to set {name} property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to set MediaPlayer.{name} ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
 
     # ------------------------------------------------------------------
@@ -851,7 +965,10 @@ class MediaPlayer:
             print_and_log(f"[+] {method}() executed", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] {method}() failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] {method}() failed ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
 
     def press(self, avc_key: int) -> bool:

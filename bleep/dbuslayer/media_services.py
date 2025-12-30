@@ -37,7 +37,13 @@ class MediaService:
             self._interface = dbus.Interface(self._object, MEDIA_INTERFACE)
             self._properties = dbus.Interface(self._object, DBUS_PROPERTIES)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Media1 interface unavailable on {self.service_path}: {str(e)}", LOG__DEBUG)
+            error_name = e.get_dbus_name() or "unknown"
+            error_msg = e.get_dbus_message() or ""
+            error_str = f"{error_name}: {error_msg}" if error_msg else error_name
+            print_and_log(
+                f"[-] Media1 interface unavailable: object_path={self.service_path}, error={error_str}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
 
     # ------------------------------------------------------------------
@@ -58,7 +64,13 @@ class MediaService:
             print_and_log(f"[+] Registered MediaEndpoint {endpoint_path}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] RegisterEndpoint failed: {str(e)}", LOG__DEBUG)
+            error_name = e.get_dbus_name() or "unknown"
+            error_msg = e.get_dbus_message() or ""
+            error_str = f"{error_name}: {error_msg}" if error_msg else error_name
+            print_and_log(
+                f"[-] RegisterEndpoint failed: method=RegisterEndpoint, endpoint_path={endpoint_path}, error={error_str}",
+                LOG__DEBUG,
+            )
             return False
 
     def unregister_endpoint(self, endpoint_path: str) -> bool:
@@ -67,7 +79,13 @@ class MediaService:
             print_and_log(f"[+] Unregistered MediaEndpoint {endpoint_path}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] UnregisterEndpoint failed: {str(e)}", LOG__DEBUG)
+            error_name = e.get_dbus_name() or "unknown"
+            error_msg = e.get_dbus_message() or ""
+            error_str = f"{error_name}: {error_msg}" if error_msg else error_name
+            print_and_log(
+                f"[-] UnregisterEndpoint failed: method=UnregisterEndpoint, endpoint_path={endpoint_path}, error={error_str}",
+                LOG__DEBUG,
+            )
             return False
 
     def register_player(self, player_path: str) -> bool:
@@ -77,7 +95,10 @@ class MediaService:
             print_and_log(f"[+] Registered MediaPlayer {player_path}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] RegisterPlayer failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] RegisterPlayer failed ({player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
 
     def unregister_player(self, player_path: str) -> bool:
@@ -86,7 +107,10 @@ class MediaService:
             print_and_log(f"[+] Unregistered MediaPlayer {player_path}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] UnregisterPlayer failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] UnregisterPlayer failed ({player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
 
     # ------------------------------------------------------------------

@@ -32,7 +32,13 @@ class MediaFolder:
             self._interface = dbus.Interface(self._object, MEDIA_FOLDER_INTERFACE)
             self._properties = dbus.Interface(self._object, DBUS_PROPERTIES)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] MediaFolder unavailable: {str(e)}", LOG__DEBUG)
+            error_name = e.get_dbus_name() or "unknown"
+            error_msg = e.get_dbus_message() or ""
+            error_str = f"{error_name}: {error_msg}" if error_msg else error_name
+            print_and_log(
+                f"[-] MediaFolder unavailable: object_path={folder_path}, error={error_str}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
 
     # Internal helper ----------------------------------------------------
@@ -41,7 +47,13 @@ class MediaFolder:
             value = self._properties.Get(MEDIA_FOLDER_INTERFACE, name)
             return dbus_to_python(value)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get {name} property: {str(e)}", LOG__DEBUG)
+            error_name = e.get_dbus_name() or "unknown"
+            error_msg = e.get_dbus_message() or ""
+            error_str = f"{error_name}: {error_msg}" if error_msg else error_name
+            print_and_log(
+                f"[-] Failed to get MediaFolder property: property={name}, object_path={self.folder_path}, error={error_str}",
+                LOG__DEBUG,
+            )
             return None
 
     # Public helpers -----------------------------------------------------
@@ -61,7 +73,13 @@ class MediaFolder:
             result = self._interface.ListItems(dbus.Dictionary(filter_dict, signature="sv"))
             return [(str(path), dbus_to_python(props)) for path, props in result]
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] ListItems failed: {str(e)}", LOG__DEBUG)
+            error_name = e.get_dbus_name() or "unknown"
+            error_msg = e.get_dbus_message() or ""
+            error_str = f"{error_name}: {error_msg}" if error_msg else error_name
+            print_and_log(
+                f"[-] ListItems failed: method=ListItems, object_path={self.folder_path}, error={error_str}",
+                LOG__DEBUG,
+            )
             return []
 
     def change_folder(self, folder_path: str) -> bool:
@@ -70,7 +88,10 @@ class MediaFolder:
             print_and_log(f"[+] Changed folder to {folder_path}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] ChangeFolder failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] ChangeFolder failed ({self.folder_path} -> {folder_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
 
     def search(self, value: str, attributes: Optional[List[str]] = None):
@@ -81,7 +102,10 @@ class MediaFolder:
             folder = self._interface.Search(dbus.String(value), dbus.Dictionary(filter_dict, signature="sv"))
             return str(folder)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Search failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Search failed ({self.folder_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
 
     # Properties
@@ -103,7 +127,10 @@ class MediaItem:
             self._interface = dbus.Interface(self._object, MEDIA_ITEM_INTERFACE)
             self._properties = dbus.Interface(self._object, DBUS_PROPERTIES)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] MediaItem unavailable: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] MediaItem unavailable ({item_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
 
     # Internal helper
@@ -112,7 +139,10 @@ class MediaItem:
             value = self._properties.Get(MEDIA_ITEM_INTERFACE, name)
             return dbus_to_python(value)
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Failed to get {name} property: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Failed to get MediaItem.{name} ({self.item_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
 
     # Methods
@@ -122,7 +152,10 @@ class MediaItem:
             print_and_log(f"[+] Play MediaItem {self.item_path}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Play failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Play failed ({self.item_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
 
     def add_to_now_playing(self) -> bool:
@@ -131,7 +164,10 @@ class MediaItem:
             print_and_log(f"[+] Added MediaItem to now playing", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] AddToNowPlaying failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] AddToNowPlaying failed ({self.item_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
 
     # Property helpers

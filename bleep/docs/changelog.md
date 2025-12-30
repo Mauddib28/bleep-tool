@@ -1,3 +1,176 @@
+## v2.4.6 – Comprehensive D-Bus Monitoring, Agent Diagnostics, SDP Storage & Error Visibility (2025-12-30)
+
+### Added
+* **SDP Record Storage (Schema v7)** – Full SDP record snapshot storage:
+  * **New `sdp_records` table**: Stores complete SDP record snapshots with all attributes (Service Record Handle, Profile Descriptor List, Service Version, Service Description, Protocol Descriptors, raw record)
+  * **Automatic storage**: SDP records are automatically stored when discovered via `discover_services_sdp()`, `discover_services_sdp_connectionless()`, or D-Bus `GetServiceRecords()` method
+  * **Database integration**: `get_device_detail()` and `export_device_data()` now include SDP records in their output
+  * **Backward compatibility**: `classic_services` table (basic UUID/channel mapping) continues to exist alongside `sdp_records` for different use cases
+  * **Schema migration**: Automatic migration from v6 to v7 creates the new table and indexes
+  * **Files Modified**: `bleep/core/observations.py` (added `sdp_records` table, `upsert_sdp_record()` function, migration v6→v7, updated query functions), `bleep/ble_ops/classic_sdp.py` (added `_store_sdp_records()` helper, integrated storage into discovery functions), `bleep/docs/observation_db.md`, `bleep/docs/observation_db_schema.md` (documentation updates)
+* **Agent + AgentManager Verbosity / Diagnosability Enhancements** – Comprehensive error visibility improvements:
+  * **Agent Error Handling**: Enhanced `_setup_agent_manager()` and `register()` methods in `bleep/dbuslayer/agent.py` to use consistent `name: message` error format with full context (agent_path, capabilities, default)
+  * **Device Connect/Pair Error Context**: Improved error logging in `device_classic.py` and `device_le.py` to include method name, device path, adapter name, and full D-Bus error details
+  * **IO Handler Context Logging**: Enhanced all IO handlers (`CliIOHandler`, `ProgrammaticIOHandler`, `AutoAcceptIOHandler`) to log handler type, auto_accept status, and default values when prompting/auto-accepting (no secrets logged)
+  * **Debug Mode Agent Commands**: Enhanced `agent status` command to show comprehensive agent details (class, path, registered status, capabilities, default_requested, auto_accept, io_handler type)
+  * **Error Clarity Expansion**: Updated `media_services.py`, `media_browse.py`, `obex_pbap.py`, and `manager.py` to use consistent `name: message` error format instead of `str(e)`, preserving full D-Bus error context
+  * **Error Message Preservation**: Verified and enhanced `bleep/core/errors.py` to preserve D-Bus message payloads for all agent-relevant exceptions (NotPermitted, NotAuthorized, Failed, InProgress, UnknownObject)
+  * **Files Modified**: `bleep/dbuslayer/agent.py` (added `_format_dbus_error` helper, enhanced error logging), `bleep/dbuslayer/device_classic.py` (enhanced connect/pair error logging), `bleep/dbuslayer/device_le.py` (enhanced connect/pair error logging), `bleep/dbuslayer/agent_io.py` (enhanced handler context logging), `bleep/modes/agent.py` (enhanced agent registration logging), `bleep/modes/debug.py` (enhanced agent status command), `bleep/dbuslayer/media_services.py`, `bleep/dbuslayer/media_browse.py`, `bleep/dbuslayer/obex_pbap.py`, `bleep/dbuslayer/manager.py` (consistent error formatting)
+* **Agent Method Entry Point Logging** – Comprehensive visibility into D-Bus method invocations:
+  * All agent methods now log when called by BlueZ: `RequestPinCode`, `DisplayPinCode`, `RequestPasskey`, `DisplayPasskey`, `RequestConfirmation`, `RequestAuthorization`, `AuthorizeService`, `Release`, `Cancel`
+  * Logs include device path, agent path, and registration status for complete diagnostic context
+  * Enables verification that BLEEP's agent is actually being used by BlueZ during pairing
+  * Logs written to `LOG__AGENT` (`/tmp/bti__logging__agent.txt` or `~/.bleep/logs/agent.log`)
+* **Agent Registration Status Logging** – Enhanced registration diagnostics:
+  * Detailed logging during agent registration including path, capabilities, and default agent request status
+  * Logs registration success/failure with full D-Bus error context
+  * Logs `RequestDefaultAgent` calls and any failures (non-fatal)
+  * Provides complete registration lifecycle visibility
+* **Agent Status Command** – New diagnostic tool for agent verification:
+  * `bleep agent --status` command to check if BLEEP agent is registered and active
+  * Displays agent class, path, and registration status
+  * Provides guidance on agent usage and log file locations
+  * Exit code indicates registration status (0 = registered, 1 = not registered)
+* **Unified D-Bus Event Aggregator** – Comprehensive D-Bus communication visibility (Complete & Verified):
+  * **Unified Event Capture**: New `DBusEventCapture` dataclass replaces separate `SignalCapture` and `MethodCallCapture` structures
+  * **Event Aggregator**: New `DBusEventAggregator` class provides centralized storage and correlation for all D-Bus event types
+  * **Complete Coverage**: Captures signals, method calls, method returns, and errors in a single unified system
+  * **General Catch-All Watcher**: Monitors all BlueZ/Agent/AgentManager communications on the system (not limited to BLEEP's agent)
+  * **Human-Readable + Detailed Logging**: Follows error handling pattern (`name: msg`) with summary line + detailed line preserving full D-Bus message context
+  * **Event Correlation**: Correlates method calls with their returns/errors via serial numbers, and events by path relationships
+  * **Query API**: `get_recent_events()`, `correlate_event()`, `get_method_call_chain()` for accessing aggregated events
+  * **Special Highlighting**: PIN code requests, authentication errors, and agent registration events are specially highlighted
+  * **Original Message Preservation**: All original D-Bus messages preserved in `DBusEventCapture.original_message` for detailed analysis
+  * **Automatic Enablement**: Automatically enabled when agent is registered via `enable_unified_dbus_monitoring()`
+  * **Graceful Degradation**: Handles permission issues gracefully (eavesdropping may require root/D-Bus policy changes)
+  * **Backward Compatibility**: Existing `enable_agent_method_call_monitoring()` delegates to unified system; old methods retained but deprecated
+  * **Comprehensive Test Suite**: Created complete test coverage with 80+ test cases covering all functionality
+  * **Integration Testing**: Real D-Bus interaction tests with BlueZ operations
+  * **Verification**: Tested against `dbus-monitor` for accuracy validation
+  * **D-Bus Message Type Constants Fix**: Fixed AttributeError by defining message type constants in `bleep/core/constants.py` and using them instead of non-existent `dbus.lowlevel.Message.*` attributes
+  * **Enhanced Error Logging**: Error handler now transparently shows exception type and message (e.g., `AttributeError: type object 'dbus.lowlevel.Message' has no attribute 'SIGNAL'`) for better debugging
+  * **Files Modified**: `bleep/dbuslayer/signals.py` (added `DBusEventCapture`, `DBusEventAggregator`, unified monitoring, fixed message type constants), `bleep/dbuslayer/agent.py` (updated to use unified monitoring), `bleep/core/constants.py` (added D-Bus message type constants)
+  * **Test Files Added**: `tests/test_unified_dbus_event_aggregator.py`, `tests/test_unified_dbus_integration.py`, `tests/test_unified_dbus_graceful_degradation.py`
+  * **Status**: Fully implemented, tested, and verified working in production use
+* **Debug Mode – `ckeep` command** – Classic Bluetooth keep-alive functionality (Partially Complete):
+  * Opens an RFCOMM socket to keep a Classic (BR/EDR) ACL alive after `cconnect`.
+  * Channel selection: `--first`, `--svc <name|uuid>`, or explicit numeric channel.
+  * `ckeep --close` closes the socket and allows BlueZ to drop the link.
+  * Auto-closes socket on `quit` command.
+  * Enhanced error handling preserves BlueZ D-Bus error details (e.g., `org.bluez.Error.Failed: br-connection-unknown`) for better diagnostics.
+  * All error paths now use `name: message` format following BLEEP error handling patterns.
+  * **Status**: Error handling and logging are functional. Full functionality testing and validation is blocked by Classic device connection issues. Requires a Bluetooth Classic target device with no pairing/PIN requirements to properly validate RFCOMM socket operations and ACL keep-alive functionality. Further work pending appropriate test hardware.
+
+### Fixed
+* **AGENT_INTERFACE Constant** – Critical fix for agent functionality:
+  * **Root Cause**: `AGENT_INTERFACE` was incorrectly set to `"org.bluez.mesh.ProvisioningAgent1"` (mesh provisioning interface) instead of `"org.bluez.Agent1"` (standard pairing agent interface)
+  * **Impact**: All agent D-Bus method decorators used the wrong interface, preventing BlueZ from recognizing agent methods during pairing operations
+  * **Solution**: Corrected `AGENT_INTERFACE` to `"org.bluez.Agent1"` in `bleep/bt_ref/constants.py` (old value preserved as comment for historical tracking)
+  * **Files Modified**: `bleep/bt_ref/constants.py` (line 44-45)
+  * **Verification**: Agent methods now correctly register with BlueZ's standard pairing agent interface
+* **Unified D-Bus Monitoring – Critical Syntax and Logic Fixes**:
+  * **Root Cause**: `enable_agent_method_call_monitoring()` had duplicate implementation code after delegation, causing syntax errors and duplicate message filter registration
+  * **Impact**: 
+    * Invalid docstring in middle of function body (line 1248)
+    * Duplicate message filters registered (both unified and old handlers active simultaneously)
+    * Duplicate logging of same events
+    * Unreachable code after delegation call
+  * **Solution**: 
+    * Removed duplicate code (lines 1248-1275) from `enable_agent_method_call_monitoring()` - function now only delegates to unified monitoring
+    * Improved `_is_relevant_message()` filter to better detect BlueZ messages:
+      * Added ObjectManager signal detection at root path (`/`)
+      * Fixed handling of signals with null destination
+      * Removed flawed bus name heuristic (bus names like `:1.149` don't contain "bluez")
+      * Improved path-based filtering for all message types
+    * Refined match strings to reduce overlap and improve specificity:
+      * Replaced `sender='org.bluez'` signal matching with `path_namespace='/org/bluez'` (more reliable)
+      * Added explicit ObjectManager signal matching
+      * Removed redundant match strings that overlapped
+      * Made eavesdrop rules more specific (interface-based instead of broad)
+  * **Files Modified**: `bleep/dbuslayer/signals.py` (lines 1237-1275, 925-965, 788-808)
+  * **Verification**: 
+    * Syntax check passed (`py_compile`)
+    * Runtime verification passed (import, instantiation, method calls)
+    * No duplicate filters registered
+    * Improved message detection for BlueZ communications
+* **Debug Mode – `ckeep` reliability** – Removed duplicated execution blocks inside `_cmd_ckeep()` so the command runs a single, consistent code path.
+* **Debug Mode – `ckeep` error handling** – Enhanced error messages to preserve BlueZ D-Bus error details:
+  * Created `_format_dbus_error()` helper function to format D-Bus exceptions as `name: message` following BLEEP error handling patterns.
+  * Updated all error paths in `_cmd_ckeep()` to use enhanced error formatting (connect failures, SDP discovery failures, socket open failures).
+  * Error messages now show full D-Bus error context (e.g., `org.bluez.Error.Failed: br-connection-unknown`) for better troubleshooting.
+  * **Note**: Error handling and logging are fully functional. Core RFCOMM socket functionality requires further validation with a Classic device that has no pairing/PIN requirements.
+* **Error visibility** – Preserve BlueZ `org.bluez.Error.Failed` message details (e.g. `br-connection-unknown`) in mapped Bleep errors for easier troubleshooting.
+* **Agent + AgentManager diagnostics** – Improve verbosity across agent registration, connect/pair failures, and IO handlers:
+  * AgentManager setup/register failures now include D-Bus error name/message + agent context.
+  * Classic/LE connect/pair logging now includes device path + D-Bus error name/message.
+  * Programmatic/AutoAccept IO handlers now include handler context (auto_accept + defaults used).
+  * Debug mode adds `agent status|register|unregister` for quick verification.
+* **Error clarity expansion** – Preserve D-Bus name/message across additional subsystems:
+  * Default D-Bus error mapping now retains message payload in the generic fall-through path.
+  * Media (Media1/MediaFolder/MediaItem) wrappers log structured `name: message` instead of `str(e)`.
+  * OBEX PBAP errors now include D-Bus `name` + `message` in raised diagnostics.
+  * LE manager StartDiscovery fallback now logs the underlying D-Bus `name: message`.
+  * GATT wrappers (Characteristic/Descriptor/Service) emit structured D-Bus `name: message` for otherwise-silent failure paths.
+  * Media wrappers now consistently avoid `str(e)` logs; all D-Bus failures include object path + `name: message`.
+  * Classic/LE device wrappers and agent unregister now preserve D-Bus `name: message` on otherwise low-signal failure paths (trust/disconnect/profile ops/type-check fallbacks).
+  * LE discovery manager now logs StopDiscovery failures with adapter path + D-Bus `name: message` (still non-fatal).
+  * `ble_ops/*` callers now preserve D-Bus `name: message` in otherwise generic exception logs (scan/pokey/bruteforce enumeration and classic SDP/PBAP D-Bus paths).
+  * **Task A complete** – Completed “silent failure audit + targeted verbosity upgrades” across high-impact D-Bus/GATT/media/scan paths (logging-only; no behavior changes).
+* **bt_ref error mapping** – `bleep/bt_ref/error_map.py` now uses core-first D-Bus decoding (name+message) while preserving the `(code, category)` / `(code, recovered)` contract and recovery semantics.
+* **bt_ref recovery accuracy** – Fix tuple-return recovery handling and add disciplined retry helper:
+  * Recovery helpers now treat tuple-return failures `(code, False)` as actual failures (previously could report recovered when it wasn’t).
+  * Added `attempt_operation_with_recovery()` to centralize fixed-delay, low-cap retry behavior and avoid ad-hoc retry loops.
+* **BLEEPError transparency** – Improve core D-Bus exception mapping to preserve actionable payloads:
+  * `NotAuthorizedError` preserves the original D-Bus message as a reason (no “blanding”).
+  * `ServiceUnknown` mapping now surfaces the D-Bus message payload when present.
+  * `UnknownObject` mapping preserves `name: message` instead of forcing an unrelated “Device not found” message.
+  * Fixed `handle_dbus_exception()` to raise the mapped `BLEEPError` (previously attempted to unpack a non-tuple).
+  * **Error mapping deprecation markers (B5)** – Marked duplicate/legacy error mapping systems for future consolidation:
+    * `bt_ref/error_map.py::DBUS_ERROR_MAP` deprecated as primary source (now refinement-only fallback).
+    * `core/error_handling.py::evaluate__dbus_error()` deprecated in favor of canonical `decode_dbus_error()`.
+    * Added documentation identifying consolidation opportunities within `core/error_handling.py`.
+  * **Legacy module removal (B5.2)** – Removed unused `bleep/dbus/device.py` after comprehensive audit confirmed zero imports/usage:
+    * Phase 1 audit: AST-based static analysis and runtime verification confirmed no artifacts of `bleep.dbus.device` imports in codebase
+    * All actual usage imports from `bleep.dbuslayer.device_le` (refactored implementation)
+    * Direct removal executed (Option A) - no compatibility shim needed
+    * Verified no regressions: all key entrypoints import successfully after removal
+
+### Fixed
+* **PIN Code Request Logging Visibility** – Resolved issue where PIN code requests from BlueZ were not visible in BLEEP logs:
+  * **Root Cause**: Agent methods were being called but entry point logging was missing, making it unclear if agent was selected by BlueZ
+  * **Solution**: Added comprehensive entry point logging to all agent methods and enhanced registration status logging
+  * **Impact**: Users can now verify agent selection and see complete PIN code request flow in agent logs
+  * **Verification**: Check `/tmp/bti__logging__agent.txt` for `"[*] RequestPinCode METHOD CALLED"` messages during pairing
+
+### Known issues / Investigations
+* **Pairing prompts not shown in Bleep terminal (Classic / legacy PIN flows)**:
+  * `btmon` may show `PIN Code Request`, but no interactive prompt appears in the Bleep terminal in some setups.
+  * **Status**: Enhanced logging now provides visibility into whether BLEEP's agent is being called. Use `bleep agent --status` and check agent logs to verify agent selection.
+  * **Diagnosis**: If `RequestPinCode METHOD CALLED` logs appear, agent is working but may need different IO handler. If logs don't appear, BlueZ is using a different agent.
+* **`ckeep` keep-alive functionality requires further work**:
+  * Error handling and logging are fully functional and working as designed.
+  * Full functionality testing and validation is blocked by Classic device connection issues.
+  * Requires a Bluetooth Classic target device with no pairing/PIN requirements to properly validate RFCOMM socket operations and ACL keep-alive functionality.
+  * Core connection/socket operations need validation with appropriate hardware before functionality can be confirmed working end-to-end.
+
+---
+
+## v2.4.5 – Agent Mode CLI Fix (2025-12-16)
+
+### Fixed
+* **Agent Mode CLI Routing** – Fixed critical bug preventing agent mode from working via CLI:
+  * **Root Cause**: argparse subparser argument name conflict - `args.mode` overwritten by `--mode` argument value, causing `args.mode == "agent"` check to never match
+  * **Solution**: Changed routing check from `args.mode == "agent"` to `sys.argv[1] == "agent"` and pass `sys.argv[2:]` to agent mode
+  * **Files Modified**: `bleep/cli.py` (routing fix at line 702, argument expansion at lines 72-95)
+  * **Impact**: All 12 agent mode features now accessible via CLI (previously only 2 worked)
+
+### Enhanced
+* **Agent Mode CLI Arguments** – Exposed all agent mode features via CLI:
+  * Expanded `--mode` choices to include `enhanced` and `pairing` (previously only simple/interactive)
+  * Added `--cap`, `--default`, `--auto-accept`, `--pair`, `--trust`, `--untrust`, `--list-trusted`, `--list-bonded`, `--remove-bond`, `--storage-path`, `--timeout` arguments
+  * All arguments passed through to agent mode's parser for processing
+  * Improved `bleep agent --help` output with complete option list
+
 ## v2.4.4 – Database Foreign Key Constraint Fix (2025-11-27)
 
 ### Fixed

@@ -12,7 +12,11 @@ Welcome to the official documentation hub for **BLEEP – Bluetooth Landscape Ex
 - [User mode](user_mode.md)
 - [Agent mode](agent_mode.md)
 - [Pairing agent](pairing_agent.md)
+- [Unified D-Bus Event Aggregator](unified_dbus_event_aggregator.md)
 - [Observation database](observation_db.md)
+- [Assets-of-Interest (AoI) Mode](aoi_mode.md)
+  - [AoI Security Analysis Algorithms](aoi_security_algorithms.md)
+  - [AoI Customization Guide](aoi_customization_guide.md)
 - [Change log](changelog.md)
 - [Central TODO tracker](todo_tracker.md)
 

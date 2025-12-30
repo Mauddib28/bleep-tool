@@ -48,12 +48,28 @@ def controller_stall_mitigation(mac: str) -> None:
 # ---------------------------------------------------------------------------
 # Rich BlueZ/DBus → RESULT_ERR mapping  (monolith table distilled)
 # ---------------------------------------------------------------------------
+# **CANONICAL DECODER**: This is the single source of truth for D-Bus error
+# name/message → RESULT_ERR code mapping. All other error mapping systems
+# should delegate to decode_dbus_error() or be consolidated into this module.
+#
+# TODO (B5 consolidation): The following systems in this file duplicate/overlap
+# with decode_dbus_error() and should be refactored to delegate:
+#   - system_dbus__error_handling_service.evaluate__dbus_error() (lines ~156-188)
+#     has its own name→code mapping logic that should use decode_dbus_error()
+#   - BlueZErrorHandler.ERROR_MESSAGES (line ~318) is user-friendly text only
+#     (not code mapping), but could be enhanced to use decode_dbus_error() for
+#     code derivation before formatting messages
 
 _DBUS_ERROR_NAME_MAP = {
     # Generic failures ---------------------------------------------------
     "org.freedesktop.DBus.Error.NoReply": RESULT_ERR_NO_REPLY,
     "org.freedesktop.DBus.Error.UnknownObject": RESULT_ERR_UNKNOWN_OBJECT,
     "org.freedesktop.DBus.Error.UnknownMethod": RESULT_ERR_METHOD_SIGNATURE_NOT_EXIST,
+    # bt_ref parity / common DBus names ---------------------------------
+    "org.freedesktop.DBus.Error.AccessDenied": RESULT_ERR_ACCESS_DENIED,
+    "org.freedesktop.DBus.Error.InvalidArgs": RESULT_ERR_BAD_ARGS,
+    "org.freedesktop.DBus.Error.ServiceUnknown": RESULT_ERR_UNKNOWN_SERVCE,
+    "org.freedesktop.DBus.Error.Failed": RESULT_ERR,
     # BlueZ specific ------------------------------------------------------
     "org.bluez.Error.NotConnected": RESULT_ERR_NOT_CONNECTED,
     "org.bluez.Error.Failed": RESULT_ERR,
@@ -62,8 +78,13 @@ _DBUS_ERROR_NAME_MAP = {
     "org.bluez.Error.NotSupported": RESULT_ERR_NOT_SUPPORTED,
     "org.bluez.Error.InProgress": RESULT_ERR_ACTION_IN_PROGRESS,
     "org.bluez.Error.InvalidArguments": RESULT_ERR_BAD_ARGS,
+    "org.bluez.Error.InvalidValueLength": RESULT_ERR_BAD_ARGS,
+    "org.bluez.Error.AlreadyConnected": RESULT_ERR_WRONG_STATE,
     # GATT specific – BlueZ sometimes surfaces as InvalidArguments
     "org.bluez.Error.NotFound": RESULT_ERR_NOT_FOUND,
+    # bt_ref parity / common BlueZ resource names ------------------------
+    "org.bluez.Error.NotAvailable": RESULT_ERR_NOT_FOUND,
+    "org.bluez.Error.DoesNotExist": RESULT_ERR_NOT_FOUND,
 }
 
 # Fallback substring search when name not present (BlueZ mixes English strings)
@@ -146,7 +167,15 @@ class system_dbus__error_handling_service:
     def evaluate__dbus_error(
         self, error: dbus.exceptions.DBusException
     ) -> Tuple[int, str]:
-        """Evaluate a D-Bus error and return appropriate error code and message."""
+        """Evaluate a D-Bus error and return appropriate error code and message.
+        
+        **DEPRECATED**: This method duplicates decode_dbus_error() logic. New code
+        should use decode_dbus_error() directly. This method is retained for
+        backward compatibility with system_dbus__error_handling_service callers.
+        
+        TODO (B5 consolidation): Refactor callers to use decode_dbus_error() and
+        remove this method.
+        """
         error_name = error.get_dbus_name()
         error_message = error.get_dbus_message() or ""
         error_message_lower = error_message.lower()

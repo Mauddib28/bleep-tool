@@ -14,6 +14,263 @@ This page aggregates open tasks referenced across the project so contributors ha
 
 ### High-level backlog (copy + paste from sources)
 
+- [ ] **Debug mode: Classic keep-alive command** (Partially Complete - Requires Further Work)
+  - [x] Implement `ckeep` command to open/close RFCOMM socket for ACL keep-alive
+  - [x] Support `--first`, `--svc NAME`, and numeric channel selectors
+  - [x] Remove duplicated `ckeep` logic blocks (ensure single execution path)
+  - [x] Preserve BlueZ `org.bluez.Error.Failed` message detail (e.g. `br-connection-unknown`) in Bleep errors/logs
+  - [x] Auto-close socket on `quit`
+  - [x] Update help banner & changelog
+  - [ ] **Further work required**: Full functionality testing and validation blocked by Classic device connection issues. Requires a Bluetooth Classic target device with no pairing/PIN requirements to properly validate RFCOMM socket operations and ACL keep-alive functionality. Error handling and logging are functional; core connection/socket operations need validation with appropriate hardware.
+
+- [x] **Agent + AgentManager verbosity / diagnosability checklist**
+  - [x] **`bleep/dbuslayer/agent.py`**: Improve AgentManager registration error detail
+    - [x] Include D-Bus error name + message (`get_dbus_name`, `get_dbus_message`) in failures from `_setup_agent_manager()`
+    - [x] Include agent path + capabilities + default-agent flag in failures from `register()`
+    - [x] Log failures at `LOG__AGENT` with structured context (agent_path, capabilities, default)
+  - [x] **`bleep/core/errors.py`**: Preserve message payload for agent-relevant D-Bus exceptions
+    - [x] Ensure `org.bluez.Error.*` mappings keep `exc.get_dbus_message()` when present (NotPermitted, NotAuthorized, Failed, InProgress)
+    - [x] Ensure `UnknownObject` includes target path (when available) for agent/device operations (D-Bus message preserves path information)
+  - [x] **`bleep/modes/agent.py`**: Fix agent-mode correctness + improve CLI visibility
+    - [x] Fix indentation so `create_agent()` is called for all agent types (not just a branch) - verified correct indentation
+    - [x] Log the exact chosen agent type + cap + default + auto_accept + agent_path
+  - [x] **`bleep/dbuslayer/device_classic.py` + `bleep/dbuslayer/device_le.py`**: Improve connect/pair failure context
+    - [x] On DBusException, log method invoked + device path + adapter + D-Bus error name/message
+    - [x] Ensure mapped exceptions preserve D-Bus message text
+  - [x] **`bleep/dbuslayer/agent_io.py`**: Increase IO handler context
+    - [x] When prompting/auto-accepting, log handler type + auto_accept/default values used (no secrets)
+  - [x] **`bleep/modes/debug.py`**: Add agent status / control commands (debug-only)
+    - [x] `agent status` (show whether default agent registered, cap, path)
+    - [x] `agent register [--interactive|--auto] [--cap ...] [--default]`
+    - [x] `agent unregister`
+  - [x] **Error clarity expansion (post-agent)**
+    - [x] `bleep/core/errors.py`: include `exc.get_dbus_message()` in default fall-through mapping
+    - [x] `bleep/dbuslayer/media_services.py`: replace `str(e)` logging with `name: message` and avoid silent bool-only failures
+    - [x] `bleep/dbuslayer/media_browse.py`: replace `str(e)` logging with `name: message` and avoid silent empty-list/None masking
+    - [x] `bleep/dbuslayer/obex_pbap.py`: preserve D-Bus name/message in raised RuntimeError diagnostics
+    - [x] `bleep/dbuslayer/manager.py`: log underlying D-Bus name/message when StartDiscovery falls back
+
+- [x] **Unified D-Bus Event Aggregator (Phase 2A - Reorganized)**
+  - [x] **`bleep/dbuslayer/signals.py`**: Create unified event capture and aggregation system
+    - [x] Create `DBusEventCapture` dataclass to replace separate `SignalCapture` and `MethodCallCapture` (unified structure for signals, method calls, method returns, errors)
+    - [x] Create `DBusEventAggregator` class for centralized event storage and correlation
+    - [x] Add unified event tracking to `__init__` (`_event_aggregator`, `_unified_monitoring`, `_unified_message_filter`)
+    - [x] Implement `_on_dbus_message(bus, message)` unified handler for all D-Bus message types
+    - [x] Implement `_is_relevant_message()` filter to identify BlueZ/Agent related messages
+    - [x] Implement `_capture_signal()`, `_capture_method_call()`, `_capture_method_return()`, `_capture_error()` type-specific capture methods
+    - [x] Implement `_log_event()` with human-readable + detailed format (follows error handling pattern)
+    - [x] Implement `enable_unified_dbus_monitoring(enabled, filters)` public API method
+    - [x] Implement `_attach_unified_listeners()` to add match strings for all message types (signals, method calls, returns, errors)
+    - [x] Implement `_detach_unified_listeners()` for cleanup
+    - [x] Implement query methods: `get_recent_events()`, `correlate_event()`, `get_method_call_chain()`
+    - [x] Update `_detach_bus_listeners()` to also detach unified listeners
+    - [x] Handle `DBusException` gracefully (eavesdrop may require root/policy changes; don't fail agent registration)
+    - [x] Maintain backward compatibility: keep existing `enable_agent_method_call_monitoring()` as wrapper (deprecated)
+    - [x] Update `SignalCorrelator` integration for backward compatibility
+  - [x] **`bleep/dbuslayer/agent.py`**: Integrate unified monitoring with agent lifecycle
+    - [x] Update `register()` method to use `enable_unified_dbus_monitoring()` instead of method call only
+    - [x] Add error handling to continue agent registration if monitoring fails
+    - [x] Document optional disable in `unregister()` (keep enabled for general system monitoring)
+  - [x] **Testing & Verification**
+    - [x] Test signal capture (PropertiesChanged, InterfacesAdded/Removed)
+    - [x] Test method call capture (Agent1, AgentManager1, Device1 methods)
+    - [x] Test method return capture (verify serial number correlation)
+    - [x] Test error capture (AuthenticationRejected, Failed, etc.)
+    - [x] Test correlation: method call → return/error chains via serial numbers
+    - [x] Test correlation: path-based relationships across event types
+    - [x] Test query methods with various filters (event_type, interface, path, time_window)
+    - [x] Test `get_method_call_chain()` for complete call → return/error sequences
+    - [x] Compare output against `dbus-monitor --system "destination='org.bluez'" "sender='org.bluez'"` for accuracy
+    - [x] Verify human-readable summary format matches error handling pattern (`name: msg`)
+    - [x] Verify detailed information preserves original message for analysis
+    - [x] Test monitoring with/without root permissions (graceful degradation)
+    - [x] Verify backward compatibility with existing signal capture code
+
+- [x] **Error clarity expansion — phase 2 (Task A + Task B planning)**
+  - [x] **Task A: Silent failure audit + targeted verbosity upgrades (no API break)**
+    - [x] Inventory remaining `DBusException` handlers that return `False`/`None`/`[]` or log only `str(e)`
+    - [x] Prioritize high-impact call paths: `dbus/device.py`, `dbuslayer/media.py`, `dbuslayer/characteristic.py`, `dbuslayer/service.py`, `dbuslayer/descriptor.py`, `ble_ops/*`
+    - [x] For each target, add structured context to logs (operation + object path + `name: message`) without changing return types/raising behaviour
+    - [x] Verify: `py_compile` + run the narrowest relevant tests after each file
+    - [x] Continue follow-up pass: `bleep/dbuslayer/device_le.py`, `bleep/dbuslayer/device_classic.py`, `bleep/dbuslayer/agent.py`, `bleep/dbuslayer/manager.py`, then `bleep/ble_ops/*`
+  - [x] **Task B: Error mapping consolidation (safety-first; no behaviour drift)**
+    - [x] **B0: Contracts + intent (lock down before changing behavior)** *(starting point)*
+      - [x] Document `bt_ref/error_map.py` tuple contract: `map_dbus_error(DBusException)->(code, category)`, `handle_error(Exception, device)->(code, recovered)`
+      - [x] Confirm meaning of `recovered=True`: recovery action executed successfully (does **not** imply original operation retried)
+      - [x] Confirm recovery remains category-based (connection/state/protocol only) and does not trigger for permission/resource categories
+      - **Evidence / current call sites**:
+        - `bleep/bt_ref/error_map.py`:
+          - `map_dbus_error()` returns `(result_code, category)` where `result_code` is from `DBUS_ERROR_MAP` (default `RESULT_EXCEPTION`) and `category` is derived from `ERROR_CATEGORIES`.
+          - `handle_error()` returns `(result_code, recovered)` where `recovered=True` only if a recovery strategy exists for the derived category *and* it executes successfully (no automatic retry of the original failing operation).
+          - Recovery strategies are currently **category-based**:
+            - `connection` → `_reconnect_device(device)` (calls `device.Connect()`)
+            - `state` → `_resolve_services(device)` (calls `device.check_and_wait__services_resolved()`)
+            - `protocol` → `_retry_with_delay()` (fixed sleep)
+            - `permission` / `resource` / `unknown` → **no recovery**
+        - `bleep/dbus/device.py` uses the tuple contract directly:
+          - `Connect/Disconnect/Pair` catch `Exception` and return `handle_error(e, self)` (tuple passthrough to callers).
+          - `_setup_device()` logs `result_code` via `map_dbus_error(e)` (tuple) for diagnostics only.
+    - [x] **B1: Build an evidence “truth table”** comparing `core/error_handling.decode_dbus_error` vs `bt_ref/error_map` mappings and their current call sites
+      - **Truth table snapshot (name-level mapping differences)**:
+        - `core/error_handling.decode_dbus_error` (name-map `_DBUS_ERROR_NAME_MAP`, default `RESULT_ERR`, plus message-substring heuristics)
+        - `bt_ref/error_map.map_dbus_error` (name-map `DBUS_ERROR_MAP`, default `RESULT_EXCEPTION`, no message-substring heuristics)
+        - **Known mismatches (must be resolved before bt_ref delegates to core)**:
+          - `org.bluez.Error.NotPermitted`: core → `RESULT_ERR_NOT_PERMITTED`; bt_ref → `RESULT_ERR_ACCESS_DENIED` (category=permission either way; reporting code differs)
+          - `org.bluez.Error.NotAuthorized`: core → `RESULT_ERR_NOT_AUTHORIZED`; bt_ref → default `RESULT_EXCEPTION` (unmapped today)
+          - `org.freedesktop.DBus.Error.InvalidArgs`: bt_ref → `RESULT_ERR_BAD_ARGS`; core → not name-mapped today (falls back to message heuristics / `RESULT_ERR`)
+          - `org.freedesktop.DBus.Error.AccessDenied`: bt_ref → `RESULT_ERR_ACCESS_DENIED`; core → not name-mapped today (falls back to `RESULT_ERR`)
+          - `org.freedesktop.DBus.Error.ServiceUnknown`: bt_ref → `RESULT_ERR_UNKNOWN_SERVCE`; core → not name-mapped today (falls back to `RESULT_ERR`)
+          - `org.bluez.Error.NotAvailable` / `org.bluez.Error.DoesNotExist`: bt_ref → `RESULT_ERR_NOT_FOUND`; core → not name-mapped today (falls back to `RESULT_ERR`)
+          - `org.bluez.Error.NotFound`: core → `RESULT_ERR_NOT_FOUND`; bt_ref → default `RESULT_EXCEPTION` (unmapped today)
+          - `org.bluez.Error.InvalidArguments`: core → `RESULT_ERR_BAD_ARGS`; bt_ref → default `RESULT_EXCEPTION` (unmapped today)
+        - **Message-heuristic capability (core-only)**:
+          - core can map `"read/write/notify/indicate not permitted"` → operation-specific `RESULT_ERR_*_NOT_PERMITTED` codes; bt_ref currently cannot.
+      - **Truth table snapshot (call-site split)**:
+        - bt_ref tuple interface used directly by: `bleep/dbus/device.py` (`handle_error(e, self)` return path; tuple passthrough)
+        - exception interface used by most refactored stack: `bleep/core/errors.py::map_dbus_error` (returns `BLEEPError` subclasses, uses core decode internally)
+    - [x] **B1.1: Expand `core/error_handling.decode_dbus_error` (single source of truth)**
+      - [x] Expand name-level mapping to cover bt_ref’s existing `DBUS_ERROR_MAP` names (and any additional names observed in code/logs)
+      - [x] Keep message-substring heuristics (read/write/notify/indicate not permitted, etc.) and document precedence (name > message > fallback)
+      - [x] Verify core name-map becomes a superset of bt_ref needs (or explicitly justify omissions)
+      - **Precedence (must remain stable):**
+        - **1) Name-level mapping wins** (`exc.get_dbus_name()` in `_DBUS_ERROR_NAME_MAP`)
+        - **2) Message-level mapping** for permission granularity (`exc.get_dbus_message()` substrings like read/write/notify/indicate not permitted)
+        - **3) Fallback** to `RESULT_ERR` when no match
+    - [x] **B2: Augment `bt_ref/error_map.py` to always use core decode (preserve tuple + recovery semantics)**
+      - [x] Implement “core-first decode” inside bt_ref with local imports (avoid import loops)
+      - [x] Add bt_ref-local refinement for cases where core returns generic codes but bt_ref can be more specific using `get_dbus_name()` / `get_dbus_message()`
+      - [x] Introduce “reporting_code vs category_code” normalization so bt_ref can keep precise codes while preserving recovery categorization
+      - [x] Ensure no caller changes required initially (especially `bleep/dbus/device.py`)
+      - **Verification notes**:
+        - No call-site changes were required: `bleep/dbus/device.py` continues to import `handle_error` / `map_dbus_error` from `bleep.bt_ref.error_map`.
+        - Added unit coverage: `tests/test_bt_ref_error_map.py` exercises bt_ref core-first decode + normalization behavior.
+    - [x] **B3: Recovery semantics + retry discipline (avoid device “busy” amplification)**
+      - [x] **Do not hammer**: when re-attempting any failed operation, apply a **fixed wait** before retrying (default: 0.5–1.0s) to let the target/device stack settle
+      - [x] **Prefer waiting over retrying** when the failure indicates the device is still processing (e.g., `InProgress`, “Operation already in progress”, transient controller/stack teardown)
+      - [x] **Cap retries**: keep retry counts low (e.g., 1–3) and fail fast for permission/argument errors (never retry those)
+      - [x] **Categorize before retry**: only connection/state/protocol categories may trigger recovery; permission/resource should not auto-retry
+      - [x] **No implicit “retry original op” loops** without an explicit fixed-delay policy (prevents cascading errors on fragile devices)
+      - [x] Audit gaps in recovery strategies (missing cases, missing staged waits, device/controller stall handling)
+      - [x] Plan (and later implement) an explicit “retry original operation” wrapper that uses fixed-delay policy and low retry caps (do **not** bake infinite loops into low-level helpers)
+      - **Implemented (bt_ref-level helper, conservative by default):**
+        - `bleep/bt_ref/error_map.py::attempt_operation_with_recovery()`:
+          - fixed delay between attempts (default 0.7s)
+          - low retry cap (default 2)
+          - never retries deterministic failures (permission/bad args/not supported)
+      - **Recovery gap found + fixed:**
+        - `_reconnect_device()` previously treated tuple-return interfaces as “success” even when `(code, False)` was returned; now treats that as failure so `recovered` is accurate.
+    - [x] **B4: BLEEPError transparency audit (no “blanding” / no hidden payloads)**
+      - [x] Inventory `BLEEPError` subclass mappings that override/replace DBus messages; ensure D-Bus `name` + `message` remain visible
+      - [x] Confirm `core/errors.py::map_dbus_error` does not force generic messages when actionable D-Bus payload exists (e.g., BlueZ `org.bluez.Error.Failed` message bodies)
+      - **Fixes applied + coverage**:
+        - `NotAuthorizedError` now accepts an optional `reason` and preserves the D-Bus message payload in the exception string.
+        - `ServiceUnknown` mapping now uses the D-Bus message payload (when present) instead of repeating the error name.
+        - `UnknownObject` mapping no longer forces `DeviceNotFoundError("D-Bus operation")`; it preserves `name: message` as a `BLEEPError` to avoid blanding/misclassification.
+        - Fixed `handle_dbus_exception()` to raise the mapped `BLEEPError` (it previously attempted to unpack a non-tuple result).
+        - Added unit coverage: `tests/test_core_errors_transparency.py`
+    - [x] **B5: Deprecation + cleanup (remove legacy requirements safely)**
+      - [x] After parity proven, deprecate bt_ref’s independent name→code table as a *source of truth* (keep only category/refinement logic if needed)
+      - [x] **B5.2: Reduce reliance on legacy tuple-path modules** (COMPLETE - Option A executed)
+        - [x] Evaluate deprecating `bleep/dbus/device.py` in favor of refactored device wrappers (`bleep/dbuslayer/device_le.py`, `bleep/dbuslayer/device_classic.py`)
+        - **Status**: COMPLETE - Legacy module removed (Option A: direct removal)
+        - **Phase 1 audit results** (completed):
+          * **Static analysis**: AST-based import analysis found zero imports of `bleep.dbus.device` in all Python files within `bleep/` directory
+          * **Runtime verification**: No imports detected when loading key entrypoints (`bleep.modes.debug`, `bleep.modes.agent`, `bleep.ble_ops.connect`, `bleep.dbuslayer.device_le`, `bleep.core.device_management`)
+          * **Package structure**: `bleep/dbus/__init__.py` does NOT include `device` in `__all__`, confirming it's not intentionally exposed
+          * **Actual usage**: All code imports from `bleep.dbuslayer.device_le`, NOT from `bleep.dbus.device`
+          * **Conclusion**: `bleep/dbus/device.py` was completely unused - no artifacts of importing the file remained in the codebase
+        - **Migration executed**: **Option A (Direct Removal)**
+          * Deleted `bleep/dbus/device.py` (~214 lines, tuple-return contract implementation)
+          * Verified no regressions: all key entrypoints import successfully after removal
+          * No changes needed to `bleep/dbus/__init__.py` (device was never in `__all__`)
+          * Documentation updated (changelog, todo tracker)
+        - **Current state analysis**:
+          - **Legacy module** (`bleep/dbus/device.py`): ~214 lines, tuple-return contract `(code, success)`, minimal features, uses `bt_ref.error_map`
+            * Public interface: `Connect() -> Tuple[int, bool]`, `Disconnect() -> Tuple[int, bool]`, `Pair() -> Tuple[int, bool]`
+            * Properties: `address`, `adapter`, `connected`, `paired`, `services_resolved`
+            * Methods: `find_and_get__device_property()`, `find_and_get__all_device_properties()`, `check_and_wait__services_resolved()`
+          - **Refactored modules**: `bleep/dbuslayer/device_le.py` (~2400+ lines), `bleep/dbuslayer/device_classic.py` (~750+ lines), exception-based contract, rich feature set
+            * Exception-based error handling via `bleep.core.errors.map_dbus_error()` (returns `BLEEPError` subclasses)
+            * Rich features: GATT enumeration, service resolution, media support, signal handling, reconnection monitoring
+            * Method-based property access: `is_connected()`, `is_paired()`, `is_trusted()`, etc.
+          - **Key interface differences**:
+            * Method names: `Connect()` vs `connect()` (case-sensitive; legacy uses PascalCase)
+            * Return types: `Tuple[int, bool]` (legacy) vs raises `BLEEPError` subclasses (refactored)
+            * Property access: `device.connected` (property in legacy) vs `device.is_connected()` (method in refactored)
+            * Error handling: `handle_error()` tuple return with automatic recovery (legacy) vs exception-based with explicit caller handling (refactored)
+            * Parameter names: `bluetooth_adapter` (legacy) vs `adapter_name` (refactored)
+        - **Preliminary findings**:
+          - `bleep/dbus/device.py` appears unused (no direct imports found in codebase; only mentioned in comments in `bleep/dbus/__init__.py`)
+          - Refactored `bleep/dbuslayer/device_le.py` is what's actually used throughout the codebase
+          - `bleep/dbuslayer/device.py` re-exports the refactored classes
+        - **4-Phase plan structure** (evaluation-first; no code changes until audit complete):
+          - **Phase 1: Comprehensive usage audit** (no code changes):
+            * Static analysis: grep for all import patterns (`from bleep.dbus.device import`, `import bleep.dbus.device`, dynamic imports via `importlib`/`__import__`)
+            * Runtime verification: import tracking script to verify no `bleep.dbus.device` imports occur during key entrypoint loading
+            * Interface contract comparison: side-by-side method signature documentation, parameter differences, return type differences
+            * Error handling contract analysis: tuple-return semantics vs exception-based semantics, recovery strategy differences
+          - **Phase 2: Migration strategy design**:
+            * Decision tree based on audit findings:
+              - **Option A (if unused)**: Direct removal of `bleep/dbus/device.py`, update `bleep/dbus/__init__.py`, remove documentation references
+              - **Option B (if callers exist)**: Compatibility shim in `bleep/dbus/device.py` wrapping refactored device, converting exceptions to tuples, maintaining legacy interface
+              - **Option C (if gaps exist)**: Feature parity enhancement in refactored modules, then re-evaluate migration
+            * Compatibility shim design (if Option B): adapter class pattern converting `BLEEPError` exceptions to `(code, False)` tuples, preserving exact method signatures
+          - **Phase 3: Implementation**:
+            * Pre-migration validation: create comprehensive test suite for legacy interface, run both legacy and refactored test suites
+            * Migration execution: execute chosen option (A, B, or C), add unit tests for shim (if applicable), run integration tests
+            * Post-migration validation: full test suite, verify import behavior, check for performance regressions
+          - **Phase 4: Documentation and deprecation**:
+            * Code documentation: deprecation notices (if shim used), migration path documentation, type hint updates
+            * Project documentation: update `bleep/docs/changelog.md`, update `bleep/docs/todo_tracker.md`, create migration guide (if callers exist)
+        - **Migration options** (decision based on Phase 1 findings):
+          - **Option A (Recommended if unused)**: Direct removal of `bleep/dbus/device.py`
+            * Delete file, remove from `bleep/dbus/__init__.py` exports, update documentation, add changelog notice
+          - **Option B (If callers exist)**: Compatibility shim wrapping refactored device
+            * Implement adapter class in `bleep/dbus/device.py` that wraps `bleep.dbuslayer.device_le.system_dbus__bluez_device__low_energy`
+            * Convert `BLEEPError` exceptions to `(code, False)` tuples, maintain exact method signatures (`Connect`, `Disconnect`, `Pair`)
+            * Preserve property access patterns, handle edge cases (e.g., `check_and_wait__services_resolved` return type)
+            * Document as temporary compatibility layer, create migration tracking for callers
+          - **Option C (If gaps exist)**: Feature parity enhancement
+            * Identify missing functionality in refactored modules, implement missing features, add tests, re-run Phase 1 audit
+        - **Risk areas and mitigation**:
+          - **Hidden dynamic imports**: `importlib.import_module('bleep.dbus.device')`, `__import__('bleep.dbus.device')` might not be caught by static analysis
+            * Mitigation: Runtime import tracking script, comprehensive test suite execution
+          - **Runtime behavior differences**: Tuple-return vs exception-based contracts have different error handling semantics
+            * Mitigation: Side-by-side test suite execution, behavior comparison documentation
+          - **Property vs method access**: Legacy uses properties (`device.connected`), refactored uses methods (`device.is_connected()`)
+            * Mitigation: Compatibility shim (Option B) can provide property access via `@property` decorators
+          - **Recovery semantics**: Legacy `handle_error()` provides automatic recovery; refactored stack requires explicit caller handling
+            * Mitigation: Document recovery differences, provide migration guide for callers
+        - **Success criteria** (per phase):
+          - **Phase 1**: Complete usage audit with zero ambiguity about `bleep/dbus/device.py` usage, interface contract comparison document created, migration strategy decision (A, B, or C) made
+          - **Phase 2**: Migration strategy fully designed and documented, compatibility shim designed with full interface mapping (if Option B), test plan created for validation
+          - **Phase 3**: Migration executed (removal, shim, or feature parity), all tests pass (no regressions), performance validated (no significant degradation)
+          - **Phase 4**: Documentation updated (code docs, project docs), deprecation notices in place (if applicable), changelog and todo tracker updated, Task B5.2 marked complete
+        - **Timeline estimate**: 6-16 hours total
+          * Phase 1 (Audit): 2-4 hours
+          * Phase 2 (Design): 1-2 hours
+          * Phase 3 (Implementation): 2-8 hours (depends on chosen option)
+          * Phase 4 (Documentation): 1-2 hours
+        - **Dependencies**: Task B0-B5 complete (error mapping consolidation provides foundation), comprehensive test suite for refactored device wrappers, access to test devices (for integration testing, if needed)
+        - **Approval required**: This plan must be accepted before any code modifications are made. Evaluation-first approach: no code changes until usage audit (Phase 1) is complete and migration strategy is approved.
+      - [x] Consolidate duplicate error logic within `core/error_handling.py` (decode tables vs other internal message maps) so there is truly one source of truth
+      - **Deprecation markers added:**
+        - `bleep/bt_ref/error_map.py::DBUS_ERROR_MAP` now marked as deprecated (only used for refinement fallback when core returns generic RESULT_ERR).
+        - `bleep/core/error_handling.py::system_dbus__error_handling_service.evaluate__dbus_error()` marked as deprecated with TODO for consolidation.
+        - Added canonical decoder documentation in `core/error_handling.py` identifying consolidation opportunities.
+      - **Legacy module removal (B5.2) - COMPLETE:**
+        - `bleep/dbus/device.py` has been removed after comprehensive audit confirmed zero usage
+        - All codebase now uses refactored device wrappers (`bleep/dbuslayer/device_le.py`, `bleep/dbuslayer/device_classic.py`)
+        - No compatibility shim needed - module was completely unused
+    - [x] **Import-loop safety requirement (must not regress):**
+      - [x] Keep imports one-directional: `core/error_handling` should not import `core/errors` at module import time
+      - [x] Prefer local imports inside mapping functions to avoid circular dependencies (match existing style in `map_dbus_error`)
+      - [x] Validate by running `python -m py_compile` and by importing key entrypoints (`bleep.modes.debug`, `bleep.modes.agent`, `bleep.ble_ops.connect`) in a fresh interpreter
+      - **Verification complete:**
+        - `core/error_handling.py` does NOT import `core/errors` at module level (only imports from `bt_ref` and `core.log`).
+        - `bt_ref/error_map.py::map_dbus_error()` uses local import: `from bleep.core.error_handling import decode_dbus_error` (inside function).
+        - All key entrypoints import successfully without circular dependency errors.
+
 - [x] **Legacy Code Removal & Self-Sufficiency** – Complete removal of legacy dependencies (v2.3.1, 2025-10-29):
   - [x] Removed `sys.modules` shims in `bleep/__init__.py` for root-level legacy imports
   - [x] Deleted root-level legacy shim files (`bluetooth_constants.py`, `bluetooth_utils.py`, `bluetooth_uuids.py`, `bluetooth_exceptions.py`)
@@ -47,8 +304,8 @@ This page aggregates open tasks referenced across the project so contributors ha
     - [x] Create comprehensive test suite for AoI functionality
     - [x] Document testing procedures in `docs/aoi_testing.md`
     - [x] Add integration examples with observation database
-    - [ ] Document advanced security analysis algorithms
-    - [ ] Create customization guide for security assessment criteria
+    - [x] Document advanced security analysis algorithms (see `aoi_security_algorithms.md`)
+    - [x] Create customization guide for security assessment criteria (see `aoi_customization_guide.md`)
 - [x] Multi-read / brute-write characteristic helpers complete
   - [x] `multi_read_characteristic` utility (repeat reads)
   - [x] `multi_read_all` rounds helper
@@ -127,6 +384,12 @@ This page aggregates open tasks referenced across the project so contributors ha
     - [x] Create proper test fixtures for AoI integration tests
     - [x] Implement database pre-population for required test data
     - [x] Add cleanup mechanisms to ensure test isolation
+
+- [x] **Fix Agent Mode CLI Routing & Argument Exposure** – Critical bug fix for agent mode CLI:
+  - [x] **Issue**: Agent mode routing broken due to argparse subparser argument name conflict - `args.mode == "agent"` check never matches because `args.mode` is overwritten by `--mode` argument value. CLI parser only exposes 2 of 12 agent features (`--mode` limited to simple/interactive), and argument passing is broken (only passes `--mode`, missing all other arguments).
+  - [x] **Solution**: Fixed routing detection in `bleep/cli.py` line 702 by changing `elif args.mode == "agent":` to `elif len(sys.argv) > 1 and sys.argv[1] == "agent":` and pass `sys.argv[2:]` to agent mode. Expanded CLI parser arguments in `bleep/cli.py` lines 72-95 to include all agent mode options: `--mode` (added enhanced/pairing), `--cap`, `--default`, `--auto-accept`, `--pair`, `--trust`, `--untrust`, `--list-trusted`, `--list-bonded`, `--remove-bond`, `--storage-path`, `--timeout`. Arguments are parsed for help/validation but passed through to agent mode's parser for actual processing.
+  - [x] **Files**: `bleep/cli.py` (lines 72-95, 702-706)
+  - [x] **Testing**: Verified `bleep agent --mode=pairing --pair=MAC`, `bleep agent --list-trusted`, `bleep agent --trust=MAC` all work correctly. Verified other modes unaffected.
 
 - [x] **Enhance Pairing Agent**
   - [x] **Phase 1: Agent Architecture** (2 weeks)
@@ -210,12 +473,12 @@ This page aggregates open tasks referenced across the project so contributors ha
       - [x] Add integration tests for real device pairing
       - [x] Test edge cases for pairing failures
       - [x] Verify recovery mechanisms
-- [ ] Device-feature database (SDP & PBAP)  
+- [x] **Device-feature database (SDP & PBAP)** - **COMPLETE**
   * Merge existing bullet *"Local database for unknown UUIDs + device observations"* – expand scope to store:
-    * SDP service/attribute snapshots per device (Classic & BLE)
-    * PBAP phonebook metadata (repository sizes, Hash of full dump)  
-    * First-seen / last-seen timestamps, adapter used, friendly names  
-  * Decide storage: simple SQLite in `~/.bleep/observations.db` (no runtime deps)  **(SPEC FINAL 2025-07-24)**  
+    * SDP service/attribute snapshots per device (Classic & BLE) ✅
+    * PBAP phonebook metadata (repository sizes, Hash of full dump) ✅
+    * First-seen / last-seen timestamps, adapter used, friendly names ✅
+  * Decide storage: simple SQLite in `~/.bleep/observations.db` (no runtime deps)  **(SPEC FINAL 2025-07-24)** ✅
   * CLI helpers: `bleep db list|show|export <MAC>` ✅
   * Schema + ingestion implementation (v0)
     - [x] `core/observations.py` singleton connection + schema creation
@@ -242,7 +505,17 @@ This page aggregates open tasks referenced across the project so contributors ha
       - Enhanced device type detection with multiple heuristics
       - Updated filtering logic to use explicit device_type
   * Future telemetry table & migrations – tracked separately  
-  * Write migration note in README.refactor
+  * **SDP service/attribute snapshots storage** - **COMPLETE**:
+    - [x] Create `sdp_records` table to store full SDP record snapshots (Service Record Handle, Profile Descriptor List, Service Version, Service Description, Protocol Descriptor List, raw record)
+    - [x] Implement `upsert_sdp_record()` function in `bleep/core/observations.py`
+    - [x] Hook SDP discovery functions to store full records (`discover_services_sdp()`, `_discover_services_dbus()`, connectionless mode)
+    - [x] Update `get_device_detail()` and `export_device_data()` to include SDP records (automatic via get_device_detail)
+    - [x] Create schema migration v6→v7 for new `sdp_records` table
+    - [x] Update documentation (`observation_db.md`, `observation_db_schema.md`) to include `sdp_records` table
+    - [x] **Note**: Both `classic_services` (basic UUID/channel mapping) and `sdp_records` (full snapshots) tables coexist for different use cases
+  * Write migration note in README.refactor - **COMPLETE**:
+    - [x] Added v6→v7 migration notes to `README.refactor-migrations.md`
+    - [x] Updated `README.refactor` to reference migration documentation
   * Device type classification improvements:
     - [x] **Dual Device Detection Framework (Completed)** – Comprehensive evidence-based classification system:
       - [x] Plan created for modular, expandable dual device detection framework (`bleep/docs/DUAL_DEVICE_DETECTION_PLAN.md`)
@@ -319,10 +592,10 @@ This page aggregates open tasks referenced across the project so contributors ha
   * Enhance observation_db.md documentation:
     - [x] Document schema versioning information
     - [x] Add filtering examples for `db list` and `db timeline`
-    - [ ] Expand database schema with comprehensive table and column descriptions
-    - [ ] Add programmatic API usage examples
-    - [ ] Document observation module's public functions with examples
-    - [ ] Create advanced query cookbook for complex data extraction scenarios
+    - [x] Expand database schema with comprehensive table and column descriptions
+    - [x] Add programmatic API usage examples
+    - [x] Document observation module's public functions with examples
+    - [x] Create advanced query cookbook for complex data extraction scenarios
   * GATT enumeration database improvements:
     - [x] Fix SQL syntax error in upsert_characteristics function
     - [x] Add robust error handling to prevent cascade failures
@@ -540,27 +813,27 @@ This page aggregates open tasks referenced across the project so contributors ha
 
 > This section tracks gaps in current documentation, particularly for the device tracking and observation capabilities. Addressing these tasks will ensure users can fully leverage the existing features through both CLI and programmatic APIs.
 
-- [ ] **Device Tracking Documentation**
-  - [ ] Create comprehensive programmatic API reference for observation module
-    - [ ] Document each function in `observations.py` with examples
-    - [ ] Add integration examples for custom scripts
-    - [ ] Create cookbook for common observation tasks
-    - [ ] Document filtering and query techniques for device data
-  - [ ] Enhance AOI Analyzer documentation
-    - [ ] Create dedicated `aoi_analyzer_api.md` file with class reference
-    - [ ] Add examples of direct usage of AOIAnalyser class methods
-    - [ ] Document security analysis algorithms and scoring system
-    - [ ] Provide customization examples for different analysis needs
+- [ ] **Device Tracking Documentation** (Partially Complete)
+  - [x] Create comprehensive programmatic API reference for observation module
+    - [x] Document each function in `observations.py` with examples (see `observation_db.md` - "Public Function Reference" section)
+    - [x] Add integration examples for custom scripts (see `observation_db.md` - "Programmatic Access" section)
+    - [x] Create cookbook for common observation tasks (see `observation_db_schema.md` - "Advanced Query Cookbook" section)
+    - [x] Document filtering and query techniques for device data (see `observation_db.md` and `observation_db_schema.md`)
+  - [x] Enhance AOI Analyzer documentation
+    - [x] Create dedicated `aoi_security_algorithms.md` file documenting all security analysis algorithms
+    - [x] Add examples of direct usage of AOIAnalyser class methods (see `aoi_mode.md` and `aoi_implementation.md`)
+    - [x] Document security analysis algorithms and scoring system (see `aoi_security_algorithms.md`)
+    - [x] Provide customization examples for different analysis needs (see `aoi_customization_guide.md`)
   - [ ] Add real-world usage scenarios
     - [ ] Long-term device monitoring workflows
     - [ ] Enterprise device tracking patterns
     - [ ] Security assessment workflows using observation database
     - [ ] Integration examples with external systems
-  - [ ] Document detailed database schema
-    - [ ] Create complete schema diagram with relationships
-    - [ ] Document each table and column with descriptions
-    - [ ] Add query examples for complex data extraction
-    - [ ] Create migration guide for schema changes
+  - [x] Document detailed database schema
+    - [x] Create complete schema diagram with relationships (see `observation_db_schema.md`)
+    - [x] Document each table and column with descriptions (see `observation_db_schema.md` - comprehensive table documentation)
+    - [x] Add query examples for complex data extraction (see `observation_db_schema.md` - "Advanced Query Cookbook")
+    - [x] Create migration guide for schema changes (see `README.refactor-migrations.md` and schema version history in `observation_db_schema.md`)
 
 ## Technical Scalability Improvements
 

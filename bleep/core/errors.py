@@ -150,12 +150,13 @@ class NotReadyError(BLEEPError):
 class NotAuthorizedError(BLEEPError):
     """Raised when an operation requires authorization."""
 
-    def __init__(self, operation: str = "Bluetooth operation"):
-        super().__init__(
-            f"{operation} requires authorization or pairing",
-            RESULT_ERR_ACCESS_DENIED,
-        )
+    def __init__(self, operation: str = "Bluetooth operation", reason: str | None = None):
+        msg = f"{operation} requires authorization or pairing"
+        if reason:
+            msg += f" ({reason})"
+        super().__init__(msg, RESULT_ERR_ACCESS_DENIED)
         self.operation = operation
+        self.reason = reason
 
 
 # Map D-Bus exceptions to BLEEP exceptions
@@ -195,22 +196,33 @@ def map_dbus_error(exc: dbus.exceptions.DBusException) -> BLEEPError:
 
     # Fast path mappings using error name
     if name == "org.bluez.Error.NotPermitted":
-        return PermissionError("D-Bus operation", str(exc))
+        # Preserve message payload to distinguish policy/authorization causes.
+        return PermissionError("D-Bus operation", msg or str(exc))
     if name == "org.bluez.Error.NotAuthorized":
-        return NotAuthorizedError("D-Bus operation")
+        # Preserve message payload when present (some BlueZ builds include it).
+        return NotAuthorizedError("D-Bus operation", reason=msg or None)
     if name == "org.freedesktop.DBus.Error.NoReply":
         return TimeoutError("D-Bus operation")
     if name == "org.freedesktop.DBus.Error.ServiceUnknown":
-        return ServiceNotFoundError("D-Bus operation", exc.get_dbus_name())
+        # Preserve payload; BlueZ/DBus often includes the missing service/bus name in msg.
+        return ServiceNotFoundError("D-Bus operation", msg or exc.get_dbus_name())
     if name == "org.bluez.Error.InProgress":
-        return OperationInProgressError("D-Bus operation")
+        return OperationInProgressError(msg or "D-Bus operation")
     if name == "org.bluez.Error.Failed":
+        # Preserve BlueZ's message payload (e.g. "br-connection-unknown") so
+        # callers can diagnose controller/state-machine failures.
         if "Not connected" in msg:
-            return ConnectionError("D-Bus operation", str(exc))
+            return ConnectionError("D-Bus operation", msg or str(exc))
         if "ATT error" in msg:
             return BLEEPError("D-Bus operation", error_code)
+        # Generic org.bluez.Error.Failed: include message text if present
+        if msg:
+            return BLEEPError(f"D-Bus operation: {name}: {msg}", error_code)
     if name == "org.freedesktop.DBus.Error.UnknownObject":
-        return DeviceNotFoundError("D-Bus operation")
+        # Preserve payload; UnknownObject is not always a "device not found".
+        if msg:
+            return BLEEPError(f"D-Bus operation: {name}: {msg}", error_code)
+        return BLEEPError(f"D-Bus operation: {name}", error_code)
 
     # Method-call signature error regex
     m = _METHOD_CALL_INTERFACE_RX.search(msg)
@@ -221,15 +233,20 @@ def map_dbus_error(exc: dbus.exceptions.DBusException) -> BLEEPError:
         )
 
     # Default fall-back
+    # Preserve message payload for diagnostics (agent/media/connect errors often
+    # carry the actionable reason in the message).
+    # Include get_dbus_message() in default fall-through mapping for all cases
+    if msg:
+        return BLEEPError(f"D-Bus operation: {name}: {msg}", error_code)
     return BLEEPError(f"D-Bus operation: {name}", error_code)
 
 
 def handle_dbus_exception(exc: dbus.exceptions.DBusException):
-    code, path = map_dbus_error(exc)
-    _core_log.logging__debug_log(f"[BLEEPError] code={code} src={path} msg={exc}")
-    if code == RESULT_ERR_ACTION_IN_PROGRESS:
+    err = map_dbus_error(exc)
+    _core_log.logging__debug_log(f"[BLEEPError] code={getattr(err, 'code', RESULT_ERR)} msg={exc}")
+    if getattr(err, "code", None) == RESULT_ERR_ACTION_IN_PROGRESS:
         time.sleep(0.2)
-    raise code
+    raise err
 
 
 # ---------------------------------------------------------------------------

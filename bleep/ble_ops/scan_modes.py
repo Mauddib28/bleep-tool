@@ -437,7 +437,13 @@ def pokey_scan_and_connect(
                         value = char.read_value(timeout=10)
                         print_and_log(f"[+] Read value for {char.uuid}: {value.hex()}", LOG__DEBUG)
                     except Exception as e:
-                        print_and_log(f"[-] Could not read {char.uuid}: {str(e)}", LOG__DEBUG)
+                        if isinstance(e, dbus.exceptions.DBusException):
+                            print_and_log(
+                                f"[-] Could not read {char.uuid}: {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                                LOG__DEBUG,
+                            )
+                        else:
+                            print_and_log(f"[-] Could not read {char.uuid}: {e}", LOG__DEBUG)
                         
                     # Record all properties of the characteristic
                     for prop_name in char._properties():
@@ -451,11 +457,23 @@ def pokey_scan_and_connect(
                         try:
                             _ = desc.read_value()
                         except Exception as e:
-                            print_and_log(f"[-] Could not read descriptor {desc.uuid}: {str(e)}", LOG__DEBUG)
+                            if isinstance(e, dbus.exceptions.DBusException):
+                                print_and_log(
+                                    f"[-] Could not read descriptor {desc.uuid}: {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                                    LOG__DEBUG,
+                                )
+                            else:
+                                print_and_log(f"[-] Could not read descriptor {desc.uuid}: {e}", LOG__DEBUG)
                             
                 except Exception as e:
                     error_count += 1
-                    print_and_log(f"[-] Error during deep enumeration: {str(e)}", LOG__DEBUG)
+                    if isinstance(e, dbus.exceptions.DBusException):
+                        print_and_log(
+                            f"[-] Error during deep enumeration: {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                            LOG__DEBUG,
+                        )
+                    else:
+                        print_and_log(f"[-] Error during deep enumeration: {e}", LOG__DEBUG)
                 
         print_and_log(f"[*] Deep enumeration complete. Encountered {error_count} errors.", LOG__GENERAL)
         
@@ -574,7 +592,13 @@ def bruteforce_scan_and_connect(
                             print_and_log(f"[+] Successfully wrote {test_value.hex()} to handle 0x{handle:04x}", LOG__DEBUG)
                     except Exception as e:
                         # Not writable, that's fine
-                        print_and_log(f"[-] Handle 0x{handle:04x} not writable: {str(e)}", LOG__DEBUG)
+                        if isinstance(e, dbus.exceptions.DBusException):
+                            print_and_log(
+                                f"[-] Handle 0x{handle:04x} not writable: {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                                LOG__DEBUG,
+                            )
+                        else:
+                            print_and_log(f"[-] Handle 0x{handle:04x} not writable: {e}", LOG__DEBUG)
                     
                     break  # No need to try other services
                 except Exception:
@@ -582,7 +606,7 @@ def bruteforce_scan_and_connect(
         except Exception as e:
             # Record the error for this handle
             error_type = type(e).__name__
-            error_msg = str(e)
+            error_msg = e.get_dbus_message() or str(e) if isinstance(e, dbus.exceptions.DBusException) else str(e)
             bruteforce_errors[handle] = f"{error_type}: {error_msg}"
             
             # Don't log normal permission errors to avoid spam

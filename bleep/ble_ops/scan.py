@@ -120,7 +120,15 @@ def _native_scan(device: str | None, timeout: int, transport: str = "auto", quie
                 _obs.upsert_device(addr, device_type=result.device_type)
                 
             except Exception as e:
-                print_and_log(f"[-] Error processing device {addr}: {str(e)}", LOG__DEBUG)
+                # Preserve behavior (continue scanning) but include structured
+                # D-Bus diagnostics when applicable.
+                if hasattr(e, "get_dbus_name") and hasattr(e, "get_dbus_message"):
+                    print_and_log(
+                        f"[-] Error processing device {addr}: {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                        LOG__DEBUG,
+                    )
+                else:
+                    print_and_log(f"[-] Error processing device {addr}: {e}", LOG__DEBUG)
 
     # Convert raw device list to dictionary format expected by higher-level code
     devices = {}
@@ -334,7 +342,13 @@ def _persist_mapping(mac: str, mapping: Dict[str, Any]):
             _obs._DB_CONN.commit()
             
     except Exception as e:
-        print_and_log(f"[-] Error saving to database: {str(e)}", LOG__DEBUG)
+        if hasattr(e, "get_dbus_name") and hasattr(e, "get_dbus_message"):
+            print_and_log(
+                f"[-] Error saving to database: {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
+        else:
+            print_and_log(f"[-] Error saving to database: {e}", LOG__DEBUG)
         import traceback
         print_and_log(f"[-] Traceback: {traceback.format_exc()}", LOG__DEBUG)
 
@@ -402,7 +416,13 @@ def _base_enum(target_bt_addr: str, *, deep: bool = False):
             _obs.upsert_device(addr, device_type=result.device_type)
             
         except Exception as e:
-            print_and_log(f"[-] Error saving to database: {str(e)}", LOG__DEBUG)
+            if hasattr(e, "get_dbus_name") and hasattr(e, "get_dbus_message"):
+                print_and_log(
+                    f"[-] Error saving to database: {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                    LOG__DEBUG,
+                )
+            else:
+                print_and_log(f"[-] Error saving to database: {e}", LOG__DEBUG)
     
     return device, mapping, mine_map, perm_map
 

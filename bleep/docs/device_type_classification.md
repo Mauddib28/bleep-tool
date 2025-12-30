@@ -22,7 +22,8 @@ BLEEP uses an evidence-based classification system to determine whether a Blueto
 3. **Database Integration**:
    - `device_type_evidence` table for audit/debugging (NOT used for classification)
    - Signature caching for performance optimization
-   - Schema v6 migration support
+   - Schema v6 migration support (device_type_evidence table)
+   - Schema v7 migration support (sdp_records table)
 
 ## Device Types
 
@@ -498,6 +499,20 @@ The `device_type_evidence` table is automatically created during database initia
 **No Data Loss:**
 - Existing `devices.device_type` column preserved
 - Evidence table is additive (audit trail only)
+
+### Schema v6 to v7
+
+The `sdp_records` table is automatically created during database initialization. Migration happens automatically when BLEEP detects schema version 6.
+
+**Migration Steps:**
+1. Create `sdp_records` table for full SDP record snapshots
+2. Create indexes on `mac`, `uuid`, and `ts` for performance
+3. Update schema version to 7
+
+**No Data Loss:**
+- Existing `classic_services` table preserved (basic UUID/channel mapping)
+- SDP records table is additive (detailed snapshots)
+- Both tables coexist for different use cases
 
 ## Best Practices
 

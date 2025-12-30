@@ -87,8 +87,17 @@ class system_dbus__bluez_device__classic:
             print_and_log(f"[+] Successfully paired with {self.mac_address}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Pairing failed: {str(e)}", LOG__GENERAL)
-            raise map_dbus_error(e)
+            error_name = e.get_dbus_name() or "unknown"
+            error_msg = e.get_dbus_message() or ""
+            error_str = f"{error_name}: {error_msg}" if error_msg else error_name
+            print_and_log(
+                f"[-] Pairing failed: method=Pair, device_path={self._device_path}, "
+                f"adapter={self.adapter_name}, error={error_str}",
+                LOG__GENERAL,
+            )
+            # Ensure mapped exception preserves D-Bus message text
+            mapped_error = map_dbus_error(e)
+            raise mapped_error
             
     def set_trusted(self, trusted: bool = True) -> bool:
         """Set the device as trusted or untrusted.
@@ -114,7 +123,10 @@ class system_dbus__bluez_device__classic:
             print_and_log(f"[*] Device {self.mac_address} set as {trust_status}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Setting trust failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Setting trust failed ({self._device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
             
     # ---------------------------------------------------------------------
@@ -174,7 +186,14 @@ class system_dbus__bluez_device__classic:
                 print_and_log(f"[-] Connection timed out", LOG__DEBUG)
                 
             except dbus.exceptions.DBusException as e:
-                print_and_log(f"[-] Connection failed: {str(e)}", LOG__DEBUG)
+                error_name = e.get_dbus_name() or "unknown"
+                error_msg = e.get_dbus_message() or ""
+                error_str = f"{error_name}: {error_msg}" if error_msg else error_name
+                print_and_log(
+                    f"[-] Connection failed: method=Connect, device_path={self._device_path}, "
+                    f"adapter={self.adapter_name}, error={error_str}",
+                    LOG__DEBUG,
+                )
                 if self._connect_retry_attempt >= retry:
                     error = map_dbus_error(e)
                     raise ConnectionError(self.mac_address, str(error))
@@ -217,7 +236,10 @@ class system_dbus__bluez_device__classic:
                 return True
                 
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Disconnection failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Disconnection failed ({self._device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
             
     # ---------------------------------------------------------------------
@@ -234,7 +256,10 @@ class system_dbus__bluez_device__classic:
         try:
             return bool(self._props_iface.Get(DEVICE_INTERFACE, "Connected"))
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Error checking connection status: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Error checking connection status ({self._device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return False
             
     def alias(self) -> Optional[str]:
@@ -511,7 +536,16 @@ class system_dbus__bluez_device__classic:
                         pass
                         
         except (dbus.exceptions.DBusException, KeyError) as e:
-            print_and_log(f"[-] Error updating profiles: {str(e)}", LOG__DEBUG)
+            if isinstance(e, dbus.exceptions.DBusException):
+                print_and_log(
+                    f"[-] Error updating profiles ({self._device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                    LOG__DEBUG,
+                )
+            else:
+                print_and_log(
+                    f"[-] Error updating profiles ({self._device_path}): {e}",
+                    LOG__DEBUG,
+                )
             
     def get_supported_profiles(self) -> List[str]:
         """Get the list of profiles supported by the device.
@@ -575,7 +609,10 @@ class system_dbus__bluez_device__classic:
             return False
             
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Profile connection failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Profile connection failed ({self._device_path}, uuid={profile_uuid}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
             
     def disconnect_profile(self, profile_uuid: str) -> bool:
@@ -615,7 +652,10 @@ class system_dbus__bluez_device__classic:
             return False
             
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Profile disconnection failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Profile disconnection failed ({self._device_path}, uuid={profile_uuid}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
             
     # ---------------------------------------------------------------------

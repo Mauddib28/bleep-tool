@@ -23,7 +23,11 @@ from bleep.dbuslayer.agent import (
     EnhancedAgent,
     PairingAgent,
     TrustManager,
-    create_agent
+    create_agent,
+)
+from bleep.bt_ref.constants import (
+    BLUEZ_SERVICE_NAME,
+    MANAGER_INTERFACE,
 )
 
 # ---------------------------------------------------------------------------
@@ -64,8 +68,76 @@ def _build_arg_parser() -> argparse.ArgumentParser:  # noqa: D401 – cli helper
     p.add_argument("--storage-path", help="Path to store bonding information")
     p.add_argument("--timeout", type=int, default=30, 
                   help="Timeout for pairing operations (seconds)")
+    p.add_argument("--status", action="store_true", help="Check BLEEP agent registration status")
     p.add_argument("-h", "--help", action="help")
     return p
+
+
+def _check_agent_status(bus) -> int:
+    """Check if BLEEP agent is registered and active.
+    
+    Returns
+    -------
+    int
+        Exit code: 0 if agent is registered and default, 1 otherwise
+    """
+    # Import the module to access the private _DEFAULT_AGENT
+    import bleep.dbuslayer.agent as agent_module
+    _DEFAULT_AGENT = getattr(agent_module, '_DEFAULT_AGENT', None)
+    
+    print_and_log("[*] Checking BLEEP agent status...", LOG__GENERAL)
+    
+    if _DEFAULT_AGENT is None:
+        print_and_log("[-] No BLEEP agent created", LOG__GENERAL)
+        print_and_log("[*] Use 'bleep agent --mode=<type> --default' to register an agent", LOG__GENERAL)
+        return 1
+    
+    agent_path = getattr(_DEFAULT_AGENT, 'agent_path', 'unknown')
+    is_registered = _DEFAULT_AGENT.is_registered()
+    agent_class = _DEFAULT_AGENT.__class__.__name__
+    
+    print_and_log(f"[*] BLEEP agent exists: class={agent_class}, path={agent_path}, registered={is_registered}", LOG__GENERAL)
+    
+    if not is_registered:
+        print_and_log("[-] BLEEP agent exists but is not registered with BlueZ", LOG__GENERAL)
+        print_and_log("[*] Agent may need to be re-registered", LOG__GENERAL)
+        return 1
+    
+    # Try to verify if it's the default agent
+    # Note: BlueZ AgentManager doesn't expose GetDefaultAgent, so we can only
+    # verify registration, not default status directly
+    try:
+        obj = bus.get_object(BLUEZ_SERVICE_NAME, "/org/bluez")
+        mgr = dbus.Interface(obj, MANAGER_INTERFACE)
+        
+        # We can't directly query default agent, but we can confirm our agent is registered
+        # by checking if the agent path exists in the D-Bus tree
+        print_and_log(f"[+] BLEEP agent is registered: path={agent_path}", LOG__GENERAL)
+        print_and_log(
+            "[*] Note: Cannot directly verify if agent is default (BlueZ API limitation). "
+            "If 'RequestDefaultAgent' was called during registration, agent should be default.",
+            LOG__GENERAL
+        )
+        print_and_log(
+            "[*] To verify agent is being used, check agent logs during pairing: "
+            "tail -f /tmp/bti__logging__agent.txt",
+            LOG__GENERAL
+        )
+        return 0
+        
+    except dbus.exceptions.DBusException as e:
+        name = getattr(e, "get_dbus_name", lambda: None)() or "unknown"
+        msg = getattr(e, "get_dbus_message", lambda: None)() or ""
+        print_and_log(
+            f"[!] Could not verify agent status via AgentManager: {name}: {msg}",
+            LOG__GENERAL
+        )
+        print_and_log(f"[*] Agent appears registered: {is_registered}", LOG__GENERAL)
+        return 0 if is_registered else 1
+    except Exception as e:
+        print_and_log(f"[!] Error checking agent status: {str(e)}", LOG__GENERAL)
+        print_and_log(f"[*] Agent appears registered: {is_registered}", LOG__GENERAL)
+        return 0 if is_registered else 1
 
 
 def _get_device_path(bus, mac_address: str) -> str:
@@ -109,6 +181,10 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)  # type: ignore[attr-defined]
 
     bus = dbus.SystemBus()
+    
+    # Handle status check
+    if args.status:
+        return _check_agent_status(bus)
     
     # Handle trust management operations
     if args.trust or args.untrust or args.list_trusted:
@@ -199,17 +275,25 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
             io_handler = create_io_handler("programmatic", auto_accept=args.auto_accept)
         
         # Create the agent
-            agent = create_agent(
-                bus, 
-                agent_type=agent_type, 
-                capabilities=cap, 
-                default=args.default,
-                auto_accept=args.auto_accept,
-                io_handler=io_handler,
-                storage_path=args.storage_path
-            )
+        agent = create_agent(
+            bus,
+            agent_type=agent_type,
+            capabilities=cap,
+            default=args.default,
+            auto_accept=args.auto_accept,
+            io_handler=io_handler,
+            storage_path=args.storage_path,
+        )
         
-        print_and_log(f"[*] Agent registered ({agent.__class__.__name__}, cap={cap})", LOG__GENERAL)
+        # Log the exact chosen agent type + cap + default + auto_accept + agent_path
+        io_handler_type = io_handler.__class__.__name__ if io_handler else 'none'
+        agent_path = getattr(agent, 'agent_path', 'unknown')
+        print_and_log(
+            f"[*] Agent registered: agent_type={agent.__class__.__name__}, capabilities={cap}, "
+            f"default={args.default}, auto_accept={args.auto_accept}, agent_path={agent_path}, "
+            f"io_handler={io_handler_type}",
+            LOG__GENERAL,
+        )
         
         # Handle pairing if requested
         if args.pair and isinstance(agent, PairingAgent):

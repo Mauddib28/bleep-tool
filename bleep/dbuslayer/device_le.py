@@ -11,6 +11,7 @@ characteristic helpers and notification routing will arrive in Phase-5.
 from __future__ import annotations
 
 import re
+import threading
 import time
 from typing import Dict, Any, Optional, List, Union
 
@@ -85,10 +86,14 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         self._landmine_map = {}  # Category -> {uuid: details}
         self._security_map = {}  # Requirement -> {uuid: details}
         
-        # Legacy compatibility for old mappings
-        self.ble_device__mapping = {}  # Handle -> UUID
+        # GATT mapping caches
+        # - ble_device__mapping: service_uuid -> {"name","start_handle","end_handle","chars":{char_uuid:{...}}}
+        # - ble_device__handle_uuid_map: "0x0001" / int(handle) -> uuid (legacy/CTF helpers)
+        self.ble_device__mapping: dict = {}
+        self.ble_device__handle_uuid_map: dict = {}
         self.ble_device__mine_mapping = {}
         self.ble_device__permission_mapping = {}
+        self._logged_missing_device_class = False
 
         # Device type detection cache (updated after service resolution)
         self.device_type_flags: Dict[str, bool] = {
@@ -101,6 +106,14 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         
         # Flag to prevent recursion between services_resolved and check_device_type
         self._in_device_type_check = False
+
+        # Connection state tracking
+        self._connection_state = "disconnected"  # "disconnected", "connecting", "connected", "disconnecting"
+        self._connection_state_lock = threading.Lock()  # Thread-safe state updates
+        self._connection_start_time = None  # Timestamp when connection attempt started
+        self._last_connection_check = None  # Timestamp of last is_connected() check
+        self._dbus_health_issues = False  # Flag for D-Bus health problems
+        self._dbus_error_count = 0  # Counter for consecutive D-Bus errors
 
         # Register with global signals manager
         _signals_manager.register_device(self)
@@ -141,13 +154,22 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             print_and_log(f"[+] Successfully paired with {self.mac_address}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
+            error_name = e.get_dbus_name() or "unknown"
+            error_msg = e.get_dbus_message() or ""
+            error_str = f"{error_name}: {error_msg}" if error_msg else error_name
+            print_and_log(
+                f"[-] Pairing failed: method=Pair, device_path={self._device_path}, "
+                f"adapter={self.adapter_name}, error={error_str}",
+                LOG__GENERAL,
+            )
             BlueZErrorHandler.handle_dbus_error(
                 e, 
                 operation="pair", 
                 device=self.mac_address
             )
-            print_and_log(f"[-] Pairing failed: {BlueZErrorHandler.get_user_friendly_message(e)}", LOG__GENERAL)
-            raise map_dbus_error(e)
+            # Ensure mapped exception preserves D-Bus message text
+            mapped_error = map_dbus_error(e)
+            raise mapped_error
 
     @BlueZErrorHandler.connection_check
     def set_trusted(self, trusted: bool = True):
@@ -176,7 +198,10 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                 operation="set_trusted", 
                 device=self.mac_address
             )
-            print_and_log(f"[-] Setting trust failed: {BlueZErrorHandler.get_user_friendly_message(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Setting trust failed ({self._device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
 
     # ---------------------------------------------------------------------
@@ -193,6 +218,83 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             Seconds to wait for *Connected* property to become *True* after
             each *Connect()* call.  Some BLE stacks need >5 s when bonding.
         """
+        # PRE-CONNECTION CHECKS
+        # 1. Check if already connected to this device
+        try:
+            if self.is_connected():
+                with self._connection_state_lock:
+                    if self._connection_state != "connected":
+                        self._connection_state = "connected"
+                    self._last_connection_check = time.time()
+                print_and_log(
+                    f"[+] Device {self.mac_address} is already connected",
+                    LOG__GENERAL
+                )
+                return True
+        except Exception as e:
+            # If is_connected() fails, we may have D-Bus issues
+            print_and_log(
+                f"[!] Could not check connection state: {e}",
+                LOG__DEBUG
+            )
+
+        # 2. Check if connection is already in progress
+        if self.is_connection_in_progress():
+            print_and_log(
+                f"[!] Connection to {self.mac_address} already in progress, waiting...",
+                LOG__GENERAL
+            )
+            # Wait for existing connection attempt to complete
+            waited = 0.0
+            while waited < wait_timeout and self.is_connection_in_progress():
+                time.sleep(0.5)
+                waited += 0.5
+                # Check if it succeeded while we waited
+                try:
+                    if self.is_connected():
+                        with self._connection_state_lock:
+                            self._connection_state = "connected"
+                        print_and_log(
+                            f"[+] Connection completed while waiting",
+                            LOG__GENERAL
+                        )
+                        return True
+                except Exception:
+                    pass
+
+        # 3. Check D-Bus health
+        dbus_healthy = self._check_dbus_health()
+        if not dbus_healthy:
+            print_and_log(
+                f"[!] D-Bus health issues detected, performing soft-reset via disconnect",
+                LOG__GENERAL
+            )
+            # Soft-reset: disconnect to clear any stale state
+            try:
+                self._device_iface.Disconnect()
+                time.sleep(0.5)  # Brief pause after disconnect
+            except dbus.exceptions.DBusException:
+                pass  # Ignore errors during soft-reset
+
+        # 4. Check if any other device is connected (optional warning)
+        try:
+            if _signals_manager.has_any_connected_device():
+                connected_devs = _signals_manager.get_connected_devices()
+                other_connected = [d for d in connected_devs 
+                                  if d.mac_address != self.mac_address]
+                if other_connected:
+                    print_and_log(
+                        f"[*] Note: {len(other_connected)} other device(s) currently connected",
+                        LOG__DEBUG
+                    )
+        except Exception:
+            pass  # Non-critical check
+
+        # Set connection state to "connecting"
+        with self._connection_state_lock:
+            self._connection_state = "connecting"
+            self._connection_start_time = time.time()
+
         print_and_log(f"[*] Attempting connection to {self.mac_address}", LOG__USER)
         self._connect_retry_attempt = 0
         self._attach_property_signal()
@@ -228,15 +330,50 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                     waited += 0.1
 
                 if not self.is_connected():
+                    with self._connection_state_lock:
+                        self._connection_state = "disconnected"
                     raise errors.ConnectionError(self.mac_address, "timeout")
+
+                # Connection successful - update state
+                with self._connection_state_lock:
+                    self._connection_state = "connected"
+                    self._connection_start_time = None
+                    self._last_connection_check = time.time()
+                    self._dbus_health_issues = False
+                    self._dbus_error_count = 0
 
                 print_and_log(f"[+] Connected to {self.mac_address}", LOG__GENERAL)
                 return True
 
             except dbus.exceptions.DBusException as e:
                 mapped = map_dbus_error(e)
+                error_name = e.get_dbus_name()
+                error_msg = e.get_dbus_message() or ""
+
+                # Check if device is already connected (success case)
+                if error_name == "org.bluez.Error.AlreadyConnected" or \
+                   "already connected" in error_msg.lower():
+                    # Verify actual connection state
+                    try:
+                        if self.is_connected():
+                            with self._connection_state_lock:
+                                self._connection_state = "connected"
+                                self._connection_start_time = None
+                                self._last_connection_check = time.time()
+                            print_and_log(
+                                f"[+] Device {self.mac_address} was already connected",
+                                LOG__GENERAL
+                            )
+                            return True
+                    except Exception:
+                        pass  # Fall through to normal error handling
+
+                error_name = e.get_dbus_name() or "unknown"
+                error_msg = e.get_dbus_message() or ""
+                error_str = f"{error_name}: {error_msg}" if error_msg else error_name
                 print_and_log(
-                    f"[-] Connection attempt {self._connect_retry_attempt} failed: {mapped}",
+                    f"[-] Connection attempt {self._connect_retry_attempt} failed: method=Connect, "
+                    f"device_path={self._device_path}, adapter={self.adapter_name}, error={error_str} → {mapped}",
                     LOG__DEBUG,
                 )
 
@@ -244,7 +381,7 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                 # *InProgress* and retry after a brief exponential back-off.
                 transient = (
                     isinstance(mapped, errors.OperationInProgressError)
-                    or "Software caused connection abort" in str(e)
+                    or "Software caused connection abort" in error_msg
                 )
 
                 if transient and self._connect_retry_attempt < retry:
@@ -255,23 +392,44 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
 
                 # Propagate the *last* failure when retries exhausted
                 if self._connect_retry_attempt >= retry:
+                    with self._connection_state_lock:
+                        self._connection_state = "disconnected"
+                        self._connection_start_time = None
                     raise mapped
 
+        # All retries exhausted
+        with self._connection_state_lock:
+            self._connection_state = "disconnected"
+            self._connection_start_time = None
         return False
 
     def disconnect(self):
         """Disconnect from the device."""
         print_and_log(f"[*] Disconnecting from {self.mac_address}", LOG__USER)
+        
+        with self._connection_state_lock:
+            self._connection_state = "disconnecting"
+        
         try:
             # Stop reconnection monitoring if active
             if hasattr(self, "_reconnection_monitor") and self._reconnection_monitor:
                 self._reconnection_monitor.stop_monitoring()
                 
             self._device_iface.Disconnect()
+            
+            with self._connection_state_lock:
+                self._connection_state = "disconnected"
+                self._connection_start_time = None
+            
             print_and_log(f"[+] Disconnected from {self.mac_address}", LOG__GENERAL)
             return True
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Disconnect failed: {str(e)}", LOG__DEBUG)
+            with self._connection_state_lock:
+                self._connection_state = "disconnected"
+            print_and_log(
+                f"[-] Disconnect failed ({self._device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
 
     # ------------------------------------------------------------------
@@ -279,9 +437,80 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
     # ------------------------------------------------------------------
     def is_connected(self) -> bool:
         try:
-            return bool(self._props_iface.Get(DEVICE_INTERFACE, "Connected"))
+            connected = bool(self._props_iface.Get(DEVICE_INTERFACE, "Connected"))
+            with self._connection_state_lock:
+                self._last_connection_check = time.time()
+            return connected
         except dbus.exceptions.DBusException as e:
             raise map_dbus_error(e)
+    
+    def is_connection_in_progress(self) -> bool:
+        """Check if a connection attempt is currently in progress.
+        
+        Returns
+        -------
+        bool
+            True if connection is in progress, False otherwise
+        """
+        with self._connection_state_lock:
+            if self._connection_state == "connecting":
+                # Check if connection attempt has timed out (stale state)
+                if self._connection_start_time:
+                    elapsed = time.time() - self._connection_start_time
+                    if elapsed > 30.0:  # 30 second timeout for stale "connecting" state
+                        self._connection_state = "disconnected"
+                        self._connection_start_time = None
+                        return False
+                return True
+            return False
+
+    def has_dbus_health_issues(self) -> bool:
+        """Check if D-Bus is experiencing health issues.
+        
+        Returns
+        -------
+        bool
+            True if D-Bus issues detected, False otherwise
+        """
+        with self._connection_state_lock:
+            return self._dbus_health_issues
+
+    def _check_dbus_health(self) -> bool:
+        """Check D-Bus connection health by attempting a simple property read.
+        
+        Returns
+        -------
+        bool
+            True if D-Bus is healthy, False if issues detected
+        """
+        try:
+            # Attempt a lightweight property read to test D-Bus health
+            _ = self._props_iface.Get(DEVICE_INTERFACE, "Address")
+            with self._connection_state_lock:
+                self._dbus_health_issues = False
+                self._dbus_error_count = 0
+            return True
+        except (dbus.exceptions.DBusException, AttributeError, Exception) as e:
+            error_name = getattr(e, 'get_dbus_name', lambda: None)()
+            if error_name in ("org.freedesktop.DBus.Error.NoReply", 
+                              "org.freedesktop.DBus.Error.ServiceUnknown",
+                              "org.freedesktop.DBus.Error.NameHasNoOwner"):
+                with self._connection_state_lock:
+                    self._dbus_health_issues = True
+                    self._dbus_error_count += 1
+                return False
+            return True  # Other errors don't indicate D-Bus health issues
+
+    def get_connection_state(self) -> str:
+        """Get the current connection state.
+        
+        Returns
+        -------
+        str
+            One of: "disconnected", "connecting", "connected", "disconnecting"
+        """
+        with self._connection_state_lock:
+            return self._connection_state
         
     def is_paired(self) -> bool:
         try:
@@ -361,12 +590,22 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         try:
             return str(self._props_iface.Get(DEVICE_INTERFACE, "Address"))
         except dbus.exceptions.DBusException as e:
+            # Preserve legacy behavior (return None), but add structured diagnostics.
+            print_and_log(
+                f"[DEBUG] Failed to get Device1.Address ({self._device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
 
     def get_address_type(self) -> Optional[str]:
         try:
             return str(self._props_iface.Get(DEVICE_INTERFACE, "AddressType"))
         except dbus.exceptions.DBusException as e:
+            # Preserve legacy behavior (return None), but add structured diagnostics.
+            print_and_log(
+                f"[DEBUG] Failed to get Device1.AddressType ({self._device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
         
     def get_device_icon(self) -> Optional[str]:
@@ -385,6 +624,25 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             ## Note: This is a 32-bit integer, so we need to convert it to a string
             #    -> Use the existing function decode__class_of_device() from the monolith code
         except dbus.exceptions.DBusException as e:
+            # On LE-only devices BlueZ does not expose Device1.Class at all.
+            # Avoid log spam for the expected "No such property 'Class'" case.
+            if (
+                e.get_dbus_name() == "org.freedesktop.DBus.Error.InvalidArgs"
+                and "No such property 'Class'" in (e.get_dbus_message() or "")
+            ):
+                if not self._logged_missing_device_class:
+                    # Log once per device instance so debugging still has a breadcrumb.
+                    print_and_log(
+                        f"[DEBUG] Device1.Class not available for this device ({self._device_path})",
+                        LOG__DEBUG,
+                    )
+                    self._logged_missing_device_class = True
+                return None
+            # Preserve legacy behavior (return None), but add structured diagnostics.
+            print_and_log(
+                f"[DEBUG] Failed to get Device1.Class ({self._device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             return None
         
     def get_device_appearance(self) -> Optional[dbus.UInt16]:
@@ -629,26 +887,56 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             service = Service(self._bus, path, uuid, primary)
             self._services.append(service)
 
-        # Build mapping of handles to UUIDs for legacy compatibility
-        self.ble_device__mapping = {}
-        
-        # Populate the services with their characteristics
+        # Build two representations:
+        # - structured service->characteristic mapping for scanners/tools
+        # - handle->uuid map for legacy helpers
+        svc_map: dict[str, Any] = {}
+        handle_map: dict[Any, str] = {}
+
+        def _flags_to_properties(flags: list[str]) -> dict[str, bool]:
+            # BlueZ flags are strings like: read/write/write-without-response/notify/indicate/...
+            props = {f: True for f in flags}
+            # normalize common aliases used in older code paths
+            if "write-without-response" in props and "write_without_response" not in props:
+                props["write_without_response"] = True
+            return props
+
         for service in self._services:
             service.discover_characteristics()
-            
-            # Add characteristics to mapping
-            for char in service.characteristics:
-                handle = char.handle
-                if handle is not None:
-                    # Use handle_int_to_hex for consistent hex representation
-                    self.ble_device__mapping[handle_int_to_hex(handle)] = char.uuid
 
-                # Add descriptors to mapping
-                for desc in char.descriptors:
-                    desc_handle = desc.handle
-                    if desc_handle is not None:
-                        # Use handle_int_to_hex for consistent hex representation
-                        self.ble_device__mapping[handle_int_to_hex(desc_handle)] = desc.uuid
+            svc_entry: dict[str, Any] = {
+                "name": None,
+                "start_handle": handle_int_to_hex(service.handle) if getattr(service, "handle", None) is not None else None,
+                "end_handle": None,
+                "chars": {},
+            }
+
+            for char in service.characteristics:
+                ch_handle = getattr(char, "handle", None)
+                if ch_handle is not None:
+                    hx = handle_int_to_hex(ch_handle)
+                    handle_map[hx] = char.uuid
+                    handle_map[ch_handle] = char.uuid
+
+                svc_entry["chars"][char.uuid] = {
+                    "label": None,
+                    "handle": handle_int_to_hex(ch_handle) if ch_handle is not None else None,
+                    "properties": _flags_to_properties(getattr(char, "flags", []) or []),
+                    "value": None,
+                }
+
+                # Descriptors: include in handle map for legacy lookup only (they're not "chars")
+                for desc in getattr(char, "descriptors", []) or []:
+                    d_handle = getattr(desc, "handle", None)
+                    if d_handle is not None:
+                        dhx = handle_int_to_hex(d_handle)
+                        handle_map[dhx] = getattr(desc, "uuid", None) or ""
+                        handle_map[d_handle] = getattr(desc, "uuid", None) or ""
+
+            svc_map[service.uuid] = svc_entry
+
+        self.ble_device__mapping = svc_map
+        self.ble_device__handle_uuid_map = handle_map
 
         # Perform deep enumeration if requested
         if deep:
@@ -679,7 +967,7 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         # ------------------------------------------------------------------
         # Step-0  Reset state ------------------------------------------------
         # ------------------------------------------------------------------
-        self.ble_device__mapping = {"Services": {}}
+        self.ble_device__mapping = {}
         self.ble_device__mine_mapping = {"in_review": {"uncategorized": []}}
         self.ble_device__permission_mapping = {"in_review": {"uncategorized": []}}
 
@@ -692,7 +980,7 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         # ------------------------------------------------------------------
         for svc in self._services:
             svc_entry: dict[str, Any] = {"Characteristics": {}}
-            self.ble_device__mapping["Services"][svc.uuid] = svc_entry
+            self.ble_device__mapping[svc.uuid] = svc_entry
 
             for char in svc.get_characteristics():
                 char_map: dict[str, Any] = {
@@ -1282,17 +1570,25 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             return
 
         if "Connected" in changed:
-            if not changed["Connected"]:
-                print_and_log(f"[*] Device {self.mac_address} disconnected", LOG__DEBUG)
-                # If we have a reconnection monitor and it's not already handling this,
-                # trigger reconnection
-                if (hasattr(self, "_reconnection_monitor") and 
-                        self._reconnection_monitor and 
-                        self._reconnection_monitor._monitoring):
-                    # The monitor will handle this in its thread
-                    pass
-            else:
-                print_and_log(f"[*] Device {self.mac_address} connected", LOG__DEBUG)
+            with self._connection_state_lock:
+                if not changed["Connected"]:
+                    print_and_log(f"[*] Device {self.mac_address} disconnected", LOG__DEBUG)
+                    self._connection_state = "disconnected"
+                    self._connection_start_time = None
+                    # If we have a reconnection monitor and it's not already handling this,
+                    # trigger reconnection
+                    if (hasattr(self, "_reconnection_monitor") and 
+                            self._reconnection_monitor and 
+                            self._reconnection_monitor._monitoring):
+                        # The monitor will handle this in its thread
+                        pass
+                else:
+                    print_and_log(f"[*] Device {self.mac_address} connected", LOG__DEBUG)
+                    self._connection_state = "connected"
+                    self._connection_start_time = None
+                    self._last_connection_check = time.time()
+                    self._dbus_health_issues = False
+                    self._dbus_error_count = 0
 
         if "ServicesResolved" in changed:
             if changed["ServicesResolved"]:
@@ -2019,7 +2315,10 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                 print_and_log("[+] RefreshServices method called successfully", LOG__DEBUG)
             except (dbus.exceptions.DBusException, AttributeError) as e:
                 # RefreshServices not available, fall back to disconnect/reconnect
-                print_and_log(f"[*] RefreshServices not available: {str(e)}", LOG__DEBUG)
+                print_and_log(
+                    f"[*] RefreshServices not available ({self._device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                    LOG__DEBUG,
+                )
                 print_and_log("[*] Falling back to disconnect/reconnect method", LOG__DEBUG)
                 
                 # Disconnect
@@ -2045,7 +2344,10 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             return False
             
         except dbus.exceptions.DBusException as e:
-            print_and_log(f"[-] Service re-resolution failed: {str(e)}", LOG__DEBUG)
+            print_and_log(
+                f"[-] Service re-resolution failed ({self._device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
             raise map_dbus_error(e)
     
     def is_services_resolved(self) -> bool:
@@ -2199,7 +2501,16 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             return result
             
         except Exception as e:
-            print_and_log(f"[-] Error checking device type: {str(e)}", LOG__DEBUG)
+            if isinstance(e, dbus.exceptions.DBusException):
+                print_and_log(
+                    f"[-] Error checking device type ({self._device_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                    LOG__DEBUG,
+                )
+            else:
+                print_and_log(
+                    f"[-] Error checking device type ({self._device_path}): {e}",
+                    LOG__DEBUG,
+                )
             # Return default flags on error
             return self.device_type_flags.copy()
         finally:

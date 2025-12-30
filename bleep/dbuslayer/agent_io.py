@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional, Callable, Dict, Any
 
-from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__USER
+from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__USER, LOG__AGENT
 
 __all__ = [
     "AgentIOHandler", 
@@ -173,42 +173,62 @@ class CliIOHandler(AgentIOHandler):
     
     def request_pin_code(self, device_info: str) -> str:
         """Request PIN code from user via CLI."""
-        print_and_log(f"[*] PIN code request for {device_info}", LOG__USER)
-        return input("Enter PIN code: ")
+        print_and_log(
+            f"[*] CliIOHandler: PIN code request for {device_info} (handler_type=cli, auto_accept=False)",
+            LOG__AGENT
+        )
+        pin = input("Enter PIN code: ")
+        print_and_log(f"[+] PIN code entered: {pin}", LOG__AGENT)
+        return pin
         
     def display_pin_code(self, device_info: str, pincode: str) -> None:
         """Display PIN code to user via CLI."""
-        print_and_log(f"[*] PIN code for {device_info}: {pincode}", LOG__USER)
-        print_and_log("[*] Enter this PIN code on the device when prompted.", LOG__USER)
+        print_and_log(f"[*] PIN code for {device_info}: {pincode}", LOG__AGENT)
+        print_and_log("[*] Enter this PIN code on the device when prompted.", LOG__AGENT)
         
     def request_passkey(self, device_info: str) -> int:
         """Request passkey from user via CLI."""
-        print_and_log(f"[*] Passkey request for {device_info}", LOG__USER)
+        print_and_log(
+            f"[*] CliIOHandler: passkey request for {device_info} (handler_type=cli, auto_accept=False)",
+            LOG__AGENT
+        )
         while True:
             try:
-                return int(input("Enter passkey (0-999999): "))
+                passkey = int(input("Enter passkey (0-999999): "))
+                print_and_log(f"[+] Passkey entered: {passkey:06d}", LOG__AGENT)
+                return passkey
             except ValueError:
-                print_and_log("[-] Invalid passkey. Please enter a number.", LOG__USER)
+                print_and_log("[-] Invalid passkey. Please enter a number.", LOG__AGENT)
         
     def display_passkey(self, device_info: str, passkey: int, entered: int) -> None:
         """Display passkey to user via CLI."""
         if entered > 0:
-            print_and_log(f"[*] Passkey for {device_info}: {passkey:06d} ({entered} digits entered)", LOG__USER)
+            print_and_log(f"[*] Passkey for {device_info}: {passkey:06d} ({entered} digits entered)", LOG__AGENT)
         else:
-            print_and_log(f"[*] Passkey for {device_info}: {passkey:06d}", LOG__USER)
-        print_and_log("[*] Enter this passkey on the device when prompted.", LOG__USER)
+            print_and_log(f"[*] Passkey for {device_info}: {passkey:06d}", LOG__AGENT)
+        print_and_log("[*] Enter this passkey on the device when prompted.", LOG__AGENT)
         
     def request_confirmation(self, device_info: str, passkey: int) -> bool:
         """Request confirmation of passkey from user via CLI."""
-        print_and_log(f"[*] Confirm passkey {passkey:06d} for {device_info}", LOG__USER)
+        print_and_log(
+            f"[*] CliIOHandler: confirm passkey for {device_info} passkey={passkey:06d} (handler_type=cli, auto_accept=False)",
+            LOG__AGENT
+        )
         response = input("Confirm? (yes/no): ").lower()
-        return response in ["yes", "y"]
+        confirmed = response in ["yes", "y"]
+        print_and_log(f"[{'+' if confirmed else '-'}] Passkey confirmation: {'accepted' if confirmed else 'rejected'}", LOG__AGENT)
+        return confirmed
         
     def request_authorization(self, device_info: str) -> bool:
         """Request authorization from user via CLI."""
-        print_and_log(f"[*] Authorization request for {device_info}", LOG__USER)
+        print_and_log(
+            f"[*] CliIOHandler: authorize pairing for {device_info} (handler_type=cli, auto_accept=False)",
+            LOG__AGENT
+        )
         response = input("Authorize pairing? (yes/no): ").lower()
-        return response in ["yes", "y"]
+        authorized = response in ["yes", "y"]
+        print_and_log(f"[{'+' if authorized else '-'}] Pairing authorization: {'accepted' if authorized else 'rejected'}", LOG__AGENT)
+        return authorized
         
     def authorize_service(self, device_info: str, uuid: str) -> bool:
         """Request service authorization from user via CLI."""
@@ -277,7 +297,10 @@ class ProgrammaticIOHandler(AgentIOHandler):
             return self.callbacks["request_pin_code"](device_info)
             
         # Log default behavior
-        print_and_log(f"[*] Using default PIN code for {device_info}: {self.default_pin}", LOG__DEBUG)
+        print_and_log(
+            f"[*] ProgrammaticIOHandler: default PIN for {device_info} (auto_accept={self.auto_accept}): {self.default_pin}",
+            LOG__AGENT,
+        )
         return self.default_pin
         
     def display_pin_code(self, device_info: str, pincode: str) -> None:
@@ -286,7 +309,7 @@ class ProgrammaticIOHandler(AgentIOHandler):
             self.callbacks["display_pin_code"](device_info, pincode)
         else:
             # Log even if no callback
-            print_and_log(f"[*] PIN code for {device_info}: {pincode}", LOG__DEBUG)
+            print_and_log(f"[*] PIN code for {device_info}: {pincode}", LOG__AGENT)
         
     def request_passkey(self, device_info: str) -> int:
         """Request passkey via callback if available."""
@@ -294,7 +317,10 @@ class ProgrammaticIOHandler(AgentIOHandler):
             return self.callbacks["request_passkey"](device_info)
             
         # Log default behavior
-        print_and_log(f"[*] Using default passkey for {device_info}: {self.default_passkey}", LOG__DEBUG)
+        print_and_log(
+            f"[*] ProgrammaticIOHandler: default passkey for {device_info} (auto_accept={self.auto_accept}): {self.default_passkey:06d}",
+            LOG__AGENT,
+        )
         return self.default_passkey
         
     def display_passkey(self, device_info: str, passkey: int, entered: int) -> None:
@@ -303,7 +329,10 @@ class ProgrammaticIOHandler(AgentIOHandler):
             self.callbacks["display_passkey"](device_info, passkey, entered)
         else:
             # Log even if no callback
-            print_and_log(f"[*] Passkey for {device_info}: {passkey:06d} ({entered} digits entered)", LOG__DEBUG)
+            if entered > 0:
+                print_and_log(f"[*] Passkey for {device_info}: {passkey:06d} ({entered} digits entered)", LOG__AGENT)
+            else:
+                print_and_log(f"[*] Passkey for {device_info}: {passkey:06d}", LOG__AGENT)
         
     def request_confirmation(self, device_info: str, passkey: int) -> bool:
         """Request confirmation via callback if available."""
@@ -311,10 +340,10 @@ class ProgrammaticIOHandler(AgentIOHandler):
             return self.callbacks["request_confirmation"](device_info, passkey)
             
         # Log default behavior
-        if self.auto_accept:
-            print_and_log(f"[*] Auto-confirming passkey {passkey:06d} for {device_info}", LOG__DEBUG)
-        else:
-            print_and_log(f"[*] Auto-rejecting passkey {passkey:06d} for {device_info}", LOG__DEBUG)
+        print_and_log(
+            f"[*] ProgrammaticIOHandler: confirmation for {device_info} passkey={passkey:06d} auto_accept={self.auto_accept}",
+            LOG__AGENT,
+        )
             
         return self.auto_accept
         
@@ -324,10 +353,10 @@ class ProgrammaticIOHandler(AgentIOHandler):
             return self.callbacks["request_authorization"](device_info)
             
         # Log default behavior
-        if self.auto_accept:
-            print_and_log(f"[*] Auto-authorizing pairing for {device_info}", LOG__DEBUG)
-        else:
-            print_and_log(f"[*] Auto-rejecting pairing for {device_info}", LOG__DEBUG)
+        print_and_log(
+            f"[*] ProgrammaticIOHandler: pairing authorization for {device_info} auto_accept={self.auto_accept}",
+            LOG__AGENT,
+        )
             
         return self.auto_accept
         
@@ -381,35 +410,50 @@ class AutoAcceptIOHandler(AgentIOHandler):
     def request_pin_code(self, device_info: str) -> str:
         """Auto-accept PIN code request."""
         if self.verbose:
-            print_and_log(f"[*] Auto-accepting PIN request for {device_info} with '{self.default_pin}'", LOG__DEBUG)
+            print_and_log(
+                f"[*] AutoAcceptIOHandler: PIN request for {device_info} default_pin='{self.default_pin}'",
+                LOG__AGENT,
+            )
         return self.default_pin
         
     def display_pin_code(self, device_info: str, pincode: str) -> None:
         """Log PIN code display."""
         if self.verbose:
-            print_and_log(f"[*] PIN code for {device_info}: {pincode}", LOG__DEBUG)
+            print_and_log(f"[*] PIN code for {device_info}: {pincode}", LOG__AGENT)
         
     def request_passkey(self, device_info: str) -> int:
         """Auto-accept passkey request."""
         if self.verbose:
-            print_and_log(f"[*] Auto-accepting passkey request for {device_info} with {self.default_passkey}", LOG__DEBUG)
+            print_and_log(
+                f"[*] AutoAcceptIOHandler: passkey request for {device_info} default_passkey={self.default_passkey:06d}",
+                LOG__AGENT,
+            )
         return self.default_passkey
         
     def display_passkey(self, device_info: str, passkey: int, entered: int) -> None:
         """Log passkey display."""
         if self.verbose:
-            print_and_log(f"[*] Passkey for {device_info}: {passkey:06d} ({entered} digits entered)", LOG__DEBUG)
+            if entered > 0:
+                print_and_log(f"[*] Passkey for {device_info}: {passkey:06d} ({entered} digits entered)", LOG__AGENT)
+            else:
+                print_and_log(f"[*] Passkey for {device_info}: {passkey:06d}", LOG__AGENT)
         
     def request_confirmation(self, device_info: str, passkey: int) -> bool:
         """Auto-confirm passkey."""
         if self.verbose:
-            print_and_log(f"[*] Auto-confirming passkey {passkey:06d} for {device_info}", LOG__DEBUG)
+            print_and_log(
+                f"[*] AutoAcceptIOHandler: confirm passkey for {device_info} passkey={passkey:06d} (auto_accept=True)",
+                LOG__AGENT,
+            )
         return True
         
     def request_authorization(self, device_info: str) -> bool:
         """Auto-authorize pairing."""
         if self.verbose:
-            print_and_log(f"[*] Auto-authorizing pairing for {device_info}", LOG__DEBUG)
+            print_and_log(
+                f"[*] AutoAcceptIOHandler: authorize pairing for {device_info} (auto_accept=True)",
+                LOG__AGENT,
+            )
         return True
         
     def authorize_service(self, device_info: str, uuid: str) -> bool:
