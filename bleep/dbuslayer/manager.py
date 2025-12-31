@@ -13,6 +13,7 @@ so higher-level code keeps working unchanged.
 from __future__ import annotations
 
 import re
+import threading
 from typing import Dict, List, Optional, Any
 
 import dbus
@@ -81,6 +82,11 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
         self._mainloop: Optional[GLib.MainLoop] = None
         self._timer_id: Optional[int] = None
         self._discovery_timeout_ms = 60_000  # 60 seconds default
+        self._discovery_active: bool = False
+
+        # RSSI cache for capturing RSSI values during discovery
+        self._rssi_cache: Dict[str, int] = {}  # MAC address -> RSSI value
+        self._rssi_cache_lock = threading.Lock()
 
         # Pre-populate device cache for already-known objects
         self.update_devices()
@@ -151,6 +157,9 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
                 raise mapped
 
         self._discovery_timeout_ms = int(timeout * 1000)
+        self._discovery_active = True
+        # Clear RSSI cache when starting new discovery
+        self.clear_rssi_cache()
 
     def stop_discovery(self):
         try:
@@ -176,6 +185,9 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
 
         # Connect signal receivers via the global hub so devices get events.
         _signals_manager.ensure_listening()
+        
+        # Register this DeviceManager instance for RSSI forwarding
+        _signals_manager.register_device_manager(self)
 
         self._mainloop = GLib.MainLoop()
         self._timer_id = GLib.timeout_add(self._discovery_timeout_ms, self._timeout)
@@ -204,6 +216,10 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
             self._timer_id = None
 
         self._mainloop = None
+        self._discovery_active = False
+        # Note: RSSI cache is NOT cleared here - it's cleared at the start of the next discovery
+        # in start_discovery(). This allows get_discovered_devices() to access cached RSSI values
+        # after discovery completes.
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -226,4 +242,38 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
         match = self._device_path_regex.match(device_path)
         if not match:
             return None
-        return match.group(1).replace("_", ":").lower() 
+        return match.group(1).replace("_", ":").lower()
+
+    # ------------------------------------------------------------------
+    # RSSI Cache Management
+    # ------------------------------------------------------------------
+    def is_discovery_active(self) -> bool:
+        """Return True if discovery is currently active."""
+        return self._discovery_active
+
+    def _capture_rssi_from_signal(self, mac_address: str, rssi: int) -> None:
+        """Store RSSI value from PropertiesChanged signal in cache.
+        
+        Args:
+            mac_address: Device MAC address (normalized to lowercase with colons)
+            rssi: RSSI value in dBm
+        """
+        with self._rssi_cache_lock:
+            self._rssi_cache[mac_address] = rssi
+
+    def get_captured_rssi(self, mac_address: str) -> Optional[int]:
+        """Retrieve cached RSSI value for a device.
+        
+        Args:
+            mac_address: Device MAC address (normalized to lowercase with colons)
+            
+        Returns:
+            Cached RSSI value in dBm, or None if not available
+        """
+        with self._rssi_cache_lock:
+            return self._rssi_cache.get(mac_address)
+
+    def clear_rssi_cache(self) -> None:
+        """Clear the RSSI cache."""
+        with self._rssi_cache_lock:
+            self._rssi_cache.clear() 

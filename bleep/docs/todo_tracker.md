@@ -813,7 +813,7 @@ This page aggregates open tasks referenced across the project so contributors ha
 
 > This section tracks gaps in current documentation, particularly for the device tracking and observation capabilities. Addressing these tasks will ensure users can fully leverage the existing features through both CLI and programmatic APIs.
 
-- [ ] **Device Tracking Documentation** (Partially Complete)
+- [x] **Device Tracking Documentation** (Complete)
   - [x] Create comprehensive programmatic API reference for observation module
     - [x] Document each function in `observations.py` with examples (see `observation_db.md` - "Public Function Reference" section)
     - [x] Add integration examples for custom scripts (see `observation_db.md` - "Programmatic Access" section)
@@ -824,11 +824,11 @@ This page aggregates open tasks referenced across the project so contributors ha
     - [x] Add examples of direct usage of AOIAnalyser class methods (see `aoi_mode.md` and `aoi_implementation.md`)
     - [x] Document security analysis algorithms and scoring system (see `aoi_security_algorithms.md`)
     - [x] Provide customization examples for different analysis needs (see `aoi_customization_guide.md`)
-  - [ ] Add real-world usage scenarios
-    - [ ] Long-term device monitoring workflows
-    - [ ] Enterprise device tracking patterns
-    - [ ] Security assessment workflows using observation database
-    - [ ] Integration examples with external systems
+  - [x] Add real-world usage scenarios
+    - [x] Long-term device monitoring workflows (see `observation_db_usage_scenarios.md`)
+    - [x] Enterprise device tracking patterns (see `observation_db_usage_scenarios.md`)
+    - [x] Security assessment workflows using observation database (see `observation_db_usage_scenarios.md`)
+    - [x] Integration examples with external systems (see `observation_db_usage_scenarios.md`)
   - [x] Document detailed database schema
     - [x] Create complete schema diagram with relationships (see `observation_db_schema.md`)
     - [x] Document each table and column with descriptions (see `observation_db_schema.md` - comprehensive table documentation)
@@ -847,6 +847,30 @@ This page aggregates open tasks referenced across the project so contributors ha
   - [ ] Audit large data structure usage
   - [ ] Implement lazy loading patterns for device maps
   - [ ] Add resource cleanup hooks
+    - [ ] **Device object cleanup** (`bleep/dbuslayer/device_le.py`, `bleep/dbuslayer/device_classic.py`)
+      - [ ] Add `cleanup()` method to device classes (clear GATT mappings, unregister signal handlers, release D-Bus proxy references, clear cached data)
+      - [ ] Add `__del__()` method for automatic cleanup (with error handling)
+      - [ ] Add context manager support (`__enter__`, `__exit__`)
+    - [ ] **Signal handler cleanup** (`bleep/dbuslayer/signals.py`)
+      - [ ] Ensure all signal handlers can be unregistered
+      - [ ] Add `unregister_device()` method to signals manager
+      - [ ] Track registered handlers for cleanup
+      - [ ] Add cleanup in device `__del__` methods
+    - [ ] **D-Bus connection cleanup** (`bleep/dbus/connection_pool.py`)
+      - [ ] Ensure connections are properly closed
+      - [ ] Add connection age limits
+      - [ ] Implement automatic cleanup of stale connections
+      - [ ] Add `cleanup_stale_connections()` method
+    - [ ] **Cache size limits** (`bleep/dbuslayer/bond_storage.py`)
+      - [ ] Add max size limit to `PairingCache`
+      - [ ] Implement LRU eviction when cache exceeds limit
+      - [ ] Add `max_size` parameter to `__init__()`
+      - [ ] Add `get_cache_stats()` method
+    - [ ] **Database query result streaming** (`bleep/core/observations.py`)
+      - [ ] For large result sets, use generators instead of lists
+      - [ ] Modify `get_devices()` to support streaming mode
+      - [ ] Add `get_devices_streaming()` function for large datasets
+      - [ ] Update `get_characteristic_timeline()` to use generators for large limits
   - [ ] Document memory usage patterns and recommendations
 
 - [x] **D-Bus Reliability**
@@ -867,6 +891,35 @@ This page aggregates open tasks referenced across the project so contributors ha
     - [x] Document common failure modes and recovery patterns (`bleep/docs/dbus_best_practices.md`)
     - [x] Add examples and templates for robust D-Bus usage (`bleep/docs/d-bus-reliability.md`)
     - [x] Create diagnostic tools for troubleshooting (`bleep/scripts/dbus_diagnostic.py`)
+
+- [x] **RSSI Capture Enhancement for Scan Operations** - **COMPLETE**
+  - [x] **Phase 1: RSSI capture during discovery** (`bleep/dbuslayer/manager.py`, `bleep/dbuslayer/signals.py`)
+    - [x] Add `_rssi_cache` dictionary and `_rssi_cache_lock` to `system_dbus__bluez_device_manager` class
+    - [x] Add `_discovery_active` flag and `is_discovery_active()` method to track discovery state
+    - [x] Implement `_capture_rssi_from_signal(mac_address: str, rssi: int)` method to store RSSI in cache
+    - [x] Add `get_captured_rssi(mac_address: str) -> Optional[int]` method to retrieve cached RSSI
+    - [x] Add `clear_rssi_cache()` method to clear cache when discovery starts/stops
+    - [x] Enhance `_properties_changed()` in `system_dbus__bluez_signals` to detect RSSI updates and forward to DeviceManager
+    - [x] Add `register_device_manager()` method to signals manager for RSSI forwarding
+  - [x] **Phase 2: RSSI merge in get_discovered_devices()** (`bleep/dbuslayer/adapter.py`)
+    - [x] Store `_device_manager` reference in `system_dbus__bluez_adapter` class (already exists via `create_device_manager()`)
+    - [x] Enhance `get_discovered_devices()` to merge RSSI from DeviceManager cache after `GetManagedObjects()` results
+    - [x] Update device dict with cached RSSI if available and current RSSI is None
+    - [x] Fix MAC address format mismatch - normalize to lowercase for cache lookup
+  - [x] **Phase 3: Properties.Get() fallback (connected devices only)** (`bleep/dbuslayer/adapter.py`)
+    - [x] Add fallback logic to query `Properties.Get(DEVICE_INTERFACE, "RSSI")` for devices with `None` RSSI
+    - [x] Only query Properties.Get() for devices where `connected == True`
+    - [x] Skip Properties.Get() for disconnected devices (accept "? dBm" as expected behavior)
+    - [x] Handle `DBusException` gracefully (RSSI may not exist even for connected devices)
+  - [x] **Phase 4: Integration and cleanup** (`bleep/dbuslayer/manager.py`)
+    - [x] Clear RSSI cache in `start_discovery()` before starting discovery
+    - [x] Preserve RSSI cache after discovery completes (removed premature clearing in `_cleanup_after_run()`)
+    - [x] Register DeviceManager with signals manager in `run()` method for RSSI forwarding
+  - [x] **Phase 5: Testing and validation** - **Validated in production**
+    - [x] RSSI values now appear correctly in scan results
+    - [x] MAC address format normalization verified
+    - [x] Cache timing issues resolved
+    - [x] Backward compatibility maintained (existing scan functionality unchanged)
 
 ## CLI Command Enhancements (Completed)
 

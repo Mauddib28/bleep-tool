@@ -21,6 +21,7 @@ from bleep.bt_ref.constants import *
 from bleep.bt_ref.exceptions import *
 from bleep.bt_ref.utils import dbus_to_python
 from bleep.core.log import get_logger
+from bleep.core.errors import BleepError
 from bleep.dbuslayer.manager import (
     system_dbus__bluez_device_manager as _DeviceManager,
 )
@@ -122,6 +123,11 @@ class system_dbus__bluez_adapter:
         
         Device type classification is deferred until after the device is inserted
         into the database to avoid foreign key constraint violations.
+        
+        RSSI values are merged from multiple sources:
+        1. GetManagedObjects() results (primary)
+        2. DeviceManager RSSI cache (captured during discovery)
+        3. Properties.Get() fallback for connected devices only
         """
         try:
             managed_objects = self.get_managed_objects()
@@ -134,12 +140,23 @@ class system_dbus__bluez_adapter:
                     continue
 
                 properties = interfaces[DEVICE_INTERFACE]
+                device_address = properties.get("Address", "")
+                rssi = properties.get("RSSI") if "RSSI" in properties else None
+                
+                # Phase 2: Merge RSSI from DeviceManager cache if available
+                # Normalize MAC address to lowercase for cache lookup (cache stores lowercase)
+                if rssi is None and self._device_manager is not None:
+                    device_address_lower = device_address.lower() if device_address else ""
+                    cached_rssi = self._device_manager.get_captured_rssi(device_address_lower)
+                    if cached_rssi is not None:
+                        rssi = cached_rssi
+                
                 devices.append(
                     {
                         "path": path,
-                        "address": properties.get("Address", ""),
+                        "address": device_address,
                         "name": properties.get("Name", ""),
-                        "rssi": properties.get("RSSI") if "RSSI" in properties else None,
+                        "rssi": rssi,
                         "alias": properties.get("Alias", ""),
                         # Store raw properties for later classification (after device is inserted)
                         "address_type": properties.get("AddressType"),
@@ -149,6 +166,22 @@ class system_dbus__bluez_adapter:
                         # NO device_type determination here - deferred until after upsert_device
                     }
                 )
+
+            # Phase 3: Properties.Get() fallback for connected devices only
+            # Only query Properties.Get() for devices with None RSSI that are connected
+            for device in devices:
+                if device.get("rssi") is None and device.get("connected", False):
+                    try:
+                        props_iface = dbus.Interface(
+                            self.system_bus.get_object(BLUEZ_SERVICE_NAME, device["path"]),
+                            DBUS_PROPERTIES
+                        )
+                        rssi_value = props_iface.Get(DEVICE_INTERFACE, "RSSI")
+                        if rssi_value is not None:
+                            device["rssi"] = int(rssi_value)
+                    except (dbus.exceptions.DBusException, KeyError, AttributeError, ValueError):
+                        # RSSI not available even for connected device - keep as None (acceptable)
+                        pass
 
             return devices
         except Exception as e:

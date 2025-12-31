@@ -428,3 +428,14 @@ python -m bleep.cli db timeline AA:BB:CC:DD:EE:FF --char 2a00
 # Limit the number of entries
 python -m bleep.cli db timeline AA:BB:CC:DD:EE:FF --limit 10
 ```
+
+## Real-World Usage Scenarios
+
+For comprehensive examples of how to use the observation database in real-world scenarios, see [Real-World Usage Scenarios](observation_db_usage_scenarios.md), which includes:
+
+- **Long-term device monitoring workflows**: Continuous monitoring, behavior analysis, and daily inventory reports
+- **Enterprise device tracking patterns**: Corporate asset tracking, multi-location correlation, and inventory management
+- **Security assessment workflows**: Automated security audits, threat detection, and vulnerability identification
+- **Integration examples**: SIEM integration, REST API creation, and database backup/sync
+
+Each scenario includes complete, working code examples that can be adapted to specific use cases.

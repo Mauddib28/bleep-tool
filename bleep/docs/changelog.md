@@ -1,6 +1,14 @@
 ## v2.4.6 – Comprehensive D-Bus Monitoring, Agent Diagnostics, SDP Storage & Error Visibility (2025-12-30)
 
 ### Added
+* **Real-World Usage Scenarios Documentation** – Comprehensive practical examples for observation database:
+  * **Long-term device monitoring workflows**: Continuous device presence monitoring, behavior analysis over time, and automated daily device inventory reports
+  * **Enterprise device tracking patterns**: Corporate asset tracking system, multi-location device correlation, and asset status reporting
+  * **Security assessment workflows**: Automated security audit system, threat detection and alerting, and vulnerable characteristic identification
+  * **Integration examples**: SIEM system integration (Splunk, ELK, Graylog), REST API for database access, and database backup/synchronization
+  * **Complete code examples**: All scenarios include full, working Python code examples that can be adapted to specific use cases
+  * **Files Added**: `bleep/docs/observation_db_usage_scenarios.md` (comprehensive usage guide with 10 detailed scenarios)
+  * **Files Modified**: `bleep/docs/observation_db.md` (added reference to usage scenarios), `bleep/docs/README.md` (added link to usage scenarios), `bleep/docs/todo_tracker.md` (marked real-world usage scenarios as complete)
 * **SDP Record Storage (Schema v7)** – Full SDP record snapshot storage:
   * **New `sdp_records` table**: Stores complete SDP record snapshots with all attributes (Service Record Handle, Profile Descriptor List, Service Version, Service Description, Protocol Descriptors, raw record)
   * **Automatic storage**: SDP records are automatically stored when discovered via `discover_services_sdp()`, `discover_services_sdp_connectionless()`, or D-Bus `GetServiceRecords()` method
@@ -60,6 +68,16 @@
   * Enhanced error handling preserves BlueZ D-Bus error details (e.g., `org.bluez.Error.Failed: br-connection-unknown`) for better diagnostics.
   * All error paths now use `name: message` format following BLEEP error handling patterns.
   * **Status**: Error handling and logging are functional. Full functionality testing and validation is blocked by Classic device connection issues. Requires a Bluetooth Classic target device with no pairing/PIN requirements to properly validate RFCOMM socket operations and ACL keep-alive functionality. Further work pending appropriate test hardware.
+* **RSSI Capture Enhancement for Scan Operations** – Comprehensive RSSI value capture during device discovery:
+  * **Three-tier RSSI capture system**: Primary source from `GetManagedObjects()`, secondary from PropertiesChanged signal cache during discovery, and fallback via `Properties.Get()` for connected devices only
+  * **Signal-based RSSI capture**: Enhanced `PropertiesChanged` handler in `system_dbus__bluez_signals` to detect and cache RSSI updates during active discovery
+  * **DeviceManager RSSI cache**: Thread-safe RSSI cache in `system_dbus__bluez_device_manager` that stores RSSI values captured from D-Bus signals during discovery
+  * **RSSI merge in get_discovered_devices()**: Enhanced `get_discovered_devices()` to merge RSSI from multiple sources, with MAC address normalization for consistent cache lookups
+  * **Connected device fallback**: Properties.Get() fallback only queries RSSI for connected devices (disconnected devices show "? dBm" as expected behavior)
+  * **Cache timing optimization**: RSSI cache persists after discovery completes to allow `get_discovered_devices()` to access cached values
+  * **Backward compatibility**: Existing scan functionality unchanged; RSSI values now appear correctly in scan results
+  * **Files Modified**: `bleep/dbuslayer/manager.py` (added RSSI cache, discovery tracking, signal forwarding), `bleep/dbuslayer/signals.py` (enhanced PropertiesChanged handler for RSSI capture), `bleep/dbuslayer/adapter.py` (enhanced get_discovered_devices() with RSSI merge and fallback)
+  * **Status**: Fully implemented and verified working in production - RSSI values now appear correctly in scan results
 
 ### Fixed
 * **AGENT_INTERFACE Constant** – Critical fix for agent functionality:

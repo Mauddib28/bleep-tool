@@ -435,6 +435,9 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
         # Map device-path prefix -> device instance
         self._devices: dict[str, object] = {}
         
+        # DeviceManager instance for RSSI forwarding (optional)
+        self._device_manager: Optional[Any] = None
+        
         # Enhanced signal handling components
         self._signal_correlator = SignalCorrelator()
         self._property_monitor = PropertyMonitor()
@@ -475,6 +478,14 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
         self._devices.pop(device._device_path, None)  # type: ignore[attr-defined]
         if not self._devices:
             self._detach_bus_listeners()
+
+    def register_device_manager(self, device_manager: Any) -> None:
+        """Register a DeviceManager instance for RSSI forwarding.
+        
+        Args:
+            device_manager: Instance of system_dbus__bluez_device_manager
+        """
+        self._device_manager = device_manager
 
     def has_any_connected_device(self) -> bool:
         """Check if any registered device is currently connected.
@@ -1619,6 +1630,32 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
         # Process property changes for all properties
         for prop_name, value in changed.items():
             self._property_monitor.property_changed(path, interface, prop_name, value)
+            
+        # Capture RSSI updates during discovery and forward to DeviceManager
+        if interface == DEVICE_INTERFACE and "RSSI" in changed:
+            rssi_value = changed["RSSI"]
+            if rssi_value is not None and self._device_manager is not None:
+                # Extract MAC address from device path (e.g., /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX)
+                # Device paths follow pattern: /org/bluez/{adapter}/dev_{MAC}
+                if path.startswith("/org/bluez/") and "/dev_" in path:
+                    try:
+                        # Extract MAC from path: /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX
+                        mac_part = path.split("/dev_")[-1]
+                        # Convert XX_XX_XX_XX_XX_XX to XX:XX:XX:XX:XX:XX
+                        mac_address = mac_part.replace("_", ":").lower()
+                        # Forward to DeviceManager if discovery is active
+                        if hasattr(self._device_manager, "is_discovery_active") and self._device_manager.is_discovery_active():
+                            if hasattr(self._device_manager, "_capture_rssi_from_signal"):
+                                try:
+                                    rssi_int = int(rssi_value) if rssi_value is not None else None
+                                    if rssi_int is not None:
+                                        self._device_manager._capture_rssi_from_signal(mac_address, rssi_int)
+                                except (ValueError, TypeError, AttributeError):
+                                    # Ignore errors in RSSI capture (non-critical)
+                                    pass
+                    except (IndexError, AttributeError):
+                        # Ignore path parsing errors (non-critical)
+                        pass
             
         # Handle GATT characteristic notifications specifically
         if interface == GATT_CHARACTERISTIC_INTERFACE and "Value" in changed:

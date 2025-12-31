@@ -14,6 +14,7 @@ Welcome to the official documentation hub for **BLEEP – Bluetooth Landscape Ex
 - [Pairing agent](pairing_agent.md)
 - [Unified D-Bus Event Aggregator](unified_dbus_event_aggregator.md)
 - [Observation database](observation_db.md)
+  - [Real-World Usage Scenarios](observation_db_usage_scenarios.md)
 - [Assets-of-Interest (AoI) Mode](aoi_mode.md)
   - [AoI Security Analysis Algorithms](aoi_security_algorithms.md)
   - [AoI Customization Guide](aoi_customization_guide.md)
