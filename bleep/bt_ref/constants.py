@@ -175,6 +175,8 @@ UUID_NAMES = {
     # Advanced Audio Distribution Profile (A2DP)
     "0000110a-0000-1000-8000-00805f9b34fb": "Advanced Audio Distribution Profile (A2DP) - A2DP Source",
     "0000110b-0000-1000-8000-00805f9b34fb": "Advanced Audio Distribution Profile (A2DP) - A2DP Sink",
+    # ESP SSP (Custom UUID - not in Bluetooth SIG specifications)
+    "0000abf0-0000-1000-8000-00805f9b34fb": "ESP SSP",
 }
 
 # Common Service/Characteristic UUIDs
@@ -185,5 +187,117 @@ TEMPERATURE_CHR_UUID = "e95d9250-251d-470a-a062-fa1922dfa9a8"
 LED_SVC_UUID = "e95dd91d-251d-470a-a062-fa1922dfa9a8"
 LED_TEXT_CHR_UUID = "e95d93ee-251d-470a-a062-fa1922dfa9a8"
 
+# Service Discovery Server UUID (16-bit form for Classic device type classification)
+SERVICE_DISCOVERY_SERVER_UUID_16 = "1000"
+
 # Arduino BLE Constants
 ARDUINO_BLE__BLE_UUID__MASK = "XXXXXXXX-0000-1000-8000-00805f9b34fb"
+
+# ============================================================================
+# Audio Profile UUIDs (Bluetooth SIG Assigned Numbers)
+# ============================================================================
+# These are commonly used audio profile UUIDs for A2DP, HFP, HSP
+# Full comprehensive list available in bleep.bt_ref.uuids.SPEC_UUID_NAMES__SERV_CLASS
+# Reference: Bluetooth SIG Assigned Numbers - Service Class UUIDs
+
+# A2DP (Advanced Audio Distribution Profile)
+A2DP_SOURCE_UUID = "0000110a-0000-1000-8000-00805f9b34fb"
+A2DP_SINK_UUID = "0000110b-0000-1000-8000-00805f9b34fb"
+
+# HFP (Hands-Free Profile)
+HFP_HANDS_FREE_UUID = "0000111e-0000-1000-8000-00805f9b34fb"
+HFP_AUDIO_GATEWAY_UUID = "0000111f-0000-1000-8000-00805f9b34fb"
+
+# HSP (Headset Profile)
+HSP_AUDIO_GATEWAY_UUID = "00001112-0000-1000-8000-00805f9b34fb"
+HSP_HEADSET_UUID = "00001113-0000-1000-8000-00805f9b34fb"
+
+# AVRCP (Audio/Video Remote Control Profile)
+AVRCP_TARGET_UUID = "0000110c-0000-1000-8000-00805f9b34fb"
+AVRCP_CONTROLLER_UUID = "0000110e-0000-1000-8000-00805f9b34fb"
+
+# Aggregate set of UUIDs that indicate audio-capable devices.
+# Used by Amusica scan filter to identify targets with audio services.
+AUDIO_SERVICE_UUIDS = frozenset({
+    A2DP_SOURCE_UUID,
+    A2DP_SINK_UUID,
+    HFP_HANDS_FREE_UUID,
+    HFP_AUDIO_GATEWAY_UUID,
+    HSP_AUDIO_GATEWAY_UUID,
+    HSP_HEADSET_UUID,
+    AVRCP_TARGET_UUID,
+    AVRCP_CONTROLLER_UUID,
+})
+
+# Profile UUID to human-readable name mapping
+# (Derived from SPEC_UUID_NAMES__SERV_CLASS for consistency)
+AUDIO_PROFILE_NAMES = {
+    A2DP_SOURCE_UUID: "A2DP Source",
+    A2DP_SINK_UUID: "A2DP Sink",
+    HFP_HANDS_FREE_UUID: "HFP Hands-Free",
+    HFP_AUDIO_GATEWAY_UUID: "HFP Audio Gateway",
+    HSP_AUDIO_GATEWAY_UUID: "HSP Audio Gateway",
+    HSP_HEADSET_UUID: "HSP Headset",
+}
+
+# ============================================================================
+# Audio Codec Constants (A2DP Codec IDs)
+# ============================================================================
+# Reference: A2DP Specification, BlueZ MediaEndpoint1 documentation
+# Codec IDs are defined in A2DP specification section 4.3.2
+# These constants represent the codec identifier byte used in A2DP configuration
+
+SBC_CODEC_ID = 0x00
+MP3_CODEC_ID = 0x01
+AAC_CODEC_ID = 0x02
+ATRAC_CODEC_ID = 0x03
+APTX_CODEC_ID = 0x04
+APTX_HD_CODEC_ID = 0x05
+LC3_CODEC_ID = 0x06
+VENDOR_SPECIFIC_CODEC_ID = 0xFF
+
+# Codec ID to human-readable name mapping
+CODEC_NAMES = {
+    SBC_CODEC_ID: "SBC",
+    MP3_CODEC_ID: "MP3",
+    AAC_CODEC_ID: "AAC",
+    ATRAC_CODEC_ID: "ATRAC",
+    APTX_CODEC_ID: "AptX",
+    APTX_HD_CODEC_ID: "AptX HD",
+    LC3_CODEC_ID: "LC3",
+    VENDOR_SPECIFIC_CODEC_ID: "Vendor Specific",
+}
+
+
+def get_codec_name(codec_id: int) -> str:
+    """
+    Get human-readable codec name from codec ID.
+    
+    Parameters
+    ----------
+    codec_id : int
+        Codec ID (e.g., SBC_CODEC_ID = 0x00)
+    
+    Returns
+    -------
+    str
+        Codec name or "Unknown" if not recognized
+    """
+    return CODEC_NAMES.get(codec_id, "Unknown")
+
+
+def get_profile_name(profile_uuid: str) -> str:
+    """
+    Get human-readable profile name from UUID.
+    
+    Parameters
+    ----------
+    profile_uuid : str
+        Profile UUID (e.g., A2DP_SINK_UUID)
+    
+    Returns
+    -------
+    str
+        Profile name or "Unknown Profile" if not recognized
+    """
+    return AUDIO_PROFILE_NAMES.get(profile_uuid.lower(), "Unknown Profile")

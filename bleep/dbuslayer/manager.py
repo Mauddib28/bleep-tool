@@ -242,7 +242,7 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
         match = self._device_path_regex.match(device_path)
         if not match:
             return None
-        return match.group(1).replace("_", ":").lower()
+        return match.group(1).replace("_", ":").lower() 
 
     # ------------------------------------------------------------------
     # RSSI Cache Management

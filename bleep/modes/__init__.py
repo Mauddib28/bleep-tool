@@ -8,7 +8,7 @@ specific features are required.
 from importlib import import_module as _imp
 
 __all__ = ["interactive", "scan", "agent", "exploration", "analysis", "aoi", "signal", "blectf", 
-           "debug", "test", "picow", "scratch"]
+           "debug", "test", "picow", "scratch", "amusica"]
 
 interactive = _imp("bleep.modes.interactive")  # lazy-import to avoid D-Bus cost
 scan = _imp("bleep.modes.scan")
@@ -21,4 +21,5 @@ blectf = _imp("bleep.modes.blectf")  # BLE CTF challenge mode
 debug = _imp("bleep.modes.debug")  # Debug mode for device inspection
 test = _imp("bleep.modes.test")  # Test mode for D-Bus interface testing
 picow = _imp("bleep.modes.picow")  # PicoW mode for Raspberry Pi Pico W devices
-scratch = _imp("bleep.modes.scratch")  # Scratch mode for batch processing 
+scratch = _imp("bleep.modes.scratch")  # Scratch mode for batch processing
+amusica = _imp("bleep.modes.amusica")  # Amusica audio target discovery & manipulation

@@ -1,3 +1,544 @@
+## v2.7.3 – Classic Enumeration Robustness Fix (2026-03-02)
+
+### Fixed
+
+* **`classic-enum` PBAP gate removed** (`classic_sdp.py`): `discover_services_sdp()` no longer requires PBAP (UUID 0x112f) to be present among parsed SDP records. Previously, devices without a PBAP service caused `sdptool failed: PBAP not in browse output` even when valid SDP records with RFCOMM channels were successfully parsed and logged. The function now accepts any parsed records that contain at least one RFCOMM channel.
+
+* **`classic-enum` always displays SDP records** (`cli.py`): The `classic-enum` CLI command now prints a formatted SDP record table (Name, UUID, RFCOMM Channel, Service Record Handle, Profile Descriptors, etc.) immediately after discovery succeeds, regardless of whether the subsequent connection attempt succeeds or fails. Previously, SDP records were only visible in `--debug` mode and the primary output was a JSON service map that required a full connection.
+
+* **Graceful connection failure handling** (`cli.py`): When `classic-enum` obtains SDP records but the connection-based enumeration fails (e.g. `br-connection-create-socket`), the command now reports success (exit 0) with a warning instead of failing with exit 1. The user retains all SDP enumeration data.
+
+### Files Modified
+
+* `bleep/ble_ops/classic_sdp.py` — Removed PBAP-specific gating logic from `discover_services_sdp()`
+* `bleep/cli.py` — Restructured `classic-enum` output to always display SDP records; improved connection failure fallback
+* `bleep/__init__.py` — Version bumped to 2.7.3
+* `bleep/docs/changelog.md` — This entry
+* `bleep/docs/todo_tracker.md` — New tracking section
+* `bleep/docs/bl_classic_mode.md` — Updated output examples
+
+---
+
+## v2.7.2 – Debug Mode Modular Refactor (2026-03-01)
+
+### Changed
+
+* **Debug mode modular architecture**: Refactored the monolithic `debug.py` (3864 lines) into nine focused submodules plus a slim core shell (~270 lines). No behavioral changes — all commands, prompts, and output remain identical.
+
+* **`DebugState` dataclass** (`debug_state.py`): Replaces 16 module-level global variables with a single, explicit container that is passed to every command handler. Fields: `current_device`, `current_mapping`, `current_mode`, `keepalive_sock`, `current_path`, `monitoring`, `monitor_thread`, `monitor_stop_event`, `notification_handlers`, `detailed_view`, `path_history`, `db_save_enabled`, `path_cache`, `glib_loop`, `glib_thread`, `current_mine_map`, `current_perm_map`, `db_available`, `obs`.
+
+* **GLib MainLoop management** (`debug_state.py`): `ensure_glib_mainloop()` and `stop_glib_mainloop()` now operate on the `DebugState` instance instead of module globals.
+
+* **D-Bus helpers & navigation** (`debug_dbus.py`): `format_dbus_error()`, `print_detailed_dbus_error()`, path resolution, `ls`/`cd`/`pwd`/`back`, introspection commands (`interfaces`, `props`, `methods`, `signals`, `call`, `monitor`, `introspect`).
+
+* **Connect / disconnect / info** (`debug_connect.py`): Transport detection, `find_device_path()`, `cmd_connect()`, `cmd_disconnect()`, `cmd_info()` with Classic and BLE branches.
+
+* **GATT operations** (`debug_gatt.py`): `cmd_services()`, `cmd_chars()`, `cmd_char()`, `cmd_read()`, `cmd_write()`, `cmd_notify()`, `cmd_detailed()`, `show_properties()`, `get_handle_from_dict()`, and the comprehensive `debugging_notification_callback` (now a factory function bound to state).
+
+* **Classic BT commands** (`debug_classic.py`): `cmd_cscan()`, `cmd_cconnect()`, `cmd_cservices()`, `cmd_ckeep()`, `cmd_csdp()`, `cmd_pbap()`.
+
+* **Pairing & agent commands** (`debug_pairing.py`): `cmd_agent()`, `cmd_pair()`, single and brute-force pair flows, post-pair connect helpers.
+
+* **Scan & enumeration** (`debug_scan.py`): `cmd_scan()`/`scann`/`scanp`/`scanb`, `cmd_enum()`/`enumn`/`enump`/`enumb`, `_enum_common()`.
+
+* **AOI & database commands** (`debug_aoi.py`): `cmd_aoi()`, `cmd_dbsave()`, `cmd_dbexport()`.
+
+* **Multi-read & brute-write** (`debug_multiread.py`): Updated to accept `DebugState` instead of individual state parameters. Function signatures simplified from 7 positional parameters to `(args, state)`.
+
+* **Core shell** (`debug.py`): Now contains only imports, `_cmd_help()`, the `_build_dispatch_table()` factory (binds state to all handlers via closures), `debug_shell()`, `parse_args()`, and `main()`.
+
+---
+
+## v2.7.1 – Pair-Connect-Explore + Lockout-Aware Brute-Force (2026-03-01)
+
+### Added
+
+* **Operational pair mode** (default): After successful pairing, the `pair` command now auto-detects the device transport (BR/EDR vs BLE) and establishes a persistent connection, returning the user to the debug shell for immediate exploration with `info`, `interfaces`, `props`, `cservices`, etc.
+
+* **`--test` flag** for `pair`: Preserves the original PoC behavior (pair + auto-disconnect monitor) for diagnostic use.
+
+* **Transport-aware `connect` command**: The `connect` command now auto-detects whether the target is a BR/EDR classic or BLE device and routes to the appropriate connection method. For classic devices, falls back to SDP enumeration + RFCOMM keepalive if profile-level `Connect()` fails.
+
+* **Enhanced `info` command**: Works with paired-but-disconnected devices when only a D-Bus path is available. Displays address, name, paired/trusted/connected status, device class, RSSI, and advertised UUIDs directly from D-Bus properties.
+
+* **Transport detection** via `_get_device_transport()`: Inspects `AddressType`, `ServicesResolved`, and UUID prefixes from `org.bluez.Device1` properties to classify devices as `br-edr`, `le`, or `dual`.
+
+* **Post-pair classic connect flow** (`_post_pair_connect_classic()`): SDP enumeration via `sdptool`, RFCOMM keepalive socket on the first available channel, and session state setup — all without requiring BlueZ profile-level `Connect()`.
+
+* **Post-pair BLE connect flow** (`_post_pair_connect_le()`): Standard GATT connect + service enumeration with fallback to D-Bus path exploration.
+
+* **Lockout-aware brute-force**: `PinBruteForcer` now distinguishes `AuthenticationFailed` (wrong PIN — device tested it) from `AuthenticationRejected` (device refusing to test — lockout active). When a lockout transition is detected, the brute forcer pauses for a configurable cooldown period and retries the rejected candidate, preventing correct PINs from being skipped during a lockout window.
+
+* **`--lockout-cooldown` flag** for `pair --brute`: Configures the pause duration (seconds) when device lockout is detected (default: 60).
+
+* **`--max-lockout-retries` flag** for `pair --brute`: Limits consecutive lockout-retry cycles per candidate before aborting (default: 3).
+
+* **`PairingAgent.last_pair_error`**: Exposes the D-Bus error name from the most recent `pair_device()` failure, enabling callers to classify errors precisely.
+
+* **`BruteForceResult.lockout_pauses`**: Tracks the number of lockout cooldown pauses during a brute-force run.
+
+### Changed
+
+* **`pair` command**: Default behavior now connects and returns to shell instead of entering the blocking auto-disconnect monitor. The monitor is available via `--test`.
+
+* **`connect` command**: Refactored from BLE-only to transport-aware. Extracted `_connect_le()` and `_connect_classic()` helpers. Classic path tries full `connect_and_enumerate__bluetooth__classic()` first, then falls back to `_post_pair_connect_classic()`.
+
+* **`disconnect` command**: Now cleans up keepalive sockets, resets `_current_path`, and resets `_current_mode` in addition to clearing the device wrapper.
+
+* **`_cmd_pair_single()`**: Accepts `test_mode` parameter to select between operational (default) and PoC test behavior.
+
+* **`PinBruteForcer` error classification**: Replaced the single `_REJECTION_ERRORS` set with distinct `_WRONG_PIN_ERRORS`, `_LOCKOUT_ERRORS`, `_RETRY_ERRORS`, and `_BLOCKING_ERRORS` categories. The brute-force loop now reads `agent.last_pair_error` after each attempt and dispatches accordingly — wrong PIN advances to the next candidate, lockout triggers cooldown + retry of the same candidate, blocking errors abort after 5 consecutive occurrences.
+
+* **Brute-force summary**: Now reports lockout pause count in the final summary line.
+
+### Files Modified
+
+* `bleep/dbuslayer/pin_brute.py` — Lockout-aware error classification, cooldown/retry logic, `_handle_failure()`, `_interruptible_sleep()`, updated `_print_summary()`
+* `bleep/dbuslayer/agent.py` — `last_pair_error` attribute on `PairingAgent`, set in `pair_device()` on D-Bus and non-D-Bus failures
+* `bleep/modes/debug.py` — `_cmd_pair`: added `--lockout-cooldown` and `--max-lockout-retries` args; `_cmd_pair_brute`: passes new params to `PinBruteForcer`; plus all prior v2.7.1 changes
+* `bleep/docs/debug_mode.md` — Updated pair/connect documentation
+* `bleep/docs/pairing_agent.md` — Updated status, added lockout-aware brute-force features
+* `bleep/docs/changelog.md` — This entry
+* `bleep/docs/todo_tracker.md` — Updated with lockout-aware implementation items
+* `bleep/__init__.py` — Version bump to 2.7.1
+
+---
+
+## v2.7.0 – Pairing Agent Expansion: Three Modes, Brute-Force, Passkey Support (2026-03-01)
+
+### Added
+
+* **Three pairing modes** in the debug `pair` command:
+  * **Hardcoded** (default): `pair MAC --pin CODE` / `pair MAC --passkey CODE` — returns a fixed PIN or passkey on every `RequestPinCode` / `RequestPasskey` callback.
+  * **Interactive**: `pair MAC --interactive` — prompts the user for PIN/passkey within the debug shell terminal using `CliIOHandler`.
+  * **Brute-force**: `pair MAC --brute` — iterates candidate PINs or passkeys through repeated pair/remove/re-pair cycles until the correct value is found.
+
+* **`BruteForceIOHandler`** (`agent_io.py`): New I/O handler that consumes values from an iterator, returning the next candidate on each `request_pin_code()` or `request_passkey()` call.
+
+* **`PinBruteForcer`** (`pin_brute.py`): Orchestrator for brute-force pairing. Manages the attempt loop, handles stale bond removal, device re-discovery, rate limiting (`--delay`), attempt capping (`--max-attempts`), and device-blocking detection.
+
+* **Iterator generators** (`pin_brute.py`): `pin_range()`, `passkey_range()`, `pins_from_file()` for generating candidate search spaces.
+
+* **Passkey support**: `--passkey` flag for hardcoded LE passkeys (uint32, 0-999999), `--passkey-brute` for passkey brute-force.
+
+* **Dictionary attack**: `--pin-list FILE` reads candidate PINs from a text file (one per line, `#` comments supported).
+
+* **Enhanced `agent status`**: Now shows configured default PIN/passkey and recent method invocation timestamps.
+
+* **MainLoop architecture document** (`mainloop_architecture.md`): Design document for future MainLoop inversion — Option A (worker thread for `input()`) vs Option B (`GLib.io_add_watch` on stdin). Recommends Option A. Includes full compatibility matrix across all BLEEP modes.
+
+### Refactored
+
+* **`_cmd_pair`** (`debug.py`): Extracted shared helpers `_find_device_path()`, `_remove_stale_bond()`, `_resolve_device_for_pair()`, `_register_pair_agent()`, `_post_pair_monitor()` to eliminate duplication between single-shot and brute-force modes.
+
+### Files
+| File | Action | Detail |
+|------|--------|--------|
+| `bleep/dbuslayer/agent_io.py` | Modified | Added `BruteForceIOHandler` class; updated `create_io_handler()` factory with `"bruteforce"` type |
+| `bleep/dbuslayer/pin_brute.py` | **New** | `PinBruteForcer`, `BruteForceResult`, `pin_range()`, `passkey_range()`, `pins_from_file()` |
+| `bleep/modes/debug.py` | Modified | Expanded `_cmd_pair` to three modes; extracted shared pairing helpers; enhanced `agent status` |
+| `bleep/docs/mainloop_architecture.md` | **New** | MainLoop inversion design document |
+| `bleep/docs/pairing_agent.md` | Modified | Added three-mode documentation, `BruteForceIOHandler`, updated status/limitations/future work |
+| `bleep/docs/debug_mode.md` | Modified | Updated `pair` command reference with all modes and options |
+| `bleep/docs/changelog.md` | Modified | This entry |
+| `bleep/docs/todo_tracker.md` | Modified | Tracked planning and implementation of pairing agent expansion |
+
+---
+
+## v2.6.2 – Successful Pairing: Message Filter Fix + Device Discovery Fix + Bond Storage Fix (2026-02-28)
+
+### Fixed — Pairing Now Works End-to-End
+
+* **CONFIRMED**: BLEEP successfully pairs with target `D8:3A:DD:0B:69:B9` using PIN `12345`.  `RequestPinCode` handler fires, `AutoAcceptIOHandler` returns the PIN, BlueZ accepts the pairing, and the device is set as trusted.
+
+* **Message filter blocking handler dispatch** (Phase 4) — `enable_unified_dbus_monitoring()` installed a `bus.add_message_filter()` that prevented `dbus-python` from dispatching incoming method calls to `dbus.service.Object` handlers.  Diagnostic PoC tests (`poc_pair_diag.py`) proved:
+  * `sudo` is NOT required — non-root agent handler dispatch works correctly
+  * `eavesdrop='true'` match rules fail with `AccessDenied` for non-root users — they were never active in BLEEP, ruling them out
+  * The generic message filter was the sole remaining cause
+  * **Fix (agent.py)**: Disabled `enable_unified_dbus_monitoring(True)` during agent registration; only `register_agent()` is called for correlation tracking
+
+* **Fabricated device path causing `UnknownObject` error** (Phase 5) — When the target device was not in BlueZ's object tree (e.g. after `RemoveDevice`), `_cmd_pair()` constructed a fake D-Bus path from the MAC address.  BlueZ returned `UnknownObject: Method "Pair"... doesn't exist` because no `Device1` interface existed at that path.
+  * **Root cause**: BLEEP used `adapter.get_discovered_devices()` (internal cache) instead of BlueZ's `GetManagedObjects()` API.  When the device wasn't cached, a path was fabricated — a pattern the BlueZ reference `bluezutils.find_device()` explicitly avoids.
+  * **Fix (debug.py)**: Replaced cache lookup + path fabrication with `GetManagedObjects()` query (matching `bluezutils.find_device()` pattern).  Added `Transport: "auto"` filter and 15s discovery scan for both BLE and classic devices.  Clear error on discovery failure instead of phantom path.
+
+* **`Bond info must include device address` post-pairing error** — `PairingStateMachine.start_pairing()` initialized `_pairing_data` without an `"address"` key.  When `_on_pairing_complete` → `save_device_bond()` ran, it raised `ValueError`.
+  * **Fix (pairing_state.py)**: Extract MAC address from `device_path` (e.g. `/org/bluez/hci0/dev_D8_3A_DD_0B_69_B9` → `D8:3A:DD:0B:69:B9`) and include it in `_pairing_data` at pairing start.
+
+* **`Invalid transition: COMPLETE -> FAILED` state machine crash** — When the bond storage `ValueError` propagated through `handle_pairing_success()`, the exception handler in `pair_device()` called `handle_pairing_failed()` while the state machine was already in the `COMPLETE` terminal state.  `COMPLETE → FAILED` is not a valid transition.
+  * **Fix (agent.py)**: Added `_safe_transition_failed()` guard that checks the current state before attempting the FAILED transition.  If the state machine is already in a terminal state (COMPLETE, FAILED, or CANCELLED), the transition is skipped.
+
+### Files
+| File | Action | Detail |
+|------|--------|--------|
+| `bleep/dbuslayer/agent.py` | Modified | Disabled `enable_unified_dbus_monitoring()` during agent registration; added `_safe_transition_failed()` guard |
+| `bleep/modes/debug.py` | Modified | `_cmd_pair()`: replaced cache lookup + path fabrication with `GetManagedObjects()` query; added `Transport: "auto"` 15s scan; clear error on discovery failure; proper re-discovery after bond removal |
+| `bleep/dbuslayer/pairing_state.py` | Modified | `start_pairing()`: extract and include MAC `address` in `_pairing_data` |
+| `bleep/docs/agent_dbus_communication_issue.md` | Modified | Phase 4 + Phase 5 resolution; final RESOLVED status |
+| `bleep/docs/mainloop_requirement_analysis.md` | Modified | Added message filter interference discovery; confirmed evidence table |
+| `bleep/docs/debug_mode.md` | Modified | Updated `pair` command docs with discovery scan details |
+| `bleep/docs/agent_pairing_flow_analysis.md` | Rewritten | Full update: confirmed working, capabilities table, limitations, future work |
+| `bleep/docs/pairing_agent.md` | Modified | Added current status, limitations, future work, integration notes |
+| `bleep/docs/changelog.md` | Modified | This entry |
+| `bleep/docs/todo_tracker.md` | Modified | Updated pairing fix tracking with Phases 4–6, future work items |
+
+---
+
+## v2.6.1 – Fix Agent Method Dispatch in Debug Mode Pairing (2026-02-28)
+
+### Fixed
+* **`RequestPinCode` handler never invoked during debug-mode pairing** — `dbus-python`'s `dbus.service.Object` method dispatch requires `GLib.MainLoop().run()`.  `GLib.MainContext.iteration(False)` triggers message filters but does **not** dispatch object-path handlers, so agent methods silently never fire.
+  * **Root cause confirmed** via baseline test: BlueZ's `simple-agent` (uses `mainloop.run()`) successfully pairs with target `D8:3A:DD:0B:69:B9` using PIN `12345`.
+  * **PoC validated**: Standalone script using temporary `GLib.MainLoop` with `GLib.timeout_add` for controlled quitting successfully pairs and dispatches `RequestPinCode`.
+  * **Fix (debug.py)**: `_cmd_pair()` stops the background GLib loop before pairing and restarts it after, so `pair_device()` takes the non-background path.
+  * **Fix (agent.py)**: `pair_device()`'s non-background path replaced `context.iteration(False)` loop with a temporary `GLib.MainLoop` + `GLib.timeout_add(100, poll)` pattern — the only mechanism that reliably dispatches `dbus.service.Object` method handlers.
+
+### Files
+| File | Action | Detail |
+|------|--------|--------|
+| `bleep/dbuslayer/agent.py` | Modified | `pair_device()` non-bg path: temporary `GLib.MainLoop` replaces `context.iteration(False)` |
+| `bleep/modes/debug.py` | Modified | `_cmd_pair()`: stop bg loop before pairing, restart after |
+| `bleep/docs/agent_dbus_communication_issue.md` | Modified | Phase 2 + Phase 3 resolution with PoC evidence |
+| `bleep/docs/mainloop_requirement_analysis.md` | Modified | Added `context.iteration()` vs `MainLoop.run()` discovery |
+| `bleep/docs/debug_mode.md` | Modified | Added `pair` command documentation with usage examples |
+| `bleep/docs/changelog.md` | Modified | This entry |
+| `bleep/docs/todo_tracker.md` | Modified | Added pairing fix tracking section |
+
+---
+
+## v2.6.0 – Amusica: Bluetooth Audio Target Discovery & Manipulation (2026-02-28)
+
+### Added
+* **Amusica orchestration module** (`bleep/ble_ops/amusica.py` — NEW ~240 lines) – Composable primitives for the full Amusica workflow:
+  * `scan_audio_targets()` — UUID-filtered scan that identifies devices advertising audio service UUIDs (A2DP, HFP, HSP, AVRCP)
+  * `attempt_justworks_connect()` — Connect-only (no pair) attempt that classifies targets as JustWorks-accessible vs authentication-required
+  * `assess_targets()` — Pipeline that connects to each scanned target and runs audio recon on accessible ones
+  * `summarise_assessment()` — Produces a structured report of vulnerable targets with audio interfaces
+
+* **Amusica CLI mode** (`bleep/modes/amusica.py` — NEW ~290 lines) – Full CLI interface under `bleep amusica`:
+  * **`amusica scan`** — Scan for audio-capable devices, optionally attempt JustWorks connections and recon (`--connect`, `--test-file`, `--out`)
+  * **`amusica halt`** — Halt all audio on a connected target (pause + volume zero + profile off)
+  * **`amusica control`** — Media playback control (play/pause/stop/next/previous/volume/info) via existing AVRCP layer
+  * **`amusica inject`** — Play audio file into target device's audio sink (auto-detects sink or explicit `--sink`)
+  * **`amusica record`** — Record audio from target device (auto-detects source or explicit `--source`)
+  * **`amusica status`** — Show current audio state: card, profiles, sources, sinks, playback info
+
+* **Audio halt capability** — `AudioToolsHelper.halt_audio_for_device()` in `bleep/ble_ops/audio_tools.py`:
+  * Multi-step disruption: AVRCP pause → transport volume to 0 → card profile to "off"
+  * Returns structured result dict with per-step success/failure and error details
+
+* **Audio service UUID constants** — `AUDIO_SERVICE_UUIDS` frozenset and AVRCP UUIDs in `bleep/bt_ref/constants.py`:
+  * `AVRCP_TARGET_UUID`, `AVRCP_CONTROLLER_UUID`
+  * `AUDIO_SERVICE_UUIDS` — aggregate set of A2DP, HFP, HSP, and AVRCP UUIDs for scan filtering
+
+* **CLI registration** — `bleep amusica` subparser with `REMAINDER` args in `bleep/cli.py` (+7 lines)
+
+* **Mode registration** — `amusica` added to `bleep/modes/__init__.py`
+
+### Design Decisions
+* **Compose, don't duplicate** — Amusica reuses existing BLEEP primitives (scan, classic_connect, audio_recon, audio_tools, media control) rather than reimplementing any capability
+* **Connect-only, no pair** — JustWorks assessment uses `device.connect()` without `device.pair()` to minimize user interaction and avoid authentication prompts
+* **CLI-centric** — Primary interface is CLI subcommands; no TUI in initial release
+* **Recordings default to /tmp** — Per requirement for space usage concerns
+* **Multi-backend inherited** — All audio operations go through `AudioToolsHelper`, automatically supporting PulseAudio, PipeWire (native and PA-compat), BlueALSA, and raw ALSA
+
+### Files
+| File | Action | Lines |
+|------|--------|-------|
+| `bleep/ble_ops/amusica.py` | New | ~240 |
+| `bleep/modes/amusica.py` | New | ~290 |
+| `bleep/ble_ops/audio_tools.py` | Modified | +60 |
+| `bleep/bt_ref/constants.py` | Modified | +15 |
+| `bleep/cli.py` | Modified | +10 |
+| `bleep/modes/__init__.py` | Modified | +2 |
+| `bleep/docs/changelog.md` | Modified | entry added |
+| `bleep/docs/todo_tracker.md` | Modified | Amusica section added |
+| `bleep/docs/audio_recon.md` | Modified | cross-reference + future work detail |
+
+---
+
+## v2.5.3 – Adapter Configuration & Bluetooth Configurability (2026-02-28)
+
+### Added
+* **Adapter Configuration CLI** – New `bleep adapter-config` command for viewing and modifying local adapter properties:
+  * **`adapter-config show`**: Displays all adapter D-Bus properties, lists writable properties by tier (D-Bus vs mgmt), and shows active boot defaults from `/etc/bluetooth/main.conf`
+  * **`adapter-config get <property>`**: Reads a single adapter property (alias, name, class, powered, discoverable, etc.)
+  * **`adapter-config set <property> <value>`**: Sets a writable property, automatically routing to D-Bus or `bluetoothctl mgmt.*` based on property type
+  * **Files Added**: `bleep/modes/adapter_config.py` (NEW — ~325 lines)
+  * **Files Modified**: `bleep/cli.py` (+18 lines — subparser + dispatch)
+
+* **D-Bus Adapter Property Accessors** – Comprehensive getter/setter methods on `system_dbus__bluez_adapter`:
+  * **Getters**: `get_adapter_info()`, `get_alias()`, `get_name()`, `get_address()`, `get_address_type()`, `get_class()`, `get_powered()`, `get_discoverable()`, `get_pairable()`, `get_connectable()`, `get_discoverable_timeout()`, `get_pairable_timeout()`, `get_discovering()`, `get_uuids()`, `get_modalias()`, `get_roles()`
+  * **Setters**: `set_alias()`, `set_powered()`, `set_discoverable()`, `set_pairable()`, `set_connectable()`, `set_discoverable_timeout()`, `set_pairable_timeout()`
+  * **DRY helpers**: `_get_property()` and `_set_property()` base methods eliminate repetition
+  * **Files Modified**: `bleep/dbuslayer/adapter.py` (+~130 lines)
+
+* **bluetoothctl Management Socket Integration** – Kernel-level adapter configuration for properties not reachable via D-Bus:
+  * **Subprocess wrapper**: `_run_bluetoothctl_mgmt()` feeds commands via stdin to a single `bluetoothctl` session, supporting multi-command sequences (e.g. `mgmt.select` then `mgmt.class`)
+  * **Setters**: `set_class()`, `set_local_name()`, `set_ssp()`, `set_secure_connections()`, `set_le()`, `set_bredr()`, `set_privacy()`, `set_fast_connectable()`, `set_link_security()`, `set_wideband_speech()`
+  * **Adapter selection**: `_mgmt_cmd()` auto-prepends `mgmt.select <index>` for non-default adapters
+  * **Files Modified**: `bleep/dbuslayer/adapter.py` (+~120 lines)
+
+* **Boot Defaults Reader** – `read_main_conf()` in `adapter_config.py` parses `/etc/bluetooth/main.conf` for informational display (read-only; no writes)
+
+* **Documentation**: New `bleep/docs/adapter_config.md` with CLI reference, full property tables (D-Bus + mgmt), common Class of Device values, Python API examples, and architecture notes
+
+### Design Decisions
+* **Tiered tool strategy**: D-Bus native for writable properties (no subprocess overhead), `bluetoothctl mgmt.*` only for kernel-management-only properties (Class, SSP, SC, transport toggles)
+* **No `hciconfig` for new features**: Deprecated by BlueZ; existing usage in `recovery.py` preserved but new operations use `bluetoothctl mgmt.*`
+* **No writes to `main.conf`**: Too invasive (requires root + daemon restart); runtime-only changes via D-Bus and mgmt
+* **Alias vs Name vs local-name**: `Name` is the system hostname (read-only on D-Bus, set via `hostnamectl`). `Alias` (D-Bus writable) overrides `Name` for what remote devices see and is **persisted** across daemon restarts. `mgmt.name` also updates the `Alias` property (via `current_alias` in the daemon), but this is a **temporary** alias that does not persist across daemon restarts — it only lasts for the lifetime of the `bluetoothd` process (see `adapter.c:local_name_changed_callback`, lines 924-948). For persistent name changes, D-Bus `Alias` is the correct method.
+
+---
+
+## v2.5.2 – BlueALSA & PipeWire Native Tool Support (2026-02-28)
+
+### Added
+* **BlueALSA Integration** – Full support for BlueZ ALSA backend:
+  * **Preflight checks**: `bluealsa-aplay`, `bluealsa-cli`, `bluealsa-rfcomm` added to `bleep/core/preflight.py`
+  * **Backend detection**: `AudioToolsHelper.is_bluealsa_running()` detects BlueALSA daemon via `bluealsa-cli list-pcms`
+  * **PCM enumeration**: `AudioToolsHelper.list_bluealsa_pcms()` parses `bluealsa-cli list-pcms` output to enumerate Bluetooth ALSA PCM devices with MAC address, profile (A2DP/SCO), direction (sink/source), and ALSA device string
+  * **Play/Record**: `play_to_bluealsa_pcm()` and `record_from_bluealsa_pcm()` use `aplay -D` / `arecord -D` with BlueALSA ALSA device identifiers
+  * **Recon integration**: `_recon_bluealsa()` helper in `audio_recon.py` enumerates BlueALSA PCMs, optionally plays test files and records from each PCM with sox analysis; runs as supplement alongside PA/PW when BlueALSA is detected
+  * **Result structure**: New `bluealsa_pcms` list in recon result for BlueALSA-specific entries
+  * **Files Modified**: `bleep/core/preflight.py`, `bleep/ble_ops/audio_tools.py`, `bleep/ble_ops/audio_recon.py`
+
+* **PipeWire Native Tool Support** – Direct PipeWire integration without PulseAudio compatibility layer:
+  * **Preflight checks**: `pw-dump`, `pw-play`, `pw-record`, `wpctl` added to `bleep/core/preflight.py`
+  * **Backend differentiation**: `get_audio_backend()` now returns `"pipewire_native"` when PipeWire is running but PulseAudio compatibility is absent; `"pipewire"` when PA compat is available
+  * **Node enumeration**: `_get_pipewire_bluez_nodes()` parses `pw-dump` JSON output to enumerate Bluetooth audio nodes with node ID, name, MAC address, media class, state, and available profiles
+  * **Profile switching**: `_set_pipewire_profile()` uses `wpctl set-profile` to switch profiles on PipeWire nodes
+  * **Sources/sinks**: `_get_pipewire_sources_and_sinks()` extracts Bluetooth sources and sinks from PipeWire node data with role mapping
+  * **Play/Record**: `play_to_sink()` and `record_from_source()` now use `pw-play --target=<id>` / `pw-record --target=<id>` when backend is `pipewire_native`
+  * **Recon integration**: `_recon_pipewire_native()` helper in `audio_recon.py` enumerates PipeWire Bluetooth nodes, groups by MAC, enumerates sources/sinks, and performs optional play/record with sox analysis
+  * **Files Modified**: `bleep/core/preflight.py`, `bleep/ble_ops/audio_tools.py`, `bleep/ble_ops/audio_recon.py`
+
+### Changed
+* **Backend detection**: `get_audio_backend()` now returns five possible values: `"pulseaudio"`, `"pipewire"` (PA compat), `"pipewire_native"` (no PA compat), `"bluealsa"` (sole backend), or `"none"`
+* **Recon architecture**: `run_audio_recon()` refactored from monolithic function to dispatch to three backend-specific helpers (`_recon_pulseaudio`, `_recon_pipewire_native`, `_recon_bluealsa`), reducing complexity and enabling independent backend evolution
+* **Play/Record tool selection**: `play_to_sink()` and `record_from_source()` now automatically select the correct tool based on detected backend (paplay/parecord for PA/PipeWire-compat, pw-play/pw-record for PipeWire native, aplay/arecord for ALSA fallback)
+* **Documentation**: `bleep/docs/audio_recon.md` updated with BlueALSA prerequisites, PipeWire native prerequisites, updated backend table, and updated result structure
+
+---
+
+## v2.5.1 – Audio Recon Augmentation (2026-02-28)
+
+### Added
+* **Audio Recon** – Incorporate capabilities from AudioRecon.sh into BLEEP with modular structure:
+  * **Sox-based analysis** (`bleep/ble_ops/audio_tools.py`):
+    - **`check_audio_file_has_content(audio_file_path, sox_path)`**: Module-level helper using sox `stat` to determine if a recording has non-zero amplitude (has audio).
+    - **`AudioToolsHelper.check_audio_file_has_content()`**: Instance method delegating to the above with optional sox path.
+  * **Per-profile enumeration** (`bleep/ble_ops/audio_tools.py`):
+    - **`get_bluez_cards()`**: List PulseAudio cards that are BlueZ (Bluetooth) via `pactl list cards short`.
+    - **`get_profiles_for_card(card_index)`**: List profile names for a card from `pactl list cards`.
+    - **`set_card_profile(card_index, profile_name)`**: Set active profile via `pactl set-card-profile`.
+    - **`get_sources_and_sinks_for_card_profile(card_index)`**: Parse `pacmd list-cards` card block for `sources:` and `sinks:` with human-readable roles (microphone, headset_stream, speaker, interest) based on observed ALSA source/sink naming conventions.
+  * **Play and record via backend** (`bleep/ble_ops/audio_tools.py`):
+    - **`play_to_sink(sink_id, file_path, duration_sec)`**: Play file to a sink using paplay (PulseAudio/PipeWire) or aplay (ALSA).
+    - **`record_from_source(source_id, output_path, duration_sec)`**: Record from a source using parecord or arecord.
+  * **Recon runner** (`bleep/ble_ops/audio_recon.py`):
+    - **`run_audio_recon(...)`**: Orchestrates backend detection, BlueZ card enumeration, per-profile sources/sinks, optional play of test file to sinks, optional record from each interface to `/tmp` (or `record_dir`), and sox analysis on each recording. Returns structured dict and optionally writes JSON to `output_json_path`.
+  * **CLI and mode**:
+    - **`bleep audio-recon`**: New CLI command with `--device`, `--test-file`, `--no-play`, `--no-record`, `--out`, `--record-dir`, `--duration`.
+    - **`bleep audio recon`** (modes/audio.py): Recon subcommand with same options.
+  * **Preflight** (`bleep/core/preflight.py`): Added **sox**, **paplay**, and **pacmd** to `_check_audio_tools()`.
+  * **Documentation**: New **`bleep/docs/audio_recon.md`** with usage, result structure, and detailed **Future work** for Bonus Objectives (stream redirection, consolidate streams, play into streams, reconfig I/O).
+  * **Tracking**: Recon result is a structured dict (and optional JSON file) for visibility; no observation DB schema change in this release.
+
+### Changed
+* **Preflight**: Audio tools list now includes `sox`, `paplay`, and `pacmd` for audio recon and playback/analysis.
+
+---
+
+## v2.5.0 – Re-modularization, UUID Enhancement & Code Quality Improvements (2026-01-19)
+
+### Added
+* **Audio Capabilities Expansion** – Comprehensive Bluetooth audio profile identification, playback, and recording:
+  * **Enhanced ALSA Enumeration** (`bleep/ble_ops/audio_tools.py`):
+    - **ALSA Device Listing**: Added `list_alsa_devices()` method using `aplay -l` and `arecord -l` subprocess calls to enumerate ALSA hardware devices directly
+    - **ALSA Device Information**: Added `get_alsa_device_info()` method using `aplay -D <device> --dump-hw-params` to retrieve detailed hardware parameters
+    - **MAC Address Extraction**: Added `extract_mac_from_alsa_device()` method for parsing MAC addresses from ALSA/PulseAudio/PipeWire device names via string pattern matching
+    - **Profile Identification**: Added `identify_bluetooth_profiles_from_alsa()` method that correlates device naming patterns with Bluetooth profile UUIDs (A2DP, HFP, HSP)
+    - **External Tools Only**: All methods use external tools (pactl, pw-cli, aplay, arecord) with no D-Bus interaction, maintaining strict separation of concerns
+    - **Files Modified**: `bleep/ble_ops/audio_tools.py` (+~200 lines)
+  * **Profile Correlation Helper** (`bleep/ble_ops/audio_profile_correlator.py`):
+    - **New Module**: Created `AudioProfileCorrelator` class (~200 lines) to bridge external tool output with D-Bus information
+    - **Profile Identification**: `identify_profiles_for_device()` combines ALSA/PulseAudio enumeration with BlueZ MediaTransport discovery
+    - **Transport Discovery**: `get_transport_for_profile()` and `get_all_transports_for_device()` methods for finding MediaTransport objects via D-Bus
+    - **D-Bus Integration**: Uses existing `find_media_devices()` and `MediaTransport` classes from `dbuslayer/media.py`
+    - **Files Added**: `bleep/ble_ops/audio_profile_correlator.py` (NEW)
+  * **Audio Codec Support** (`bleep/ble_ops/audio_codec.py`):
+    - **New Module**: Created `AudioCodecEncoder` and `AudioCodecDecoder` classes (~450 lines) for GStreamer-based audio processing
+    - **GStreamer Integration**: Uses GStreamer Python bindings (preferred) or `gst-launch-1.0` subprocess (fallback) for encoding/decoding
+    - **Codec Support**: Implements SBC, MP3, and AAC codec pipelines (ATRAC, AptX, LC3 defined but not yet implemented)
+    - **Encoding**: `encode_file_to_transport()` method encodes audio files (MP3, WAV, FLAC) and writes to MediaTransport file descriptors
+    - **Decoding**: `decode_audio_stream()` method decodes audio streams from transport FDs and writes to files
+    - **Pipeline Patterns**: GStreamer pipeline construction patterns derived from BlueZ example scripts (simple-asha)
+    - **Main Loop Integration**: Uses GLib.MainLoop for proper GStreamer event handling (reference: simple-asha)
+    - **No D-Bus Interaction**: Module handles codec operations only, maintaining separation from D-Bus layer
+    - **Files Added**: `bleep/ble_ops/audio_codec.py` (NEW)
+  * **Audio Streaming Manager** (`bleep/dbuslayer/media_stream.py`):
+    - **New Module**: Created `MediaStreamManager` class (~250 lines) for high-level audio streaming orchestration
+    - **Transport Management**: `acquire_transport()` and `release_transport()` methods using existing `MediaTransport.acquire()` and `MediaTransport.release()`
+    - **Audio Playback**: `play_audio_file()` method orchestrates transport acquisition, volume setting (via D-Bus), audio encoding (delegates to audio_codec.py), and transport release
+    - **Audio Recording**: `record_audio()` method orchestrates transport acquisition, audio decoding (delegates to audio_codec.py), and transport release
+    - **Codec Information**: `get_codec_info()` and `get_transport_info()` methods for retrieving transport state and codec details
+    - **Volume Control**: `set_volume()` method using existing `MediaTransport.set_volume()` D-Bus interface
+    - **D-Bus Focus**: Module handles D-Bus interactions and delegates codec operations to audio_codec.py
+    - **Files Added**: `bleep/dbuslayer/media_stream.py` (NEW)
+  * **CLI Integration**:
+    - **New Commands**: Added `audio-profiles`, `audio-play`, and `audio-record` commands to `bleep/cli.py`
+    - **Audio Mode Module**: Created `bleep/modes/audio.py` (~200 lines) following existing mode patterns
+    - **Profile Listing**: `list_audio_profiles()` function for displaying Bluetooth audio profiles via ALSA correlation
+    - **Playback Interface**: `play_audio_file()` function for playing audio files to Bluetooth devices
+    - **Recording Interface**: `record_audio()` function for recording audio from Bluetooth devices
+    - **Files Added**: `bleep/modes/audio.py` (NEW)
+    - **Files Modified**: `bleep/cli.py` (+~50 lines)
+  * **Dependency Management**:
+    - **GStreamer Support**: Updated `setup.py` to track GStreamer Python bindings (via PyGObject) as optional dependency
+    - **Preflight Checks**: Enhanced `bleep/core/preflight.py` to check for `aplay`, `arecord`, `gst-launch-1.0`, and GStreamer Python bindings
+    - **Graceful Degradation**: All modules handle missing GStreamer/ALSA tools gracefully
+    - **Files Modified**: `setup.py` (+~5 lines), `bleep/core/preflight.py` (+~15 lines)
+  * **Architecture Compliance**:
+    - **Separation of Concerns**: Maintained strict separation between external tools (`audio_tools.py`) and D-Bus interactions (`dbuslayer/`)
+    - **Code Reuse**: Leveraged existing constants, classes, and infrastructure throughout
+    - **No Duplication**: Reused existing `MediaTransport`, `find_media_devices()`, and other D-Bus infrastructure
+  * **Status**: Fully implemented - provides comprehensive Bluetooth audio capabilities with proper architectural separation
+
+* **UUID and Codec Constants Centralization** – Single source of truth for audio-related constants:
+  * **Centralized Constants**: Extended `bleep/bt_ref/constants.py` with comprehensive audio profile UUIDs and codec constants
+  * **Audio Profile UUIDs**: Added A2DP_SOURCE_UUID, A2DP_SINK_UUID, HFP_HANDS_FREE_UUID, HFP_AUDIO_GATEWAY_UUID, HSP_AUDIO_GATEWAY_UUID, HSP_HEADSET_UUID
+  * **Audio Codec Constants**: Added SBC_CODEC_ID, MP3_CODEC_ID, AAC_CODEC_ID, ATRAC_CODEC_ID, APTX_CODEC_ID, APTX_HD_CODEC_ID, LC3_CODEC_ID, VENDOR_SPECIFIC_CODEC_ID
+  * **Helper Functions**: Added `get_codec_name(codec_id)` and `get_profile_name(profile_uuid)` utility functions
+  * **Profile Name Mapping**: Added AUDIO_PROFILE_NAMES dictionary mapping UUIDs to human-readable names
+  * **Codec Name Mapping**: Added CODEC_NAMES dictionary mapping codec IDs to names
+  * **Module Updates**: Updated 6 modules to use centralized constants:
+    - `bleep/dbuslayer/media_register.py` - Removed duplicate A2DP UUIDs and SBC_CODEC, uses imported constants directly
+    - `bleep/dbuslayer/media_stream.py` - Removed duplicate A2DP UUIDs, uses imported constants directly
+    - `bleep/ble_ops/audio_codec.py` - Removed duplicate codec constants and CODEC_NAMES, uses imported constants directly
+    - `bleep/ble_ops/audio_profile_correlator.py` - Removed duplicate PROFILE_UUID_MAP and CODEC_NAMES, uses imported constants directly
+    - `bleep/ble_ops/audio_tools.py` - Removed local profile_uuid_map, uses imported constants directly
+    - `bleep/dbuslayer/device_classic.py` - Replaced hardcoded UUIDs with imported constants
+  * **Code Quality**: Eliminated redundant self-assignments (e.g., `A2DP_SOURCE_UUID = A2DP_SOURCE_UUID`) - all modules now use imported constants directly
+  * **Backward Compatibility**: Added aliases (SBC_CODEC = SBC_CODEC_ID) in audio_codec.py for existing code that may reference old constant names
+  * **Documentation**: Added comprehensive comments referencing A2DP Specification and BlueZ documentation
+  * **Files Modified**: `bleep/bt_ref/constants.py` (+80 lines), 6 audio-related modules
+  * **Status**: Fully implemented - eliminates hardcoded values and provides single source of truth
+* **Preflight Checks Consolidation** – Comprehensive environment capability checking system:
+  * **New Module**: Created `bleep/core/preflight.py` (~100 lines) to consolidate scattered tool availability checks
+  * **Bluetooth Tool Checks**: Verifies presence of `hciconfig`, `hcitool`, `bluetoothctl`, `btmgmt`, `sdptool`, `l2ping`
+  * **Audio Tool Checks**: Verifies presence of PulseAudio tools (`pactl`, `parecord`) and PipeWire tools (`pw-cli`, `pw-record`)
+  * **System Configuration**: Detects `/etc/bluetooth` configuration files and BlueZ version
+  * **Python Dependencies**: Checks `dbus` and `gi` (GObject Introspection) versions
+  * **CLI Integration**: Added `--check-env` flag to run preflight checks and display user-friendly capability report
+  * **Singleton Pattern**: Prevents repeated checks during single session
+  * **Files Added**: `bleep/core/preflight.py` (NEW)
+  * **Files Modified**: `bleep/cli.py` (added `--check-env` flag)
+  * **Status**: Fully implemented - provides comprehensive environment capability reporting
+* **Audio Tools Helper** – Wrapper for ALSA/PipeWire/PulseAudio operations:
+  * **New Module**: Created `bleep/ble_ops/audio_tools.py` (~100 lines) with `AudioToolsHelper` class
+  * **Backend Detection**: `get_audio_backend()` identifies active audio backend ('pipewire', 'pulseaudio', 'none')
+  * **Audio Device Listing**: `list_audio_sinks()` and `list_audio_sources()` provide audio device information
+  * **Bluetooth Audio Detection**: `is_bluetooth_audio_available()` checks for Bluetooth audio device availability
+  * **Graceful Degradation**: Handles missing audio tools gracefully without errors
+  * **Future Integration**: Designed for future A2DP sink/source integration
+  * **Files Added**: `bleep/ble_ops/audio_tools.py` (NEW)
+  * **Status**: Fully implemented - ready for A2DP integration
+* **Enumeration Controller** – Orchestration layer for multi-attempt device enumeration:
+  * **New Module**: Created `bleep/ble_ops/enum_controller.py` (~150 lines) with `EnumerationController` class
+  * **Structured Results**: `EnumerationResult` dataclass provides success status, data, annotations, error summaries, and attempt count
+  * **Error Handling**: `ErrorAction` enum categorizes errors (RECONNECT, ANNOTATE_AND_CONTINUE, GIVE_UP)
+  * **Existing Component Integration**: Leverages existing `ReconnectionMonitor`, `ConnectionResetManager`, and landmine mapping functionality
+  * **Maximum Attempts**: Enforces 3-attempt limit with structured error annotation collection
+  * **CLI Integration**: Added `--controlled` flag to `enum-scan` command for controlled enumeration mode
+  * **AoI Mode Integration**: Updated Assets of Interest (AoI) mode to use `EnumerationController` for target device iteration
+  * **Files Added**: `bleep/ble_ops/enum_controller.py` (NEW)
+  * **Files Modified**: `bleep/ble_ops/scan.py` (optional EnumerationController integration), `bleep/modes/aoi.py` (EnumerationController usage), `bleep/cli.py` (added `--controlled` flag)
+  * **Status**: Fully implemented - provides structured multi-attempt enumeration with error tracking
+  * **Note**: `--controlled` flag is a proof-of-concept; future refactoring will make EnumerationController the default (see "Changed" section)
+* **Agent Method Verification** – D-Bus introspection-based agent registration verification:
+  * **Method Verification**: Added `_verify_method_registration()` method to `BlueZAgent` class that uses D-Bus introspection to verify all required agent methods are registered
+  * **Required Methods Check**: Verifies presence of `Release`, `AuthorizeService`, `RequestPinCode`, `RequestPasskey`, `DisplayPasskey`, `DisplayPinCode`, `RequestConfirmation`, `RequestAuthorization`, `Cancel`
+  * **Structured Logging**: Logs verification results with structured context, including missing methods if any
+  * **Automatic Verification**: Verification is automatically called after successful agent registration
+  * **Non-Blocking**: Verification failures log warnings but do not prevent agent registration
+  * **Files Modified**: `bleep/dbuslayer/agent.py` (added verification method), `bleep/modes/agent.py` (added verification call)
+  * **Status**: Fully implemented - provides diagnostic visibility into agent method registration
+* **Classic Bluetooth UUID Enhancement for Device Type Classification** – Enhanced device type classification with Service Discovery Server detection:
+  * **Service Discovery Server Detection**: Added `_is_service_discovery_server()` helper method to `ClassicServiceUUIDsCollector` that detects Service Discovery Server (0x1000) UUID in both 16-bit and 128-bit formats
+  * **CONCLUSIVE Weight Assignment**: Service Discovery Server (0x1000) now receives `EvidenceWeight.CONCLUSIVE` when detected, as it is the most indicative UUID for Bluetooth Classic (BR/EDR) devices
+  * **Classification Logic Updates**: Updated `_classify_classic()` and `_classify_dual()` to recognize CONCLUSIVE Classic service UUID evidence, and enhanced `_generate_reasoning()` to mention "Service Discovery Server detected" when present
+  * **UUID Format Handling**: Leverages existing `identify_uuid()` function to handle all UUID formats (16-bit, 32-bit, 128-bit, with/without dashes, with/without 0x prefix)
+  * **Files Modified**: `bleep/analysis/device_type_classifier.py` (added helper method, enhanced collector, updated classification logic)
+  * **Status**: Fully implemented and verified - Service Discovery Server detection works correctly for all UUID formats
+* **ESP SSP UUID Support** – Added custom ESP SSP (0xABF0) UUID to persistent custom UUID storage:
+  * **Custom UUID Storage**: ESP SSP UUID added to `constants.UUID_NAMES` dictionary in `bleep/bt_ref/constants.py` for persistence across UUID database regenerations
+  * **UUID Translator Integration**: ESP SSP is automatically available via `UUIDDatabase` custom UUID category and can be found by UUID translation functionality
+  * **Files Modified**: `bleep/bt_ref/constants.py` (added ESP SSP to `UUID_NAMES` dictionary)
+  * **Status**: Fully implemented - ESP SSP UUID persists in custom UUID storage and is accessible via UUID translator
+* **Service Discovery Server UUID Constant** – Added constant reference for Service Discovery Server 16-bit UUID:
+  * **Constant Definition**: Added `SERVICE_DISCOVERY_SERVER_UUID_16 = "1000"` to `bleep/bt_ref/constants.py` in "# Common Service/Characteristic UUIDs" section
+  * **Function Reference Update**: Updated `_is_service_discovery_server()` to reference `SERVICE_DISCOVERY_SERVER_UUID_16` constant instead of hardcoded `"1000"` string
+  * **Maintainability**: Eliminates magic string, improves code maintainability, and follows BLEEP's pattern of centralizing constants
+  * **Files Modified**: `bleep/bt_ref/constants.py` (added constant), `bleep/analysis/device_type_classifier.py` (updated function to use constant)
+  * **Status**: Fully implemented - constant reference replaces hardcoded value
+
+### Changed
+* **Connection State Guards** – Prevented redundant connection attempts:
+  * **LE Device Connection Guard**: Enhanced `bleep/dbuslayer/device_le.py` `connect()` method to check `_connection_state` before attempting connection
+  * **Classic Device Connection Guard**: Enhanced `bleep/dbuslayer/device_classic.py` `connect()` method with similar connection state guard
+  * **Early Return**: If device is already connected (verified via D-Bus `Connected` property), method logs warning and returns early with success
+  * **Thread Safety**: Uses existing `_connection_state_lock` to ensure thread-safe state checking
+  * **Impact**: Eliminates repeated connection attempts when device is already connected, addressing fickle BR/EDR connectivity issues
+  * **Files Modified**: `bleep/dbuslayer/device_le.py` (~15 lines), `bleep/dbuslayer/device_classic.py` (~10 lines)
+  * **Status**: Fully implemented - redundant connection attempts prevented
+* **Device Type Classification Weight System** – Enhanced evidence weighting for Classic device identification:
+  * **Service Discovery Server**: Now receives `EvidenceWeight.CONCLUSIVE` (most indicative of Classic devices)
+  * **Other Classic UUIDs**: Continue to receive `EvidenceWeight.STRONG` (existing behavior maintained)
+  * **Dual-Mode Detection**: Updated to recognize CONCLUSIVE Classic service UUID evidence as conclusive Classic evidence
+  * **Files Modified**: `bleep/analysis/device_type_classifier.py` (weight assignment logic, classification methods)
+* **Enumeration Retry Logic** – Introduced structured multi-attempt enumeration (proof-of-concept):
+  * **New Approach**: `EnumerationController` provides orchestrated 3-attempt enumeration with error categorization
+  * **Backward Compatibility**: Default enumeration behavior unchanged; `--controlled` flag enables new approach
+  * **Future Direction**: `--controlled` flag is temporary; future refactoring will make `EnumerationController` the default and only method (see "Known Issues" section)
+  * **Files Modified**: `bleep/ble_ops/scan.py`, `bleep/modes/aoi.py`, `bleep/cli.py`
+
+### Fixed
+* **Repeated Connection Attempts** – Fixed issue where BLEEP repeatedly attempted connections to already-connected devices:
+  * **Root Cause**: Connection methods did not check existing connection state before attempting new connections
+  * **Solution**: Added connection state guards in both LE and Classic device `connect()` methods that verify connection state and D-Bus `Connected` property before attempting connection
+  * **Impact**: Eliminates unnecessary connection attempts, reduces log noise, and addresses fickle BR/EDR connectivity issues
+  * **Files Modified**: `bleep/dbuslayer/device_le.py`, `bleep/dbuslayer/device_classic.py`
+* **ESP SSP UUID Persistence** – Fixed potential loss of ESP SSP UUID during UUID database regeneration:
+  * **Root Cause**: ESP SSP (0xABF0) was initially added to auto-generated `bleep/bt_ref/uuids.py` file, which would be overwritten during regeneration
+  * **Solution**: Moved ESP SSP UUID to persistent `constants.UUID_NAMES` dictionary in `bleep/bt_ref/constants.py`, which is not auto-generated
+  * **Impact**: ESP SSP UUID now persists across UUID database regenerations and remains accessible via UUID translator
+  * **Files Modified**: `bleep/bt_ref/uuids.py` (removed ESP SSP from auto-generated file), `bleep/bt_ref/constants.py` (added ESP SSP to custom UUID storage)
+
+### Known Issues / Future Work
+* **Enumeration Retry Logic Duplication** – The `--controlled` flag creates a dual-path for enumeration:
+  * **Issue**: Current implementation adds optional `--controlled` flag that creates separate code path for multi-attempt enumeration, leading to code duplication and maintenance burden
+  * **Impact**: Users must know about and use `--controlled` flag; default behavior differs from controlled behavior
+  * **Required Solution**: Future refactoring must make `EnumerationController` the default and only method for enumeration, removing the `--controlled` flag and eliminating duplicate retry logic
+  * **Priority**: High (for production readiness)
+  * **Status**: Deferred until v2.5.0 is stable; current implementation serves as proof-of-concept
+  * **Action Items**: Remove `--controlled` flag, make `EnumerationController` default in `_base_enum()` and all enum variants, refactor `connect_and_enumerate__bluetooth__low_energy()` to use `EnumerationController` internally, remove duplicate retry logic from other modules
+
+## v2.4.7 – Agent D-Bus Method Registration Fix (2026-01-09)
+
+### Fixed
+* **Agent D-Bus Method Registration** – Critical fix for agent functionality:
+  * **Root Cause**: Agent methods were not being registered on D-Bus because the mainloop object (`GLib.MainLoop()`) was created **after** agent registration instead of **before**. This prevented `dbus.service.Object.__init__()` from properly registering methods during object initialization.
+  * **Solution**: Modified `bleep/modes/agent.py` to create the mainloop object **before** agent creation and registration, matching the pattern used in all working BlueZ reference scripts (`simple-agent`, `test-profile`, `simple-obex-agent`).
+  * **Impact**: Agent methods are now properly registered on D-Bus, enabling:
+    - D-Bus introspection returns non-empty XML with registered methods
+    - BlueZ METHOD CALLs are properly routed to Python agent methods
+    - IO Handler is engaged during pairing operations
+    - PIN code requests and other agent methods are successfully handled
+  * **Evidence**: Analysis of BlueZ reference scripts revealed that ALL working implementations create the mainloop object before agent registration, not after.
+  * **Files Modified**: `bleep/modes/agent.py` (moved `GLib.MainLoop()` creation to before agent creation, added explanatory comments)
+  * **Documentation**: Updated `bleep/docs/agent_dbus_communication_issue.md` to reflect issue resolution, added `bleep/docs/bluez_reference_analysis_refined.md` with detailed comparison analysis
+  * **Status**: Fix implemented and ready for testing. Verification should show non-empty introspection XML and successful method invocations.
+
 ## v2.4.6 – Comprehensive D-Bus Monitoring, Agent Diagnostics, SDP Storage & Error Visibility (2025-12-30)
 
 ### Added
@@ -78,6 +619,22 @@
   * **Backward compatibility**: Existing scan functionality unchanged; RSSI values now appear correctly in scan results
   * **Files Modified**: `bleep/dbuslayer/manager.py` (added RSSI cache, discovery tracking, signal forwarding), `bleep/dbuslayer/signals.py` (enhanced PropertiesChanged handler for RSSI capture), `bleep/dbuslayer/adapter.py` (enhanced get_discovered_devices() with RSSI merge and fallback)
   * **Status**: Fully implemented and verified working in production - RSSI values now appear correctly in scan results
+* **PIN Code Request Visibility and Diagnostic Enhancements** – Comprehensive diagnostic capabilities for PIN code pairing failures:
+  * **Phase 1: Communication Type Logging Fix** – Fixed D-Bus communication type labeling to correctly identify METHOD CALL, METHOD RETURN, ERROR, and SIGNAL messages. Added validation in `_on_dbus_message()` to ensure message types match captured event types, with debug logging for troubleshooting.
+  * **Phase 2: Agent Method Invocation Detection** – Added method invocation tracking in `BlueZAgent` class to correlate captured D-Bus method calls with actual agent method invocations. Added capability validation warnings when agent capability doesn't support requested method (e.g., DisplayOnly cannot provide PIN codes).
+  * **Phase 3: Enhanced Event Correlation** – Implemented automatic RequestPinCode → Cancel correlation with time deltas, device connection state correlation with PIN code requests, and timeout detection for pending method calls.
+  * **Phase 4: Root Cause Analysis Summary** – Added automated root cause analysis summaries for PIN code request failures, including agent registration status, capability support, method invocation status, device connection state, timing analysis, and actionable recommendations.
+  * **Phase 5: Agent Registration Status Verification** – Added tracking of agent registration/unregistration events and verification of agent registration status at time of each request, with warnings when agent is not registered.
+  * **Phase 6: Destination Verification Diagnostic Logging** – Added comprehensive diagnostic logging to verify if BlueZ is calling BLEEP's agent or a different agent:
+    * **Bus unique name logging**: Logs D-Bus bus unique name at agent creation and registration for destination verification
+    * **Destination comparison**: Compares METHOD CALL destination with BLEEP's bus unique name to detect if BlueZ is calling a different agent
+    * **Verification messages**: Logs clear verification messages indicating whether destination matches BLEEP's agent or if a different agent is being called
+    * **Fix**: Moved destination verification code from deprecated `_on_method_call()` function to `_log_event()` function (used by unified monitoring) to ensure logs actually appear
+    * **Files Modified**: `bleep/dbuslayer/agent.py` (added bus unique name logging in `__init__()` and `register()`), `bleep/dbuslayer/signals.py` (added destination verification in `_log_event()` for both method_call events and signal reclassification cases, removed incorrect code from `_on_method_call()`)
+    * **Purpose**: Diagnose why agent methods may not be invoked even when METHOD CALL events are captured (destination mismatch indicates BlueZ calling different agent)
+    * **Status**: Fully implemented and verified - destination verification logs now appear correctly in agent.log
+  * **Files Modified**: `bleep/dbuslayer/signals.py` (added communication type validation, agent method invocation correlation, RequestPinCode → Cancel correlation, device connection state tracking, root cause analysis, destination verification), `bleep/dbuslayer/agent.py` (added method invocation tracking, capability validation, expected methods logging, bus unique name logging), `bleep/bt_ref/exceptions.py` (added `RejectedException` class)
+    * **Status**: Diagnostic capabilities fully implemented. **Core issue resolved in v2.4.7**: D-Bus method registration fixed by creating mainloop object before agent registration. See `agent_dbus_communication_issue.md` for details.
 
 ### Fixed
 * **AGENT_INTERFACE Constant** – Critical fix for agent functionality:

@@ -17,6 +17,7 @@ __all__ = [
     "CliIOHandler", 
     "ProgrammaticIOHandler", 
     "AutoAcceptIOHandler",
+    "BruteForceIOHandler",
     "create_io_handler"
 ]
 
@@ -174,12 +175,27 @@ class CliIOHandler(AgentIOHandler):
     def request_pin_code(self, device_info: str) -> str:
         """Request PIN code from user via CLI."""
         print_and_log(
+            f"[*] CliIOHandler.request_pin_code() called for device: {device_info}",
+            LOG__AGENT
+        )
+        print_and_log(
             f"[*] CliIOHandler: PIN code request for {device_info} (handler_type=cli, auto_accept=False)",
             LOG__AGENT
         )
-        pin = input("Enter PIN code: ")
-        print_and_log(f"[+] PIN code entered: {pin}", LOG__AGENT)
-        return pin
+        try:
+            pin = input("Enter PIN code: ")
+            print_and_log(f"[+] CliIOHandler: PIN code entered by user: {pin}", LOG__AGENT)
+            return pin
+        except EOFError as e:
+            error_msg = f"CliIOHandler: EOFError - no stdin available (non-interactive context): {e}"
+            print_and_log(f"[-] {error_msg}", LOG__AGENT)
+            raise RuntimeError(error_msg)
+        except Exception as e:
+            error_msg = f"CliIOHandler: Unexpected error in request_pin_code(): {type(e).__name__}: {str(e)}"
+            print_and_log(f"[-] {error_msg}", LOG__AGENT)
+            import traceback
+            print_and_log(f"[-] Traceback: {traceback.format_exc()}", LOG__AGENT)
+            raise
         
     def display_pin_code(self, device_info: str, pincode: str) -> None:
         """Display PIN code to user via CLI."""
@@ -293,12 +309,37 @@ class ProgrammaticIOHandler(AgentIOHandler):
         
     def request_pin_code(self, device_info: str) -> str:
         """Request PIN code via callback if available."""
+        print_and_log(
+            f"[*] ProgrammaticIOHandler.request_pin_code() called for device: {device_info}",
+            LOG__AGENT,
+        )
         if self.callbacks["request_pin_code"]:
-            return self.callbacks["request_pin_code"](device_info)
+            print_and_log(
+                f"[*] ProgrammaticIOHandler: Using callback for PIN code request",
+                LOG__AGENT,
+            )
+            try:
+                pin = self.callbacks["request_pin_code"](device_info)
+                print_and_log(
+                    f"[+] ProgrammaticIOHandler: Callback returned PIN code: '{pin}'",
+                    LOG__AGENT,
+                )
+                return pin
+            except Exception as e:
+                error_msg = f"ProgrammaticIOHandler: Callback raised exception: {type(e).__name__}: {str(e)}"
+                print_and_log(f"[-] {error_msg}", LOG__AGENT)
+                import traceback
+                print_and_log(f"[-] Traceback: {traceback.format_exc()}", LOG__AGENT)
+                raise
             
         # Log default behavior
         print_and_log(
-            f"[*] ProgrammaticIOHandler: default PIN for {device_info} (auto_accept={self.auto_accept}): {self.default_pin}",
+            f"[*] ProgrammaticIOHandler: No callback set, using default PIN for {device_info} "
+            f"(auto_accept={self.auto_accept}): {self.default_pin}",
+            LOG__AGENT,
+        )
+        print_and_log(
+            f"[+] ProgrammaticIOHandler: Returning default PIN code: '{self.default_pin}'",
             LOG__AGENT,
         )
         return self.default_pin
@@ -409,11 +450,20 @@ class AutoAcceptIOHandler(AgentIOHandler):
         
     def request_pin_code(self, device_info: str) -> str:
         """Auto-accept PIN code request."""
+        # CRITICAL: Always log IO handler activity (not just when verbose)
+        print_and_log(
+            f"[*] AutoAcceptIOHandler.request_pin_code() called for device: {device_info}",
+            LOG__AGENT,
+        )
         if self.verbose:
             print_and_log(
                 f"[*] AutoAcceptIOHandler: PIN request for {device_info} default_pin='{self.default_pin}'",
                 LOG__AGENT,
             )
+        print_and_log(
+            f"[+] AutoAcceptIOHandler: Returning PIN code: '{self.default_pin}'",
+            LOG__AGENT,
+        )
         return self.default_pin
         
     def display_pin_code(self, device_info: str, pincode: str) -> None:
@@ -478,15 +528,113 @@ class AutoAcceptIOHandler(AgentIOHandler):
             print_and_log(f"[+] Success for {device_info}: {message}", LOG__DEBUG)
 
 
+class BruteForceIOHandler(AgentIOHandler):
+    """IO Handler that iterates through a sequence of PINs/passkeys for brute-force pairing.
+
+    Each call to ``request_pin_code`` or ``request_passkey`` consumes the next
+    value from the iterator provided at construction time.  The orchestrator
+    (``PinBruteForcer``) creates a fresh handler per attempt, so this class
+    only needs to return a single value per lifetime.
+
+    Attributes
+    ----------
+    current_pin : str | None
+        The PIN returned on the most recent ``request_pin_code`` call.
+    current_passkey : int | None
+        The passkey returned on the most recent ``request_passkey`` call.
+    exhausted : bool
+        True if the iterator has been fully consumed.
+    """
+
+    def __init__(self, pin_iterator=None, passkey_iterator=None):
+        """Initialize with an iterator of candidate values.
+
+        Parameters
+        ----------
+        pin_iterator : iterator of str, optional
+            Yields PIN code strings to try.
+        passkey_iterator : iterator of int, optional
+            Yields passkey integers (0-999999) to try.
+        """
+        self._pin_iter = iter(pin_iterator) if pin_iterator is not None else None
+        self._passkey_iter = iter(passkey_iterator) if passkey_iterator is not None else None
+        self.current_pin: str | None = None
+        self.current_passkey: int | None = None
+        self.exhausted = False
+
+    def request_pin_code(self, device_info: str) -> str:
+        """Return the next PIN from the iterator."""
+        if self._pin_iter is None:
+            raise RuntimeError("BruteForceIOHandler: no PIN iterator configured")
+        try:
+            self.current_pin = next(self._pin_iter)
+            print_and_log(
+                f"[*] BruteForce: trying PIN '{self.current_pin}' for {device_info}",
+                LOG__AGENT,
+            )
+            return self.current_pin
+        except StopIteration:
+            self.exhausted = True
+            raise RuntimeError("BruteForceIOHandler: PIN iterator exhausted")
+
+    def request_passkey(self, device_info: str) -> int:
+        """Return the next passkey from the iterator."""
+        if self._passkey_iter is None:
+            raise RuntimeError("BruteForceIOHandler: no passkey iterator configured")
+        try:
+            self.current_passkey = next(self._passkey_iter)
+            print_and_log(
+                f"[*] BruteForce: trying passkey {self.current_passkey:06d} for {device_info}",
+                LOG__AGENT,
+            )
+            return self.current_passkey
+        except StopIteration:
+            self.exhausted = True
+            raise RuntimeError("BruteForceIOHandler: passkey iterator exhausted")
+
+    def display_pin_code(self, device_info: str, pincode: str) -> None:
+        print_and_log(f"[*] BruteForce display PIN for {device_info}: {pincode}", LOG__AGENT)
+
+    def display_passkey(self, device_info: str, passkey: int, entered: int) -> None:
+        print_and_log(f"[*] BruteForce display passkey for {device_info}: {passkey:06d}", LOG__AGENT)
+
+    def request_confirmation(self, device_info: str, passkey: int) -> bool:
+        return True
+
+    def request_authorization(self, device_info: str) -> bool:
+        return True
+
+    def authorize_service(self, device_info: str, uuid: str) -> bool:
+        return True
+
+    def cancel(self) -> None:
+        print_and_log("[*] BruteForce: pairing attempt cancelled by BlueZ", LOG__AGENT)
+
+    def notify_error(self, device_info: str, error_message: str) -> None:
+        print_and_log(f"[-] BruteForce error for {device_info}: {error_message}", LOG__AGENT)
+
+    def notify_success(self, device_info: str, message: str) -> None:
+        print_and_log(f"[+] BruteForce success for {device_info}: {message}", LOG__AGENT)
+
+
 def create_io_handler(handler_type: str = "cli", **kwargs) -> AgentIOHandler:
     """Create an IO handler of the specified type.
     
     Parameters
     ----------
     handler_type : str
-        Type of IO handler to create: "cli", "programmatic", or "auto"
+        Type of IO handler to create: "cli", "programmatic", "auto",
+        or "bruteforce"
     **kwargs : dict
-        Additional arguments to pass to the IO handler constructor
+        Additional arguments passed to the handler.  Supported keys vary
+        by handler type:
+
+        - ``"cli"``: no extra args
+        - ``"programmatic"``: ``auto_accept``, ``default_pin``,
+          ``default_passkey``, and ``on_<event>`` callbacks
+        - ``"auto"``: ``default_pin``, ``default_passkey``, ``verbose``
+        - ``"bruteforce"``: ``pin_iterator`` (iterable of str),
+          ``passkey_iterator`` (iterable of int)
         
     Returns
     -------
@@ -532,5 +680,10 @@ def create_io_handler(handler_type: str = "cli", **kwargs) -> AgentIOHandler:
             handler.verbose = kwargs["verbose"]
             
         return handler
+    elif handler_type == "bruteforce":
+        return BruteForceIOHandler(
+            pin_iterator=kwargs.get("pin_iterator"),
+            passkey_iterator=kwargs.get("passkey_iterator"),
+        )
     else:
         raise ValueError(f"Invalid IO handler type: {handler_type}")

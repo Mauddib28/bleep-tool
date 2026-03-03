@@ -99,7 +99,11 @@ def _emit(line: str, log_type: str) -> None:
         args=(),
         exc_info=None,
     )
-    _handlers.get(log_type, _handlers[LOG__GENERAL]).handle(record)
+    handler = _handlers.get(log_type, _handlers[LOG__GENERAL])
+    handler.handle(record)
+    # Force immediate flush to ensure logs are written to disk immediately
+    # This is critical for agent methods and IO handlers where logs must be visible
+    handler.flush()
 
 
 # Legacy-compatible logging functions

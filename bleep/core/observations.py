@@ -349,7 +349,7 @@ def _init_db() -> None:
                 current_version = 6
             except Exception as e:
                 print(f"Migration v5 to v6 failed: {e}")
-        
+
         # Migration from v6 to v7 - Add sdp_records table for full SDP record snapshots
         if current_version == 6:
             try:

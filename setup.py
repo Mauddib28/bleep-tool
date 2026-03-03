@@ -27,6 +27,7 @@ install_requires = [
 ]
 
 # PyGObject is required for core D-Bus operations (scanning, connecting, monitoring)
+# Also provides GStreamer Python bindings (gi.repository.Gst) for audio encoding
 # If not system-installed, add it to install_requires
 # If system-installed, add it to extras_require for users who want to manage via pip
 if not _HAS_PYGOBJECT:
@@ -35,17 +36,19 @@ if not _HAS_PYGOBJECT:
     install_requires.append("PyGObject>=3.48.0")
     _pygobject_extras = {
         "monitor": [],  # No-op since it's already in install_requires
+        "audio": [],  # No-op since it's already in install_requires
     }
 else:
     # PyGObject is system-installed - make it optional for pip
     # System installation is preferred, but users can install via pip if needed
     _pygobject_extras = {
         "monitor": ["PyGObject>=3.48.0"],  # Optional for pip users
+        "audio": ["PyGObject>=3.48.0"],  # Optional for audio encoding features
     }
 
 setup(
     name="bleep",
-    version="2.4.6",
+    version="2.6.0",
     description="Bluetooth Landscape Exploration & Enumeration Platform",
     author="Paul A. Wortman",
     packages=find_packages(),

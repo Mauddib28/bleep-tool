@@ -28,3 +28,8 @@ class InvalidValueLengthException(dbus.exceptions.DBusException):
 
 class FailedException(dbus.exceptions.DBusException):
     _dbus_error_name = "org.bluez.Error.Failed"
+
+
+class RejectedException(dbus.exceptions.DBusException):
+    """Exception raised when an agent rejects a pairing request."""
+    _dbus_error_name = "org.bluez.Error.Rejected"

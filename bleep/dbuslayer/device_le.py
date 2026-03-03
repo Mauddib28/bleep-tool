@@ -219,24 +219,32 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             each *Connect()* call.  Some BLE stacks need >5 s when bonding.
         """
         # PRE-CONNECTION CHECKS
-        # 1. Check if already connected to this device
-        try:
-            if self.is_connected():
-                with self._connection_state_lock:
-                    if self._connection_state != "connected":
-                        self._connection_state = "connected"
-                    self._last_connection_check = time.time()
+        # 1. Check connection state before attempting connection
+        with self._connection_state_lock:
+            current_state = self._connection_state
+        
+        # If already connected, verify with D-Bus and return early
+        if current_state == "connected":
+            try:
+                if self.is_connected():
+                    # D-Bus confirms connection, update timestamp and return
+                    with self._connection_state_lock:
+                        self._last_connection_check = time.time()
+                    print_and_log(
+                        f"[!] Device {self.mac_address} already connected, skipping connect attempt",
+                        LOG__GENERAL
+                    )
+                    return True
+            except Exception as e:
+                # If is_connected() fails, we may have D-Bus issues
+                # State says connected but D-Bus doesn't confirm - proceed with connection attempt
                 print_and_log(
-                    f"[+] Device {self.mac_address} is already connected",
-                    LOG__GENERAL
+                    f"[!] Connection state inconsistent, proceeding with connection attempt: {e}",
+                    LOG__DEBUG
                 )
-                return True
-        except Exception as e:
-            # If is_connected() fails, we may have D-Bus issues
-            print_and_log(
-                f"[!] Could not check connection state: {e}",
-                LOG__DEBUG
-            )
+        elif current_state == "connecting":
+            # Connection already in progress - handled by check below
+            pass
 
         # 2. Check if connection is already in progress
         if self.is_connection_in_progress():

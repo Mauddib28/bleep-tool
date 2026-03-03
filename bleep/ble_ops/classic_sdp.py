@@ -510,31 +510,17 @@ def discover_services_sdp(
                     debug_info += f" svc_ver={rec.get('service_version')}"
                 print_and_log(debug_info, LOG__DEBUG)
 
-        # Ensure we have at least one RFCOMM channel.  Some devices omit
-        # the "Channel" line from *sdptool browse --tree* output (notably
-        # PBAP PSE on certain feature-phones).  In that case we fall back
-        # to the slower, but more complete, `sdptool records` call.
+        # Accept any parsed records.  Prefer results that contain at least
+        # one RFCOMM channel; if the faster `browse --tree` only returns
+        # records without channel info, fall back to `sdptool records`.
         if parsed:
             if any(rec.get("channel") is not None for rec in parsed):
-                # If PBAP (0x112f) channel isn't present, fall through to records
-                pbap_present = any(
-                    (
-                        (rec.get("uuid") and rec["uuid"].lower() in {"0x112f",
-                            "0000112f-0000-1000-8000-00805f9b34fb"})
-                        or (rec.get("name") and "pbap" in rec["name"].lower())
-                        or (rec.get("name") and "phonebook" in rec["name"].lower())
-                    )
-                    for rec in parsed
-                )
-                if pbap_present:
-                    successful_records = parsed
-                    break  # Exit loop - we have valid records
-                last_error = "PBAP not in browse output"
-                continue
-            # If we have parsed records but no channels, save them for potential return
+                successful_records = parsed
+                break
+            # Records present but no RFCOMM channels — save as fallback and
+            # try the next (slower) command for more complete output.
             successful_records = parsed
             if idx == len(cmds_to_try):
-                # Last command - return what we have
                 break
             last_error = "No RFCOMM channels in browse output"
             continue

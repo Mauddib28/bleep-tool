@@ -52,7 +52,7 @@ The database schema is versioned to allow for smooth migrations:
 | v6 | Added `device_type_evidence` table for classification audit trail and signature caching |
 | v7 | Added `sdp_records` table for full SDP record snapshots with all attributes |
 
-Migrations occur transparently when the schema version changes. For detailed migration history, see [README.refactor-migrations.md](../../README.refactor-migrations.md).
+Migrations occur transparently when the schema version changes. For detailed migration history, see the schema version table in [observation_db_schema.md](observation_db_schema.md).
 
 ## AOI Integration
 

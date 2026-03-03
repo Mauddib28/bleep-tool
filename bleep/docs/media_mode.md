@@ -103,4 +103,10 @@ CLI to mirror *general* messages to stdout.
 
 ---
 
-*Last updated: 2025-07-21* 
+## See also
+
+* **Audio recon** (PulseAudio/PipeWire enumeration, per-profile sources/sinks, play/record, sox analysis): see [audio_recon.md](audio_recon.md). Covers `bleep audio-recon` and future Bonus Objectives (stream redirection, consolidate streams, play into streams, reconfig I/O).
+
+---
+
+*Last updated: 2026-02-28* 

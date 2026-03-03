@@ -18,6 +18,7 @@ from typing import List, Dict, Any, Optional
 
 from bleep.core.log import print_and_log, LOG__GENERAL
 from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+from bleep.ble_ops.enum_controller import EnumerationController
 from bleep.bt_ref.utils import get_name_from_uuid
 
 
@@ -384,10 +385,17 @@ def main(argv: list[str] | None = None):
                 normalized = mac_up.replace("-", ":")
                 print_and_log(f"[*] AoI connect+enum {mac_up}", LOG__GENERAL)
                 try:
-                    device, services_mapping, landmine_map, permission_map = _connect_enum(mac_up)
+                    # Use EnumerationController for structured multi-attempt enumeration
+                    controller = EnumerationController(mac_up)
+                    result = controller.enumerate(mode='passive')
                     
-                    # Save device data for later analysis
-                    if device:
+                    if result.success and result.device:
+                        device = result.device
+                        services_mapping = result.data or {}
+                        landmine_map = result.landmine_map or {}
+                        permission_map = result.permission_map or {}
+                        
+                        # Save device data for later analysis
                         device_data = {
                             "address": normalized,
                             "name": getattr(device, "get_name", lambda: getattr(device, "name", "Unknown"))() or getattr(device, "name", "Unknown"),
@@ -395,10 +403,29 @@ def main(argv: list[str] | None = None):
                             "services_mapping": services_mapping,
                             "landmine_map": landmine_map,
                             "permission_map": permission_map,
-                            "scan_timestamp": time.time()
+                            "scan_timestamp": time.time(),
+                            "enumeration_annotations": [
+                                {
+                                    "timestamp": a.timestamp,
+                                    "error_type": a.error_type,
+                                    "details": a.details,
+                                    "attempted_solution": a.attempted_solution,
+                                }
+                                for a in result.annotations
+                            ],
                         }
                         analyzer.save_device_data(normalized, device_data)
                         print_and_log(f"[+] Device data saved for {normalized}", LOG__GENERAL)
+                    else:
+                        # Enumeration failed - log annotations
+                        print_and_log(f"[-] Enumeration failed for {mac_up}", LOG__GENERAL)
+                        if result.error_summary:
+                            print_and_log(f"    {result.error_summary}", LOG__GENERAL)
+                        for annotation in result.annotations:
+                            print_and_log(
+                                f"    [{annotation.error_type}] {annotation.details}",
+                                LOG__GENERAL
+                            )
                         
                 except Exception as e:
                     print_and_log(f"[-] Failed: {e}", LOG__GENERAL)

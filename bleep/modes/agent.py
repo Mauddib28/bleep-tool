@@ -16,7 +16,7 @@ from typing import Literal, Optional, Dict, Any
 import dbus
 from gi.repository import GLib
 
-from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
+from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__AGENT
 from bleep.dbuslayer.agent import (
     SimpleAgent, 
     InteractiveAgent, 
@@ -254,6 +254,12 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
     if not args.pair and (args.trust or args.untrust or args.list_trusted or args.list_bonded or args.remove_bond):
         return 0
 
+    # CRITICAL FIX: Create mainloop object BEFORE agent creation/registration
+    # This matches the pattern used in all working BlueZ reference scripts (simple-agent, test-profile, etc.)
+    # The mainloop object must exist when dbus.service.Object.__init__() is called to properly
+    # register methods on D-Bus. Without it, methods are not registered even though the object path is.
+    loop = GLib.MainLoop()
+    
     # Create and register agent
     agent_type = args.mode
     cap = _CAPABILITIES[args.cap]
@@ -274,7 +280,7 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
             from bleep.dbuslayer.agent_io import create_io_handler
             io_handler = create_io_handler("programmatic", auto_accept=args.auto_accept)
         
-        # Create the agent
+        # Create the agent (mainloop object now exists, ensuring proper method registration)
         agent = create_agent(
             bus,
             agent_type=agent_type,
@@ -288,6 +294,21 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
         # Log the exact chosen agent type + cap + default + auto_accept + agent_path
         io_handler_type = io_handler.__class__.__name__ if io_handler else 'none'
         agent_path = getattr(agent, 'agent_path', 'unknown')
+        
+        # Verify agent method registration (if method exists)
+        if hasattr(agent, '_verify_method_registration'):
+            verification_result = agent._verify_method_registration()
+            if verification_result:
+                print_and_log(
+                    f"[+] Agent method registration verified via D-Bus introspection",
+                    LOG__AGENT
+                )
+            else:
+                print_and_log(
+                    f"[!] WARNING: Agent method registration verification failed - methods may not be accessible",
+                    LOG__AGENT
+                )
+        
         print_and_log(
             f"[*] Agent registered: agent_type={agent.__class__.__name__}, capabilities={cap}, "
             f"default={args.default}, auto_accept={args.auto_accept}, agent_path={agent_path}, "
@@ -342,9 +363,9 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
             return 1
     
         # Run the main loop if default agent is requested
+        # Note: mainloop object was created earlier (before agent creation) to ensure
+        # proper method registration. We only run it here if --default flag is set.
         if args.default:
-            loop = GLib.MainLoop()
-            
             def _sigint(_sig, _frm):
                 print_and_log("[!] SIGINT received – unregistering agent", LOG__GENERAL)
                 try:
@@ -357,8 +378,27 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
             try:
                 print_and_log("[*] Agent running, press Ctrl+C to exit", LOG__GENERAL)
                 loop.run()
+            except Exception as e:
+                print_and_log(
+                    f"[!] Mainloop error: {e}",
+                    LOG__GENERAL
+                )
+                import traceback
+                print_and_log(
+                    f"[!] Mainloop traceback: {traceback.format_exc()}",
+                    LOG__GENERAL
+                )
+                raise
             finally:
                 print_and_log("[*] Agent loop exited", LOG__GENERAL)
+        else:
+            # For non-default agents, the mainloop object was still needed during
+            # registration, but we don't run it indefinitely. The agent will handle
+            # pairing requests synchronously if needed.
+            print_and_log(
+                "[*] Agent registered (non-default). Mainloop object created for proper method registration.",
+                LOG__DEBUG
+            )
                 
     except Exception as e:
         print_and_log(f"[-] Agent error: {str(e)}", LOG__GENERAL)

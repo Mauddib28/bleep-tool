@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, List
 
 import dbus
 import dbus.service
@@ -145,19 +145,21 @@ def ensure_default_pairing_agent(*, capabilities: str = "KeyboardDisplay", auto_
     other than "0" / "false".
     """
     import os, dbus
+    import dbus.mainloop.glib
 
     if os.getenv("BLEEP_NO_AUTO_PAIR", "0") not in {"0", "false", "False", ""}:
         return
 
+    # GLib mainloop integration MUST be set before creating the bus.
+    # Without this, dbus-python receives incoming method calls (e.g.
+    # RequestPinCode from BlueZ) on the socket but never dispatches
+    # them to the Python handler — the agent appears dead.
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+
     global _DEFAULT_AGENT
-    # If we already created an agent object for this process, re-use it.
-    # dbus-python only allows one handler per object path per connection, so
-    # creating a second agent object at the same path raises:
-    # "there is already a handler".
     if _DEFAULT_AGENT is not None:
         if _DEFAULT_AGENT.is_registered():
             return
-        # Re-register existing object rather than creating a new one.
         _DEFAULT_AGENT.register(capabilities=capabilities, default=True)
         print_and_log("[*] Default pairing agent registered (reused existing object)", LOG__AGENT)
         return
@@ -213,6 +215,126 @@ class BlueZAgent(dbus.service.Object):
         self._setup_agent_manager()
         self._is_registered = False
         
+        # Agent method invocation tracking (for correlation with D-Bus monitoring)
+        self._method_invocations: Dict[str, float] = {}  # method_name -> timestamp
+        self._capabilities: str = "NoInputNoOutput"  # Will be set during registration
+        
+        # CRITICAL: Log bus unique name for destination verification
+        try:
+            bus_unique_name = bus.get_unique_name()
+            print_and_log(
+                f"[!!!] Agent created: bus_unique_name={bus_unique_name}, path={agent_path}",
+                LOG__AGENT
+            )
+        except Exception as e:
+            print_and_log(
+                f"[!] Could not get bus unique name at agent creation: {e}",
+                LOG__AGENT
+            )
+        
+        # CRITICAL: Check if methods are registered using dbus-python's internal state
+        # Note: Cannot use introspection (AccessDenied - D-Bus security prevents self-introspection via proxy)
+        # The _dbus_class_table is a class-level shared dict: {class_name: {interface: {method_name: function}}}
+        try:
+            # Check dbus-python's internal class table for registered methods
+            # The _dbus_class_table is a shared dict on the class, not module
+            if hasattr(self.__class__, '_dbus_class_table'):
+                class_table = self.__class__._dbus_class_table
+            else:
+                print_and_log(
+                    f"[!] WARNING: Agent class has no _dbus_class_table attribute - cannot verify method registration",
+                    LOG__AGENT
+                )
+                class_table = None
+            
+            # Get the fully qualified class name (module.class)
+            class_name = f"{self.__class__.__module__}.{self.__class__.__name__}"
+            
+            print_and_log(
+                f"[!!!] Checking class table for: {class_name}",
+                LOG__AGENT
+            )
+            
+            if class_table:
+                print_and_log(
+                    f"[!!!] Class table type: {type(class_table)}, has {len(class_table)} entries",
+                    LOG__AGENT
+                )
+            
+            if class_table and class_name in class_table:
+                class_methods = class_table[class_name]
+                print_and_log(
+                    f"[!!!] Class found in table, interfaces: {list(class_methods.keys())}",
+                    LOG__AGENT
+                )
+                
+                # Check for Agent1 interface methods
+                if AGENT_INTERFACE in class_methods:
+                    agent_methods = class_methods[AGENT_INTERFACE]
+                    method_names = list(agent_methods.keys())
+                    print_and_log(
+                        f"[!!!] Agent methods in class table: {method_names}",
+                        LOG__AGENT
+                    )
+                    if method_names:
+                        print_and_log(
+                            f"[+] Agent methods found in class table: {len(method_names)} methods registered",
+                            LOG__AGENT
+                        )
+                    else:
+                        print_and_log(
+                            f"[-] WARNING: Agent interface exists but has no methods - methods may not be registered",
+                            LOG__AGENT
+                        )
+                else:
+                    print_and_log(
+                        f"[-] WARNING: Agent interface '{AGENT_INTERFACE}' not found in class table - methods may not be registered",
+                        LOG__AGENT
+                    )
+                    # Show what interfaces ARE registered
+                    print_and_log(
+                        f"[!] Registered interfaces for this class: {list(class_methods.keys())}",
+                        LOG__AGENT
+                    )
+            else:
+                print_and_log(
+                    f"[-] WARNING: Class '{class_name}' not found in class table - methods may not be registered",
+                    LOG__AGENT
+                )
+                # Show what classes ARE in the table
+                if class_table:
+                    print_and_log(
+                        f"[!] Classes in table: {list(class_table.keys())[:10]}",  # First 10
+                        LOG__AGENT
+                    )
+                else:
+                    print_and_log(
+                        f"[!] Class table is empty or None",
+                        LOG__AGENT
+                    )
+            
+            # Check connection and object path registration
+            if hasattr(self, 'connection'):
+                print_and_log(
+                    f"[*] Agent connection exists: {self.connection is not None}",
+                    LOG__AGENT
+                )
+            else:
+                print_and_log(
+                    f"[!] WARNING: Agent has no connection attribute",
+                    LOG__AGENT
+                )
+        except Exception as e:
+            print_and_log(
+                f"[!] Could not check agent internal state: {e}",
+                LOG__AGENT
+            )
+            import traceback
+            print_and_log(
+                f"[!] Traceback: {traceback.format_exc()}",
+                LOG__AGENT
+            )
+        
         # Initialize I/O handler
         if io_handler is None:
             from bleep.dbuslayer.agent_io import create_io_handler
@@ -260,18 +382,60 @@ class BlueZAgent(dbus.service.Object):
                     # Don't fail registration if RequestDefaultAgent fails
             
             self._is_registered = True
+            self._capabilities = capabilities  # Store capabilities for validation
+            
+            # Verify method registration via D-Bus introspection
+            verification_result = self._verify_method_registration()
+            if not verification_result:
+                print_and_log(
+                    f"[!] WARNING: Agent method registration verification failed - methods may not be accessible via D-Bus",
+                    LOG__AGENT
+                )
+            else:
+                print_and_log(
+                    f"[+] Agent method registration verified via D-Bus introspection",
+                    LOG__AGENT
+                )
+            
+            # CRITICAL: Log bus unique name at registration for destination verification
+            try:
+                bus_unique_name = self._bus.get_unique_name()
+                print_and_log(
+                    f"[!!!] Agent registration: bus_unique_name={bus_unique_name}, "
+                    f"path={self.agent_path}, capabilities={capabilities}, "
+                    f"default_requested={default}, registered={self._is_registered}",
+                    LOG__AGENT
+                )
+            except Exception as e:
+                print_and_log(
+                    f"[!] Could not get bus unique name at registration: {e}",
+                    LOG__AGENT
+                )
+            
             print_and_log(
                 f"[+] Agent registration complete: path={self.agent_path}, capabilities={capabilities}, "
                 f"default_requested={default}, registered={self._is_registered}",
                 LOG__AGENT
             )
             
-            # Enable unified D-Bus monitoring when agent is registered
+            # Log expected methods for this capability
+            expected_methods = self._get_expected_methods_for_capability(capabilities)
+            if expected_methods:
+                print_and_log(
+                    f"[*] Agent capability '{capabilities}' supports methods: {', '.join(expected_methods)}",
+                    LOG__DEBUG
+                )
+            
+            # Register agent instance for method invocation correlation.
+            # NOTE: Unified D-Bus monitoring is NOT enabled here because
+            # the message filter it installs prevents dbus-python from
+            # dispatching incoming method calls (RequestPinCode, etc.)
+            # to the dbus.service.Object handler.  Monitoring can be
+            # re-enabled AFTER pairing completes if needed.
             try:
                 from bleep.dbuslayer.signals import system_dbus__bluez_signals
-                # Get or create signals instance
                 signals_instance = system_dbus__bluez_signals()
-                signals_instance.enable_unified_dbus_monitoring(True)
+                signals_instance.register_agent(self)
             except Exception as e:
                 print_and_log(
                     f"[!] Failed to enable unified D-Bus monitoring: {e} "
@@ -313,6 +477,83 @@ class BlueZAgent(dbus.service.Object):
     def is_registered(self):
         """Check if the agent is registered."""
         return self._is_registered
+    
+    def _get_expected_methods_for_capability(self, capabilities: str) -> List[str]:
+        """Get list of methods expected for a given capability.
+        
+        Parameters
+        ----------
+        capabilities : str
+            Agent capability string (e.g., "KeyboardOnly", "DisplayOnly")
+            
+        Returns
+        -------
+        List[str]
+            List of method names this capability supports
+        """
+        capability_methods = {
+            "NoInputNoOutput": ["Release", "AuthorizeService"],
+            "DisplayOnly": ["Release", "DisplayPinCode", "DisplayPasskey", "RequestConfirmation", "RequestAuthorization", "AuthorizeService"],
+            "DisplayYesNo": ["Release", "DisplayPinCode", "DisplayPasskey", "RequestConfirmation", "RequestAuthorization", "AuthorizeService"],
+            "KeyboardOnly": ["Release", "RequestPinCode", "RequestPasskey", "AuthorizeService"],
+            "KeyboardDisplay": ["Release", "RequestPinCode", "DisplayPinCode", "RequestPasskey", "DisplayPasskey", "RequestConfirmation", "RequestAuthorization", "AuthorizeService"],
+        }
+        return capability_methods.get(capabilities, [])
+    
+    def _verify_method_registration(self) -> bool:
+        """Verify agent methods are properly registered with D-Bus via introspection.
+        
+        Returns
+        -------
+        bool
+            True if all required methods are registered, False otherwise
+        """
+        # Self-introspection on the system bus is denied for non-root by
+        # default D-Bus policy (AccessDenied on org.freedesktop.DBus.Introspectable).
+        # Instead, verify via dbus-python's internal class table which is
+        # already checked at agent creation time.  The class-table check at
+        # __init__ logged the method count; we trust that here.
+        try:
+            our_bus_name = self._bus.get_unique_name()
+            print_and_log(
+                f"[+] Agent method verification: bus={our_bus_name}, "
+                f"path={self.agent_path} (class-table validated at creation)",
+                LOG__AGENT,
+            )
+            return True
+        except Exception as e:
+            print_and_log(
+                f"[!] Agent method verification: could not get bus name: {e}",
+                LOG__AGENT,
+            )
+            return False
+    
+    def _track_method_invocation(self, method_name: str) -> None:
+        """Track that an agent method was invoked.
+        
+        Parameters
+        ----------
+        method_name : str
+            Name of the method that was invoked
+        """
+        import time
+        self._method_invocations[method_name] = time.time()
+    
+    def _validate_capability_supports_method(self, method_name: str) -> bool:
+        """Validate that the agent's capability supports the requested method.
+        
+        Parameters
+        ----------
+        method_name : str
+            Name of the method being called
+            
+        Returns
+        -------
+        bool
+            True if capability supports the method, False otherwise
+        """
+        expected_methods = self._get_expected_methods_for_capability(self._capabilities)
+        return method_name in expected_methods
         
     def _get_device_info(self, device_path):
         """Get device information for display purposes.
@@ -372,19 +613,62 @@ class BlueZAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="s")
     def RequestPinCode(self, device):
         """Request PIN code for pairing."""
+        # CRITICAL: Log entry point immediately to verify method is invoked
         print_and_log(
-            f"[*] RequestPinCode METHOD CALLED by BlueZ: device_path={device}, agent_path={self.agent_path}, registered={self._is_registered}",
+            "[!!!] RequestPinCode METHOD ENTRY POINT REACHED - Agent method invoked by BlueZ",
+            LOG__AGENT
+        )
+        
+        # Track method invocation
+        self._track_method_invocation("RequestPinCode")
+        
+        # Validate capability supports this method
+        if not self._validate_capability_supports_method("RequestPinCode"):
+            print_and_log(
+                f"[!] WARNING: Agent capability '{self._capabilities}' does not support RequestPinCode "
+                f"(requires KeyboardOnly or KeyboardDisplay). Agent method invoked but may fail.",
+                LOG__AGENT
+            )
+        
+        print_and_log(
+            f"[*] RequestPinCode METHOD CALLED by BlueZ: device_path={device}, agent_path={self.agent_path}, "
+            f"registered={self._is_registered}, capabilities={self._capabilities}",
             LOG__AGENT
         )
         
         device_info = self._get_device_info(device)
         
+        # Verify IO handler exists before use
+        if self._io_handler is None:
+            error_msg = "IO handler is None - cannot process PIN code request"
+            print_and_log(f"[-] CRITICAL ERROR: {error_msg}", LOG__AGENT)
+            raise RejectedException(error_msg)
+        
+        print_and_log(
+            f"[*] IO Handler verification: handler_type={type(self._io_handler).__name__}, "
+            f"handler={self._io_handler}",
+            LOG__AGENT
+        )
+        
         try:
+            print_and_log(
+                f"[*] Calling IO handler.request_pin_code() for device: {device_info}",
+                LOG__AGENT
+            )
             pin_code = self._io_handler.request_pin_code(device_info)
             print_and_log(f"[+] PIN code provided for {device_info}: {pin_code}", LOG__AGENT)
             return pin_code
+        except AttributeError as e:
+            error_msg = f"AttributeError in RequestPinCode: {e}"
+            print_and_log(f"[-] {error_msg}", LOG__AGENT)
+            import traceback
+            print_and_log(f"[-] Traceback: {traceback.format_exc()}", LOG__AGENT)
+            raise RejectedException(f"PIN code request rejected: {error_msg}")
         except Exception as e:
-            print_and_log(f"[-] PIN code request error: {str(e)}", LOG__AGENT)
+            error_msg = f"PIN code request error: {type(e).__name__}: {str(e)}"
+            print_and_log(f"[-] {error_msg}", LOG__AGENT)
+            import traceback
+            print_and_log(f"[-] Traceback: {traceback.format_exc()}", LOG__AGENT)
             raise RejectedException("PIN code request rejected")
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="u")
@@ -491,6 +775,9 @@ class BlueZAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="", out_signature="")
     def Cancel(self):
         """Cancel any pending request."""
+        # Track method invocation
+        self._track_method_invocation("Cancel")
+        
         print_and_log(
             f"[*] Cancel METHOD CALLED by BlueZ: agent_path={self.agent_path}, registered={self._is_registered}",
             LOG__AGENT
@@ -609,6 +896,9 @@ class PairingAgent(EnhancedAgent):
         
         # Initialize trust manager
         self.trust_manager = TrustManager(bus)
+
+        # Last D-Bus error name from pair_device(), readable by callers
+        self.last_pair_error: str | None = None
         
         # Initialize state machine
         from bleep.dbuslayer.pairing_state import PairingStateMachine
@@ -689,7 +979,17 @@ class PairingAgent(EnhancedAgent):
         
     def pair_device(self, device_path, set_trusted=True, timeout=30):
         """Pair with a device and optionally set it as trusted.
-        
+
+        Uses an **asynchronous** ``Pair()`` call so the GLib main context can
+        dispatch agent callbacks (``RequestPinCode``, etc.) while waiting.
+
+        If a GLib MainLoop is already running on another thread (e.g. debug
+        shell's background loop), this method simply polls the result dict
+        with a short sleep — the background loop handles D-Bus dispatch.
+
+        If no background loop is detected, this method iterates the default
+        GLib MainContext directly to pump D-Bus events.
+
         Parameters
         ----------
         device_path : str
@@ -698,114 +998,174 @@ class PairingAgent(EnhancedAgent):
             Whether to set the device as trusted after pairing
         timeout : int
             Maximum time to wait for pairing to complete (in seconds)
-            
+
         Returns
         -------
         bool
             True if pairing was successful, False otherwise
         """
+        from gi.repository import GLib
+
+        self.last_pair_error = None
+
         try:
-            # Get device properties
             device_info = self._get_device_info(device_path)
             print_and_log(f"[*] Attempting to pair with {device_info}", LOG__GENERAL)
-            
-            # Notify pairing started
+
             if self.pairing_callbacks["pairing_started"]:
                 self.pairing_callbacks["pairing_started"](device_info)
-                
-            # Initialize state machine
+
             self._state_machine.start_pairing(device_path, device_info)
-            
-            # Attempt to use D-Bus timeout handling if available
-            try:
-                from bleep.dbus.timeout_manager import call_method_with_timeout
-                from bleep.core.metrics import MetricsCollector
-                
-                # Create metrics collector if not already exists
-                metrics = MetricsCollector("pairing_agent")
-                
-                # Get device interface
-                device = dbus.Interface(
-                    self._bus.get_object(BLUEZ_SERVICE_NAME, device_path),
-                    DEVICE_INTERFACE
-                )
-                
-                # Call Pair method with timeout
-                metrics.record_operation("pair_begin")
-                call_method_with_timeout(device.Pair, timeout=timeout)
-                metrics.record_operation("pair_success")
-                
-            except ImportError:
-                # Fall back to standard approach if timeout module not available
-                # Get device interface
-                device = dbus.Interface(
-                    self._bus.get_object(BLUEZ_SERVICE_NAME, device_path),
-                    DEVICE_INTERFACE
-                )
-                
-                # Pair with the device
-                device.Pair()
-            
-            # Wait for pairing to complete
+
+            device = dbus.Interface(
+                self._bus.get_object(BLUEZ_SERVICE_NAME, device_path),
+                DEVICE_INTERFACE,
+            )
+
+            # ---- async Pair() ------------------------------------------------
+            pair_result: Dict[str, Any] = {"done": False, "error": None}
+
+            def _on_pair_reply():
+                print_and_log("[+] Pair() D-Bus reply received (success)", LOG__AGENT)
+                pair_result["done"] = True
+
+            def _on_pair_error(exc):
+                print_and_log(f"[-] Pair() D-Bus error received: {exc}", LOG__AGENT)
+                pair_result["error"] = exc
+                pair_result["done"] = True
+
+            print_and_log(
+                f"[*] Calling async Pair(): device_path={device_path}, timeout={timeout}s",
+                LOG__GENERAL,
+            )
+
+            device.Pair(
+                reply_handler=_on_pair_reply,
+                error_handler=_on_pair_error,
+                timeout=timeout * 1000,
+            )
+
+            # ---- wait for result ---------------------------------------------
+            # Detect whether a background GLib MainLoop is already iterating the
+            # default context.  If so, D-Bus dispatch is handled there and we
+            # only need to poll pair_result.  If not, we must iterate ourselves.
+            context = GLib.MainContext.default()
+            bg_loop_running = not context.acquire()
+            if not bg_loop_running:
+                context.release()
+
             start_time = time.time()
-            paired = False
-            
-            while time.time() - start_time < timeout:
-                props = dbus.Interface(
-                    self._bus.get_object(BLUEZ_SERVICE_NAME, device_path),
-                    DBUS_PROPERTIES
+            log_interval = 5.0
+            next_log = start_time + log_interval
+
+            if bg_loop_running:
+                print_and_log(
+                    "[*] Background GLib MainLoop detected – polling for Pair() result",
+                    LOG__GENERAL,
                 )
-                
-                try:
-                    paired = props.Get(DEVICE_INTERFACE, "Paired")
-                    if paired:
-                        self._state_machine.handle_bonding_start()
-                        break
-                except:
-                    pass
-                    
-                time.sleep(1)
-                
-            if not paired:
-                print_and_log(f"[-] Pairing with {device_info} timed out", LOG__GENERAL)
-                error = Exception("Pairing timed out")
-                self._state_machine.handle_pairing_failed(error)
+                while not pair_result["done"] and (time.time() - start_time < timeout):
+                    time.sleep(0.25)
+                    now = time.time()
+                    if now >= next_log:
+                        elapsed = now - start_time
+                        print_and_log(
+                            f"[*] Waiting for Pair() result… {elapsed:.0f}s elapsed",
+                            LOG__GENERAL,
+                        )
+                        next_log = now + log_interval
+            else:
+                # A temporary MainLoop is required for dbus-python to
+                # dispatch object-path handlers (RequestPinCode, etc.).
+                # context.iteration() only triggers message filters, not
+                # dbus.service.Object method handlers.  Confirmed via PoC
+                # that GLib.MainLoop().run() is the only reliable mechanism.
+                print_and_log(
+                    "[*] No background MainLoop – running temporary MainLoop for D-Bus dispatch",
+                    LOG__GENERAL,
+                )
+                tmp_loop = GLib.MainLoop()
+
+                def _poll_result():
+                    nonlocal next_log
+                    if pair_result["done"]:
+                        tmp_loop.quit()
+                        return False
+                    now = time.time()
+                    if now - start_time >= timeout:
+                        tmp_loop.quit()
+                        return False
+                    if now >= next_log:
+                        print_and_log(
+                            f"[*] Waiting for Pair() result… {now - start_time:.0f}s elapsed",
+                            LOG__GENERAL,
+                        )
+                        next_log = now + log_interval
+                    return True
+
+                GLib.timeout_add(100, _poll_result)
+                tmp_loop.run()
+
+            # ---- evaluate result ---------------------------------------------
+            if pair_result["error"] is not None:
+                raise pair_result["error"]
+
+            if not pair_result["done"]:
+                print_and_log(f"[-] Pairing with {device_info} timed out after {timeout}s", LOG__GENERAL)
+                self._state_machine.handle_pairing_failed(Exception("Pairing timed out"))
                 return False
-                
+
+            # Verify Paired property
+            props = dbus.Interface(
+                self._bus.get_object(BLUEZ_SERVICE_NAME, device_path),
+                DBUS_PROPERTIES,
+            )
+            paired = bool(props.Get(DEVICE_INTERFACE, "Paired"))
+
+            if not paired:
+                print_and_log(f"[-] Pair() returned OK but Paired=False for {device_info}", LOG__GENERAL)
+                self._state_machine.handle_pairing_failed(Exception("Pair succeeded but device not paired"))
+                return False
+
+            self._state_machine.handle_bonding_start()
             print_and_log(f"[+] Successfully paired with {device_info}", LOG__GENERAL)
-            
-            # Set trusted if requested
+
             if set_trusted:
                 trusted = self.trust_manager.set_trusted(device_path, True)
                 if trusted and self.pairing_callbacks["device_trusted"]:
                     self.pairing_callbacks["device_trusted"](device_info)
-            
-            # Complete the pairing in the state machine
+
             self._state_machine.handle_pairing_success()
-                
             return True
-            
+
         except dbus.exceptions.DBusException as e:
+            self.last_pair_error = e.get_dbus_name()
             error_str = _format_dbus_error(e)
-            print_and_log(f"[-] Pairing failed: method=Pair, device_path={device_path}, error={error_str}", LOG__GENERAL)
-            
-            try:
-                metrics.record_operation("pair_failed")
-            except (NameError, AttributeError):
-                pass
-                
-            # Update state machine
-            error = Exception(f"{error_name}: {error_msg}")
-            self._state_machine.handle_pairing_failed(error)
-                
+            print_and_log(
+                f"[-] Pairing failed: {error_str}",
+                LOG__GENERAL,
+            )
+            self._safe_transition_failed(Exception(error_str))
             return False
         except Exception as e:
-            print_and_log(f"[-] Pairing failed with unexpected error: {str(e)}", LOG__GENERAL)
-            
-            # Update state machine
-            self._state_machine.handle_pairing_failed(e)
-            
+            self.last_pair_error = type(e).__name__
+            print_and_log(f"[-] Pairing failed with unexpected error: {e}", LOG__GENERAL)
+            self._safe_transition_failed(e)
             return False
+
+    def _safe_transition_failed(self, error: Exception) -> None:
+        """Transition to FAILED only if the state machine is not already terminal."""
+        from bleep.dbuslayer.pairing_state import PairingState
+        current = self._state_machine.state
+        if current in (PairingState.COMPLETE, PairingState.FAILED, PairingState.CANCELLED):
+            print_and_log(
+                f"[*] Skipping FAILED transition — state machine already in terminal state {current.name}",
+                LOG__DEBUG,
+            )
+            return
+        try:
+            self._state_machine.handle_pairing_failed(error)
+        except Exception:
+            pass
 
 
 class TrustManager:

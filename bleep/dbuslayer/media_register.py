@@ -14,6 +14,9 @@ import dbus
 from bleep.bt_ref.constants import (
     ADAPTER_NAME,
     BLUEZ_SERVICE_NAME,
+    A2DP_SOURCE_UUID,
+    A2DP_SINK_UUID,
+    SBC_CODEC_ID,
 )
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 from bleep.core.errors import map_dbus_error
@@ -26,11 +29,10 @@ __all__ = ["MediaRegisterHelper"]
 class MediaRegisterHelper:
     """High-level helper to register SBC endpoints (sink/source)."""
 
-    # UUIDs (Bluetooth SIG):
-    A2DP_SOURCE_UUID = "0000110A-0000-1000-8000-00805F9B34FB"
-    A2DP_SINK_UUID = "0000110B-0000-1000-8000-00805F9B34FB"
+    # UUIDs (Bluetooth SIG) - use centralized constants from bleep.bt_ref.constants
+    # Access via: A2DP_SOURCE_UUID, A2DP_SINK_UUID (imported at module level)
 
-    SBC_CODEC = dbus.Byte(0x00)
+    SBC_CODEC = dbus.Byte(SBC_CODEC_ID)
     # Copy from BlueZ example-endpoint
     SBC_CAPABILITIES = dbus.Array(
         [dbus.Byte(0xFF), dbus.Byte(0xFF), dbus.Byte(2), dbus.Byte(64)],
@@ -63,7 +65,7 @@ class MediaRegisterHelper:
 
     @classmethod
     def _build_sbc_properties(cls, *, sink: bool) -> Dict[str, Any]:
-        uuid = cls.A2DP_SINK_UUID if sink else cls.A2DP_SOURCE_UUID
+        uuid = A2DP_SINK_UUID if sink else A2DP_SOURCE_UUID
         return {
             "UUID": uuid,
             "Codec": cls.SBC_CODEC,

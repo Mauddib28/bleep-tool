@@ -152,6 +152,22 @@ class system_dbus__bluez_device__classic:
         ConnectionError
             If connection fails
         """
+        # Check if already connected before attempting connection
+        try:
+            if self.is_connected():
+                print_and_log(
+                    f"[!] Device {self.mac_address} already connected, skipping connect attempt",
+                    LOG__GENERAL
+                )
+                return True
+        except Exception as e:
+            # If is_connected() fails, we may have D-Bus issues
+            # Proceed with connection attempt
+            print_and_log(
+                f"[!] Could not check connection state, proceeding with connection attempt: {e}",
+                LOG__DEBUG
+            )
+        
         print_and_log(f"[*] Attempting connection to {self.mac_address}", LOG__USER)
         self._connect_retry_attempt = 0
         self._attach_property_signal()
@@ -515,23 +531,26 @@ class system_dbus__bluez_device__classic:
             
             # Check for common profile states
             if self.is_connected():
+                # Import centralized constants
+                from bleep.bt_ref.constants import A2DP_SINK_UUID, HFP_HANDS_FREE_UUID
+                
                 # A2DP Sink profile
-                if "0000110b-0000-1000-8000-00805f9b34fb" in self._supported_profiles:
+                if A2DP_SINK_UUID in self._supported_profiles:
                     try:
                         # Check if audio is connected
                         audio_connected = self._props_iface.Get(DEVICE_INTERFACE, "Connected")
                         if audio_connected:
-                            self._connected_profiles.append("0000110b-0000-1000-8000-00805f9b34fb")
+                            self._connected_profiles.append(A2DP_SINK_UUID)
                     except (dbus.exceptions.DBusException, KeyError):
                         pass
                         
                 # HFP Hands-Free profile
-                if "0000111e-0000-1000-8000-00805f9b34fb" in self._supported_profiles:
+                if HFP_HANDS_FREE_UUID in self._supported_profiles:
                     try:
                         # Check if HFP is connected
                         hfp_connected = self._props_iface.Get(DEVICE_INTERFACE, "Connected")
                         if hfp_connected:
-                            self._connected_profiles.append("0000111e-0000-1000-8000-00805f9b34fb")
+                            self._connected_profiles.append(HFP_HANDS_FREE_UUID)
                     except (dbus.exceptions.DBusException, KeyError):
                         pass
                         

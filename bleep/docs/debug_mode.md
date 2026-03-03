@@ -51,9 +51,115 @@ Once inside the prompt (`BLEEP-DEBUG>`):
 | `introspect [path]` | Pretty-print XML introspection data |
 | `call <interface> <method> [args...]` | Call D-Bus method directly |
 | `signals` | View captured signals |
+| `pair <MAC> [options]` | Pair with device and connect for exploration |
+| `connect <MAC>` | Connect to a device (auto-detects BLE vs Classic transport) |
+| `agent` | Register / manage the BlueZ pairing agent |
 | `help` | Show full built-in command list |
 
 Exit with `Ctrl-D` or `quit`.
+
+### Pairing with the `pair` Command
+
+The `pair` command registers a BlueZ agent, initiates pairing, and handles PIN/passkey exchange.  After pairing, it **connects the device and returns to the shell** so you can explore with `info`, `interfaces`, `props`, etc.
+
+Use `--test` for the legacy PoC behaviour (pair + auto-disconnect monitor).
+
+#### Operational Mode (default)
+
+After pairing succeeds the command auto-detects the device transport and attempts to maintain a persistent connection:
+
+- **BR/EDR Classic**: SDP enumeration + RFCOMM keepalive socket
+- **BLE**: standard GATT connect + service enumeration
+
+```bash
+pair D8:3A:DD:0B:69:B9                           # default PIN 0000, connect after
+pair D8:3A:DD:0B:69:B9 --pin 12345               # custom PIN
+pair D8:3A:DD:0B:69:B9 --passkey 123456          # LE passkey (uint32)
+pair D8:3A:DD:0B:69:B9 --pin 12345 --timeout 90  # extend timeout
+pair D8:3A:DD:0B:69:B9 --cap DisplayYesNo        # override capability
+pair D8:3A:DD:0B:69:B9 --interactive              # prompt for PIN/passkey
+```
+
+After pairing the shell shows connection status and returns to the prompt.  Use `info` to inspect the device, `cservices` to list RFCOMM services, or `interfaces` / `props` for D-Bus exploration.
+
+#### Test Mode (`--test`)
+
+Replicates the original PoC behaviour: pair, then monitor for auto-disconnect without connecting.  Useful for diagnosing pairing parameters and timing.
+
+```bash
+pair D8:3A:DD:0B:69:B9 --pin 12345 --test        # pair + disconnect monitor
+```
+
+#### Brute-Force Discovery
+
+```bash
+pair D8:3A:DD:0B:69:B9 --brute                         # PIN 0000-9999
+pair D8:3A:DD:0B:69:B9 --brute --range 00000-99999     # custom range
+pair D8:3A:DD:0B:69:B9 --brute --passkey-brute          # passkey 000000-999999
+pair D8:3A:DD:0B:69:B9 --brute --pin-list pins.txt     # dictionary attack
+pair D8:3A:DD:0B:69:B9 --brute --delay 1.0              # rate limiting
+pair D8:3A:DD:0B:69:B9 --brute --max-attempts 500       # cap attempts
+pair D8:3A:DD:0B:69:B9 --brute --lockout-cooldown 90    # 90s lockout pause
+pair D8:3A:DD:0B:69:B9 --brute --max-lockout-retries 5  # up to 5 cooldowns
+```
+
+Iterates through candidate PINs or passkeys, performing a full pair/remove/re-pair cycle for each attempt until the correct value is found.
+
+**Lockout awareness**: Many devices implement pairing lockout after consecutive wrong PINs, returning `AuthenticationRejected` instead of `AuthenticationFailed`.  The brute forcer detects this transition (wrong PIN errors followed by outright rejection) and pauses for `--lockout-cooldown` seconds before retrying the rejected candidate.  This prevents skipping the correct PIN during a lockout window.
+
+#### Options Reference
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--pin` | `0000` | PIN code for hardcoded mode (BR/EDR string, 1-16 chars) |
+| `--passkey` | — | Passkey for hardcoded mode (LE uint32, 0-999999) |
+| `--interactive` | — | Prompt for PIN/passkey at pair time |
+| `--test` | — | PoC test mode: pair + auto-disconnect monitor |
+| `--brute` | — | Enable brute-force mode |
+| `--passkey-brute` | — | Brute-force passkeys instead of PINs |
+| `--range` | `0000-9999` | PIN range for brute-force (e.g. `00000-99999`) |
+| `--pin-list` | — | File with candidate PINs, one per line |
+| `--delay` | `0.5` | Seconds between brute-force attempts |
+| `--max-attempts` | `0` | Max brute-force attempts (0 = unlimited) |
+| `--lockout-cooldown` | `60` | Seconds to pause when device lockout is detected |
+| `--max-lockout-retries` | `3` | Max lockout-retry cycles per candidate before aborting |
+| `--cap` | `KeyboardDisplay` | Agent capability |
+| `--timeout` | `60` | Per-attempt pairing timeout in seconds |
+
+#### How it works
+
+1. **Device discovery**: Queries BlueZ's `GetManagedObjects()` for a `Device1` matching the target MAC.  Runs a 15-second auto-discovery scan if not found.
+2. **Stale bond removal**: If already paired, removes the bond via `RemoveDevice()` and re-discovers before proceeding.
+3. **Agent registration**: Registers a `PairingAgent` with the selected capability and I/O handler.
+4. **Pairing dispatch**: Stops the background GLib event loop and runs a temporary `GLib.MainLoop` on the main thread for `dbus.service.Object` handler dispatch.  Restarts the background loop after pairing.
+5. **Error classification**: After each failed attempt, reads `agent.last_pair_error` to classify: `AuthenticationFailed` = wrong PIN (advance), `AuthenticationRejected` = lockout (pause + retry same candidate), blocking errors = abort after 5 consecutive.
+6. **Lockout cooldown**: When lockout is detected, pauses for `--lockout-cooldown` seconds (interruptible via Ctrl+C), then retries the same candidate up to `--max-lockout-retries` times.
+7. **Post-pair connect** (default): Detects transport type (BR/EDR or LE), attempts connection, SDP enumeration for classic devices, opens RFCOMM keepalive socket, sets session device state, and returns to the shell.
+8. **Post-pair test** (`--test` flag): Sets the device as trusted and monitors for auto-disconnect timing (PoC diagnostic mode).
+
+### Connecting with the `connect` Command
+
+The `connect` command auto-detects the device's transport type and routes to the appropriate connection method:
+
+- **BLE**: `connect_and_enumerate__bluetooth__low_energy` — GATT service enumeration
+- **BR/EDR Classic**: `connect_and_enumerate__bluetooth__classic` — profile connection + SDP enumeration, with fallback to SDP + RFCOMM keepalive if profile-level `Connect()` fails
+
+```bash
+connect D8:3A:DD:0B:69:B9    # auto-detect transport and connect
+```
+
+For explicit classic-only connection, `cconnect` remains available.  For BLE-only, use `connect` (BLE is the default when transport is ambiguous with LE indicators).
+
+#### PinCode vs Passkey
+
+| Aspect | PinCode | Passkey |
+|--------|---------|---------|
+| Transport | BR/EDR classic | LE (Secure Simple Pairing) |
+| D-Bus return type | string | uint32 |
+| Value range | 1-16 chars | 0-999999 |
+| Typical length | 4-6 digits | Always 6 digits |
+| Agent1 method | `RequestPinCode` | `RequestPasskey` |
+| Required capability | `KeyboardOnly` or `KeyboardDisplay` | Same |
 
 ### Tips
 
@@ -460,6 +566,27 @@ This provides raw D-Bus message inspection while debug mode provides structured 
 ---
 
 ## Logging
+
+## Module Structure (v2.7.2)
+
+Debug mode is organised into focused submodules under `bleep/modes/`:
+
+| Module | Responsibility |
+|---|---|
+| `debug.py` | Core shell: imports, help text, dispatch table, `debug_shell()`, `main()` |
+| `debug_state.py` | `DebugState` dataclass (shared session state) + GLib MainLoop management |
+| `debug_dbus.py` | D-Bus error formatting, path resolution, navigation (`ls`/`cd`/`pwd`/`back`), introspection (`interfaces`/`props`/`methods`/`signals`/`call`/`monitor`/`introspect`) |
+| `debug_connect.py` | Transport detection, `connect`/`disconnect`/`info` |
+| `debug_gatt.py` | `services`/`chars`/`char`/`read`/`write`/`notify`/`detailed`, notification callback, property display |
+| `debug_classic.py` | `cscan`/`cconnect`/`cservices`/`ckeep`/`csdp`/`pbap` |
+| `debug_pairing.py` | `agent`/`pair` (single, brute-force), post-pair connect flows |
+| `debug_scan.py` | `scan`/`scann`/`scanp`/`scanb`/`enum`/`enumn`/`enump`/`enumb` |
+| `debug_aoi.py` | `aoi`/`dbsave`/`dbexport` |
+| `debug_multiread.py` | `multiread`/`multiread_all`/`brutewrite` |
+
+All command handlers share a single `DebugState` instance that replaces the 16 module-level globals from the pre-v2.7.2 monolith. Each handler signature is `fn(args: List[str], state: DebugState) -> None`.
+
+---
 
 All debug mode operations are logged to `/tmp/bti__logging__debug.txt` for later analysis. This includes:
 

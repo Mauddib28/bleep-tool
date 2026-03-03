@@ -311,6 +311,58 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
     def supported_modes(self) -> List[str]:
         return ["passive", "naggy", "pokey", "bruteforce"]  # Available from advertising
     
+    def _is_service_discovery_server(self, uuid: str) -> bool:
+        """
+        Check if UUID is Service Discovery Server (0x1000).
+        
+        Handles both 16-bit and 128-bit UUID formats.
+        
+        Parameters
+        ----------
+        uuid : str
+            UUID in any format (16-bit, 32-bit, or 128-bit)
+            
+        Returns
+        -------
+        bool
+            True if UUID is Service Discovery Server (0x1000)
+        """
+        from bleep.ble_ops.uuid_utils import identify_uuid
+        from bleep.bt_ref.constants import SERVICE_DISCOVERY_SERVER_UUID_16
+        
+        # Service Discovery Server 16-bit UUID is 0x1000
+        sds_short = SERVICE_DISCOVERY_SERVER_UUID_16
+        
+        # Normalize input: remove common prefixes and whitespace
+        cleaned = uuid.strip().lower()
+        if cleaned.startswith('0x'):
+            cleaned = cleaned[2:]
+        cleaned = cleaned.replace("-", "")
+        
+        # Check if already a 16-bit UUID matching 0x1000
+        if len(cleaned) == 4 and cleaned == sds_short:
+            return True
+        
+        # Normalize UUID using existing BLEEP utility
+        uuid_forms = identify_uuid(uuid)
+        
+        for uuid_form in uuid_forms:
+            # Normalize for comparison (remove dashes, lowercase, strip whitespace)
+            normalized_form = uuid_form.replace("-", "").lower().strip()
+            
+            # Check if short form matches
+            if len(normalized_form) == 4:
+                # Already a short UUID
+                if normalized_form == sds_short:
+                    return True
+            elif len(normalized_form) == 32:
+                # Full 128-bit UUID - extract short form (positions 4-8)
+                short_form = normalized_form[4:8]
+                if short_form == sds_short:
+                    return True
+        
+        return False
+    
     def collect(
         self,
         mac: str,
@@ -338,6 +390,7 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
             return
         
         classic_uuids = []
+        has_service_discovery_server = False
         # Pre-normalize Classic profile UUIDs for efficient lookup
         classic_uuid_set = set()
         classic_short_uuids = set()
@@ -350,6 +403,12 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
         
         for uuid in uuids_list:
             uuid_str = str(uuid)
+            
+            # Check if this is Service Discovery Server (most indicative of Classic)
+            if self._is_service_discovery_server(uuid_str):
+                has_service_discovery_server = True
+                classic_uuids.append(uuid_str)
+                continue
             
             # Normalize UUID using existing BLEEP utility
             uuid_forms = identify_uuid(uuid_str)
@@ -390,14 +449,30 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
                         classic_uuids.append(uuid_str)
                         break
         
+        # Add evidence with appropriate weight based on Service Discovery Server presence
         if classic_uuids:
-            evidence.add(
-                EvidenceType.CLASSIC_SERVICE_UUIDS,
-                EvidenceWeight.STRONG,
-                "dbus_property",
-                classic_uuids,
-                {"uuid_count": len(classic_uuids), "source": "SPEC_UUID_NAMES__SERV_CLASS"}
-            )
+            if has_service_discovery_server:
+                # Service Discovery Server is most indicative of Classic - use CONCLUSIVE weight
+                evidence.add(
+                    EvidenceType.CLASSIC_SERVICE_UUIDS,
+                    EvidenceWeight.CONCLUSIVE,
+                    "dbus_property",
+                    classic_uuids,
+                    {
+                        "uuid_count": len(classic_uuids),
+                        "source": "SPEC_UUID_NAMES__SERV_CLASS",
+                        "is_service_discovery_server": True
+                    }
+                )
+            else:
+                # Other Classic UUIDs - use STRONG weight (existing behavior)
+                evidence.add(
+                    EvidenceType.CLASSIC_SERVICE_UUIDS,
+                    EvidenceWeight.STRONG,
+                    "dbus_property",
+                    classic_uuids,
+                    {"uuid_count": len(classic_uuids), "source": "SPEC_UUID_NAMES__SERV_CLASS"}
+                )
 
 
 class LEAddressTypeCollector(EvidenceCollector):
@@ -802,7 +877,7 @@ class DeviceTypeClassifier:
         **NO database queries are used for classification decisions.**
         
         Classic Evidence (at least ONE required):
-        - CONCLUSIVE: device_class present OR SDP records available
+        - CONCLUSIVE: device_class present OR SDP records available OR Service Discovery Server (0x1000) detected
         - OR STRONG: Classic service UUIDs present (from current device properties)
         
         LE Evidence (at least ONE required):
@@ -813,7 +888,8 @@ class DeviceTypeClassifier:
         """
         classic_conclusive = (
             evidence.has(EvidenceType.CLASSIC_DEVICE_CLASS, weight=EvidenceWeight.CONCLUSIVE) or
-            evidence.has(EvidenceType.CLASSIC_SDP_RECORDS, weight=EvidenceWeight.CONCLUSIVE)
+            evidence.has(EvidenceType.CLASSIC_SDP_RECORDS, weight=EvidenceWeight.CONCLUSIVE) or
+            evidence.has(EvidenceType.CLASSIC_SERVICE_UUIDS, weight=EvidenceWeight.CONCLUSIVE)
         )
         
         classic_strong = (
@@ -840,6 +916,7 @@ class DeviceTypeClassifier:
         return (
             evidence.has(EvidenceType.CLASSIC_DEVICE_CLASS, weight=EvidenceWeight.CONCLUSIVE) or
             evidence.has(EvidenceType.CLASSIC_SDP_RECORDS, weight=EvidenceWeight.CONCLUSIVE) or
+            evidence.has(EvidenceType.CLASSIC_SERVICE_UUIDS, weight=EvidenceWeight.CONCLUSIVE) or
             evidence.has(EvidenceType.CLASSIC_SERVICE_UUIDS, weight=EvidenceWeight.STRONG)
         )
     
@@ -887,6 +964,8 @@ class DeviceTypeClassifier:
             reasons.append("Classic device class present")
         if evidence.has(EvidenceType.CLASSIC_SDP_RECORDS, weight=EvidenceWeight.CONCLUSIVE):
             reasons.append("SDP records available")
+        if evidence.has(EvidenceType.CLASSIC_SERVICE_UUIDS, weight=EvidenceWeight.CONCLUSIVE):
+            reasons.append("Service Discovery Server detected (most indicative of Classic)")
         if evidence.has(EvidenceType.CLASSIC_SERVICE_UUIDS, weight=EvidenceWeight.STRONG):
             reasons.append("Classic service UUIDs detected")
         

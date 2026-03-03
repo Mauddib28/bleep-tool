@@ -84,24 +84,60 @@ python -m bleep.cli classic-enum 14:89:FD:31:8A:7E --analyze
 python -m bleep.cli classic-enum 14:89:FD:31:8A:7E --debug --version-info --analyze
 ```
 
-Typical output (JSON format):
-```json
-{
-  "OPP server": 16,
-  "Voice Gateway": 3,
-  "Hands-Free AG": 4,
-  "PBAP server": 17
-}
+Typical output (formatted SDP records are always shown):
+```
+[+] Found 5 SDP record(s) for 14:89:FD:31:8A:7E
+
+SDP Records:
+================================================================================
+
+Record 1:
+  Name: OPP server
+  UUID: 0x1105
+  RFCOMM Channel: 16
+  Profile Descriptors:
+    0x1105: Version 0x0100
+
+Record 2:
+  Name: Voice Gateway
+  UUID: 0x1112
+  RFCOMM Channel: 3
+  Profile Descriptors:
+    0x1112: Version 0x0100
+
+Record 3:
+  Name: Hands-Free AG
+  UUID: 0x111f
+  RFCOMM Channel: 4
+  Profile Descriptors:
+    0x111f: Version 0x0105
+
+Record 4:
+  Name: PBAP server
+  UUID: 0x112f
+  RFCOMM Channel: 17
+  Profile Descriptors:
+    0x112f: Version 0x0100
+
+Record 5:
+  Name: BT DIAG
+  UUID: 0x1101
+  RFCOMM Channel: 18
+
+================================================================================
+
+Service Map (5 service(s)):
+  OPP server                -> 16
+  Voice Gateway             -> 3
+  Hands-Free AG             -> 4
+  PBAP server               -> 17
+  BT DIAG                   -> 18
 ```
 
-With `--debug` flag, enhanced SDP attributes are displayed:
+If the connection-based enumeration fails (e.g. `br-connection-create-socket`) but
+SDP records were obtained, the command reports success with a warning:
 ```
-[classic-enum] Found 5 SDP records
-  [1] OPP server (UUID: 0x1105, Channel: 16) [Profiles: 1] (UUID: 0x1105, Ver: 256)
-  [2] Voice Gateway (UUID: 0x1112, Channel: 3) [Profiles: 1] (UUID: 0x1112, Ver: 256)
-  [3] Voice Gateway (UUID: 0x111f, Channel: 4) [Profiles: 1] (UUID: 0x111f, Ver: 261)
-  [4] PBAP server (UUID: 0x112f, Channel: 17) [Profiles: 1] (UUID: 0x112f, Ver: 256)
-  [5] BT DIAG (UUID: 0x1101, Channel: 18)
+[!] Connection failed (...), but SDP enumeration succeeded
 ```
 
 **Enhanced SDP Attributes Extracted:**

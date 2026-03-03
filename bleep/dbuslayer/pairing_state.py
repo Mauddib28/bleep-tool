@@ -265,9 +265,16 @@ class PairingStateMachine:
             
         self._device_path = device_path
         self._device_info = device_info
+        # Extract MAC address from D-Bus path (e.g. /org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF)
+        addr_part = device_path.rsplit("/", 1)[-1]
+        if addr_part.startswith("dev_"):
+            address = addr_part[4:].replace("_", ":")
+        else:
+            address = addr_part.replace("_", ":")
         self._pairing_data = {
             "device_path": device_path,
             "device_info": device_info,
+            "address": address,
             "timestamp": time.time()
         }
         

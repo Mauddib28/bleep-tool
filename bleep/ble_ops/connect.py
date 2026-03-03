@@ -144,8 +144,10 @@ def connect_and_enumerate__bluetooth__low_energy(
     # ------------------------------------------------------------------
     # BlueZ may trigger pairing during Connect() call itself, so we must
     # register the agent proactively, not reactively after an exception.
-    from bleep.dbuslayer.agent import ensure_default_pairing_agent  # inline import to avoid cycles
-    ensure_default_pairing_agent()
+    #from bleep.dbuslayer.agent import ensure_default_pairing_agent  # inline import to avoid cycles
+    #ensure_default_pairing_agent()
+    # Nota Bene: Removing the default pairing agent from a general Connect and Enumerate function since the addition is creating needless "chaff" and additional ouutput
+    #   - In the long run the agent generation should be handled via a separate terminal or other thread/function
 
     # ------------------------------------------------------------------
     # 1. Connect (with retry)

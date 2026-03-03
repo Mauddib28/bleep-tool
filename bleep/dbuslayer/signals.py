@@ -27,6 +27,7 @@ from bleep.bt_ref.constants import (
     DEVICE_INTERFACE,
     AGENT_INTERFACE,
     MANAGER_INTERFACE,
+    BLUEZ_SERVICE_NAME,
 )
 from bleep.core.constants import (
     DBUS_MESSAGE_SIGNAL,
@@ -438,6 +439,18 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
         # DeviceManager instance for RSSI forwarding (optional)
         self._device_manager: Optional[Any] = None
         
+        # Agent instance for method invocation correlation (optional)
+        self._agent_instance: Optional[Any] = None
+        
+        # Track recent RequestPinCode events for Cancel correlation
+        self._recent_pincode_requests: List[DBusEventCapture] = []
+        
+        # Track device connection states for correlation
+        self._device_connection_states: Dict[str, Dict[str, Any]] = {}  # device_path -> {connected: bool, timestamp: float}
+        
+        # Track pending method invocation checks (for deferred async checking)
+        self._pending_invocation_checks: Dict[str, DBusEventCapture] = {}  # method_name -> event
+        
         # Enhanced signal handling components
         self._signal_correlator = SignalCorrelator()
         self._property_monitor = PropertyMonitor()
@@ -486,6 +499,19 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
             device_manager: Instance of system_dbus__bluez_device_manager
         """
         self._device_manager = device_manager
+
+    def register_agent(self, agent_instance: Any) -> None:
+        """Register an agent instance for method invocation correlation.
+        
+        This allows the unified D-Bus monitoring system to correlate captured
+        D-Bus method calls (e.g., RequestPinCode) with actual agent method
+        invocations for diagnostic purposes.
+        
+        Args:
+            agent_instance: Instance of BlueZAgent (or subclass) that implements
+                          org.bluez.Agent1 interface
+        """
+        self._agent_instance = agent_instance
 
     def has_any_connected_device(self) -> bool:
         """Check if any registered device is currently connected.
@@ -943,15 +969,50 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
             # Message type constants: SIGNAL=1, METHOD_CALL=2, METHOD_RETURN=4, ERROR=3
             if msg_type == DBUS_MESSAGE_SIGNAL:
                 event = self._capture_signal(message, timestamp, interface, path, sender, destination, serial)
+                # Validate event type matches message type
+                if event and event.event_type != "signal":
+                    print_and_log(
+                        f"[!] WARNING: Event type mismatch for signal: expected 'signal', got '{event.event_type}' "
+                        f"(interface={interface}, path={path})",
+                        LOG__DEBUG
+                    )
             
             elif msg_type == DBUS_MESSAGE_METHOD_CALL:
                 event = self._capture_method_call(message, timestamp, interface, path, sender, destination, serial)
+                # Validate event type matches message type
+                if event and event.event_type != "method_call":
+                    print_and_log(
+                        f"[!] WARNING: Event type mismatch for method call: expected 'method_call', got '{event.event_type}' "
+                        f"(interface={interface}, method={message.get_member()}, path={path})",
+                        LOG__DEBUG
+                    )
             
             elif msg_type == DBUS_MESSAGE_METHOD_RETURN:
                 event = self._capture_method_return(message, timestamp, interface, path, sender, destination, serial)
+                # Validate event type matches message type
+                if event and event.event_type != "method_return":
+                    print_and_log(
+                        f"[!] WARNING: Event type mismatch for method return: expected 'method_return', got '{event.event_type}' "
+                        f"(interface={interface}, path={path}, reply_serial={message.get_reply_serial()})",
+                        LOG__DEBUG
+                    )
             
             elif msg_type == DBUS_MESSAGE_ERROR:
                 event = self._capture_error(message, timestamp, interface, path, sender, destination, serial)
+                # Validate event type matches message type
+                if event and event.event_type != "error":
+                    print_and_log(
+                        f"[!] WARNING: Event type mismatch for error: expected 'error', got '{event.event_type}' "
+                        f"(interface={interface}, path={path}, error_name={message.get_error_name()})",
+                        LOG__DEBUG
+                    )
+            else:
+                # Unknown message type - log for debugging
+                print_and_log(
+                    f"[!] WARNING: Unknown D-Bus message type: {msg_type} "
+                    f"(interface={interface}, path={path})",
+                    LOG__DEBUG
+                )
             
             if event:
                 # Add to aggregator
@@ -1152,10 +1213,125 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
         """Log event with human-readable + detailed format.
         
         Follows error handling pattern: human-readable summary + detailed information.
+        
+        Ensures correct terminology: SIGNAL, METHOD CALL, METHOD RETURN, ERROR.
         """
+        # Validate event type before logging
+        valid_types = {"signal", "method_call", "method_return", "error"}
+        if event.event_type not in valid_types:
+            print_and_log(
+                f"[!] WARNING: Invalid event type '{event.event_type}' for event "
+                f"{event.method_name or event.signal_name or 'unknown'} "
+                f"(interface={event.interface}, path={event.path})",
+                LOG__DEBUG
+            )
+            return
+        
         timestamp_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(event.timestamp))
         
         if event.event_type == "signal":
+            # Special handling: RequestPinCode on Agent1 interface should be a method call, not a signal
+            # BlueZ may emit this as a signal if eavesdropping isn't working, but it's actually a method call
+            if event.interface == "org.bluez.Agent1" and event.signal_name == "RequestPinCode":
+                # Reclassify as method call for proper logging
+                print_and_log(
+                    f"[{timestamp_str}] METHOD CALL: RequestPinCode "
+                    f"(interface={event.interface}, path={event.path}, "
+                    f"sender={event.sender}, destination={event.destination or '(null)'})",
+                    LOG__AGENT
+                )
+                # Detailed
+                args_str = self._format_method_args(event.args)
+                print_and_log(
+                    f"[DETAIL] RequestPinCode: interface={event.interface}, "
+                    f"path={event.path}, sender={event.sender}, destination={event.destination or '(null)'}, "
+                    f"serial={event.serial}, signature={event.signature}, args={args_str}",
+                    LOG__AGENT
+                )
+                print_and_log(
+                    f"[!] PIN CODE REQUEST: BlueZ ({event.sender}) -> agent ({event.destination or event.path})",
+                    LOG__AGENT
+                )
+                if event.args:
+                    device_path = event.args[0] if isinstance(event.args[0], str) else str(event.args[0])
+                    print_and_log(
+                        f"[!] Target device: {device_path}",
+                        LOG__AGENT
+                    )
+                
+                # CRITICAL: Verify destination matches BLEEP's agent bus unique name
+                try:
+                    # Get BLEEP's bus unique name from the signals manager's bus
+                    bleep_bus_name = self.bus.get_unique_name()
+                    
+                    # Also try to get from registered agent instance if available
+                    agent_bus_name = None
+                    if self._agent_instance and hasattr(self._agent_instance, '_bus'):
+                        try:
+                            agent_bus_name = self._agent_instance._bus.get_unique_name()
+                        except Exception:
+                            pass
+                    
+                    # Use destination from event (may be None for signals, use path as fallback)
+                    destination = event.destination or event.path
+                    
+                    # Compare destination with BLEEP's bus unique name
+                    if destination == bleep_bus_name:
+                        print_and_log(
+                            f"[+] DESTINATION VERIFIED: BlueZ is calling BLEEP agent "
+                            f"(destination={destination} matches BLEEP_bus={bleep_bus_name})",
+                            LOG__AGENT
+                        )
+                    elif agent_bus_name and destination == agent_bus_name:
+                        print_and_log(
+                            f"[+] DESTINATION VERIFIED: BlueZ is calling BLEEP agent "
+                            f"(destination={destination} matches agent_bus={agent_bus_name})",
+                            LOG__AGENT
+                        )
+                    else:
+                        print_and_log(
+                            f"[!] DESTINATION MISMATCH: BlueZ may be calling a different agent "
+                            f"(destination={destination}, BLEEP_bus={bleep_bus_name}, "
+                            f"agent_bus={agent_bus_name or 'N/A'})",
+                            LOG__AGENT
+                        )
+                        print_and_log(
+                            f"[!] If destination doesn't match, BlueZ is calling a different agent "
+                            f"registered at path {event.path}",
+                            LOG__AGENT
+                        )
+                except Exception as e:
+                    print_and_log(
+                        f"[!] Could not verify destination match: {e}",
+                        LOG__AGENT
+                    )
+                
+                # Store for Cancel correlation (treat as method call)
+                with self._lock:
+                    # Create a method_call-like event for correlation
+                    method_call_event = DBusEventCapture(
+                        event_type="method_call",
+                        interface=event.interface,
+                        path=event.path,
+                        timestamp=event.timestamp,
+                        sender=event.sender,
+                        destination=event.destination or event.path,
+                        serial=event.serial,
+                        method_name="RequestPinCode",
+                        args=event.args,
+                        signature=event.signature,
+                        source="agent_method_call",
+                        original_message=event.original_message
+                    )
+                    self._recent_pincode_requests.append(method_call_event)
+                    if len(self._recent_pincode_requests) > 10:
+                        self._recent_pincode_requests.pop(0)
+                
+                # Check agent method invocation
+                if self._agent_instance:
+                    self._check_agent_method_invocation(method_call_event, "RequestPinCode")
+                return
+            
             # Human-readable
             print_and_log(
                 f"[{timestamp_str}] SIGNAL: {event.signal_name} "
@@ -1188,18 +1364,77 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
                 LOG__AGENT
             )
             
-            # Special highlighting
-            if event.interface == "org.bluez.Agent1" and event.method_name == "RequestPinCode":
-                print_and_log(
-                    f"[!] PIN CODE REQUEST: BlueZ ({event.sender}) -> agent ({event.destination})",
-                    LOG__AGENT
-                )
-                if event.args:
-                    device_path = event.args[0] if isinstance(event.args[0], str) else str(event.args[0])
+            # Special highlighting for agent methods
+            if event.interface == "org.bluez.Agent1":
+                if event.method_name == "RequestPinCode":
                     print_and_log(
-                        f"[!] Target device: {device_path}",
+                        f"[!] PIN CODE REQUEST: BlueZ ({event.sender}) -> agent ({event.destination})",
                         LOG__AGENT
                     )
+                    if event.args:
+                        device_path = event.args[0] if isinstance(event.args[0], str) else str(event.args[0])
+                        print_and_log(
+                            f"[!] Target device: {device_path}",
+                            LOG__AGENT
+                        )
+                    
+                    # CRITICAL: Verify destination matches BLEEP's agent bus unique name
+                    try:
+                        # Get BLEEP's bus unique name from the signals manager's bus
+                        bleep_bus_name = self.bus.get_unique_name()
+                        
+                        # Also try to get from registered agent instance if available
+                        agent_bus_name = None
+                        if self._agent_instance and hasattr(self._agent_instance, '_bus'):
+                            try:
+                                agent_bus_name = self._agent_instance._bus.get_unique_name()
+                            except Exception:
+                                pass
+                        
+                        # Compare destination with BLEEP's bus unique name
+                        if event.destination == bleep_bus_name:
+                            print_and_log(
+                                f"[+] DESTINATION VERIFIED: BlueZ is calling BLEEP agent "
+                                f"(destination={event.destination} matches BLEEP_bus={bleep_bus_name})",
+                                LOG__AGENT
+                            )
+                        elif agent_bus_name and event.destination == agent_bus_name:
+                            print_and_log(
+                                f"[+] DESTINATION VERIFIED: BlueZ is calling BLEEP agent "
+                                f"(destination={event.destination} matches agent_bus={agent_bus_name})",
+                                LOG__AGENT
+                            )
+                        else:
+                            print_and_log(
+                                f"[!] DESTINATION MISMATCH: BlueZ may be calling a different agent "
+                                f"(destination={event.destination}, BLEEP_bus={bleep_bus_name}, "
+                                f"agent_bus={agent_bus_name or 'N/A'})",
+                                LOG__AGENT
+                            )
+                            print_and_log(
+                                f"[!] If destination doesn't match, BlueZ is calling a different agent "
+                                f"registered at path {event.path}",
+                                LOG__AGENT
+                            )
+                    except Exception as e:
+                        print_and_log(
+                            f"[!] Could not verify destination match: {e}",
+                            LOG__AGENT
+                        )
+                    
+                    # Store for Cancel correlation
+                    with self._lock:
+                        self._recent_pincode_requests.append(event)
+                        # Keep only last 10 requests
+                        if len(self._recent_pincode_requests) > 10:
+                            self._recent_pincode_requests.pop(0)
+                    
+                    # Check if agent method will be invoked (correlation with agent instance)
+                    self._check_agent_method_invocation(event, "RequestPinCode")
+                
+                elif event.method_name == "Cancel":
+                    # Check for RequestPinCode → Cancel correlation
+                    self._correlate_pincode_cancel(event)
         
         elif event.event_type == "method_return":
             # Human-readable
@@ -1238,6 +1473,298 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
                     f"[!] AUTHENTICATION ERROR: {event.error_name}: {event.error_message}",
                     LOG__AGENT
                 )
+    
+    def _check_agent_method_invocation(self, event: DBusEventCapture, method_name: str) -> None:
+        """Check if agent method was actually invoked after D-Bus method call was captured.
+        
+        This is called synchronously from the D-Bus message filter, so we schedule an
+        asynchronous check using GLib timeout to allow the agent method to be invoked
+        before checking. This preserves the original functionality without blocking.
+        
+        Parameters
+        ----------
+        event : DBusEventCapture
+            The captured method call event
+        method_name : str
+            Name of the method being checked
+        """
+        if not self._agent_instance:
+            return
+        
+        # Immediate capability validation (non-blocking)
+        if hasattr(self._agent_instance, "_capabilities"):
+            capabilities = self._agent_instance._capabilities
+            if hasattr(self._agent_instance, "_validate_capability_supports_method"):
+                if not self._agent_instance._validate_capability_supports_method(method_name):
+                    print_and_log(
+                        f"[!] WARNING: Agent capability '{capabilities}' does not support {method_name}. "
+                        f"Expected capability: KeyboardOnly or KeyboardDisplay for RequestPinCode. "
+                        f"Agent method may not be invoked by BlueZ.",
+                        LOG__AGENT
+                    )
+        
+        # Store event for later invocation checking (during correlation phase)
+        # D-Bus method calls are synchronous, so by the time we check later (e.g., when Cancel
+        # is called), the agent method will have been invoked (or not). This avoids blocking
+        # the message filter and doesn't require GLib mainloop to be running.
+        check_key = f"{method_name}_{event.serial}"
+        with self._lock:
+            self._pending_invocation_checks[check_key] = event
+            # Keep only last 20 pending checks to avoid memory growth
+            if len(self._pending_invocation_checks) > 20:
+                # Remove oldest entry (FIFO)
+                oldest_key = next(iter(self._pending_invocation_checks))
+                del self._pending_invocation_checks[oldest_key]
+    
+    def _correlate_pincode_cancel(self, cancel_event: DBusEventCapture) -> None:
+        """Correlate Cancel event with recent RequestPinCode events.
+        
+        Parameters
+        ----------
+        cancel_event : DBusEventCapture
+            The Cancel method call event
+        """
+        # Find recent RequestPinCode events (within last 10 seconds)
+        now = cancel_event.timestamp
+        recent_pincode = None
+        
+        for pincode_event in self._recent_pincode_requests:
+            if now - pincode_event.timestamp < 10.0:  # Within 10 seconds
+                recent_pincode = pincode_event
+                break
+        
+        if recent_pincode:
+            time_delta = cancel_event.timestamp - recent_pincode.timestamp
+            device_path = ""
+            if recent_pincode.args:
+                device_path = recent_pincode.args[0] if isinstance(recent_pincode.args[0], str) else str(recent_pincode.args[0])
+            
+            timestamp_str_pincode = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(recent_pincode.timestamp))
+            timestamp_str_cancel = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(cancel_event.timestamp))
+            
+            print_and_log(
+                f"[!] PIN CODE REQUEST → CANCEL SEQUENCE DETECTED:",
+                LOG__AGENT
+            )
+            print_and_log(
+                f"    RequestPinCode called at {timestamp_str_pincode} (device={device_path})",
+                LOG__AGENT
+            )
+            print_and_log(
+                f"    Cancel called at {timestamp_str_cancel} ({time_delta:.3f} seconds later)",
+                LOG__AGENT
+            )
+            
+            # Check if agent method was invoked (using stored event for timing)
+            # This is where we verify method invocation - by the time Cancel is called,
+            # RequestPinCode will have been invoked (or not) since D-Bus calls are synchronous
+            pincode_invoked = False
+            cancel_invoked = False
+            
+            if self._agent_instance and hasattr(self._agent_instance, "_method_invocations"):
+                pincode_invoked = "RequestPinCode" in self._agent_instance._method_invocations
+                cancel_invoked = "Cancel" in self._agent_instance._method_invocations
+                
+                # Check timing from stored event if available
+                if pincode_invoked:
+                    pincode_check_key = f"RequestPinCode_{recent_pincode.serial}"
+                    with self._lock:
+                        stored_event = self._pending_invocation_checks.pop(pincode_check_key, None)
+                    if stored_event:
+                        invocation_time = self._agent_instance._method_invocations["RequestPinCode"]
+                        time_delta_invoke = invocation_time - stored_event.timestamp
+                        print_and_log(
+                            f"    Agent method RequestPinCode invoked {time_delta_invoke:.3f}s after D-Bus call captured",
+                            LOG__DEBUG
+                        )
+                
+                if not pincode_invoked:
+                    print_and_log(
+                        f"    Root cause: Agent method RequestPinCode was NOT invoked (capability mismatch or agent not registered)",
+                        LOG__AGENT
+                    )
+                elif cancel_invoked:
+                    print_and_log(
+                        f"    Both RequestPinCode and Cancel methods were invoked by agent",
+                        LOG__AGENT
+                    )
+            
+            # Check device connection state at time of RequestPinCode
+            if device_path:
+                device_state = self._get_device_connection_state(device_path, recent_pincode.timestamp)
+                if device_state:
+                    print_and_log(
+                        f"    Device connection state at RequestPinCode: {device_state}",
+                        LOG__AGENT
+                    )
+            
+            # Generate root cause analysis summary
+            self._generate_pincode_failure_summary(recent_pincode, cancel_event, device_path)
+        else:
+            # No recent RequestPinCode found
+            print_and_log(
+                f"[*] Cancel called but no recent RequestPinCode found in correlation window",
+                LOG__DEBUG
+            )
+    
+    def _get_device_connection_state(self, device_path: str, timestamp: float) -> Optional[str]:
+        """Get device connection state at a given timestamp.
+        
+        Parameters
+        ----------
+        device_path : str
+            D-Bus path of the device
+        timestamp : float
+            Timestamp to check state at
+            
+        Returns
+        -------
+        Optional[str]
+            Connection state description or None if unknown
+        """
+        if device_path in self._device_connection_states:
+            state_info = self._device_connection_states[device_path]
+            state_timestamp = state_info.get("timestamp", 0)
+            # Check if state info is recent (within 5 seconds of timestamp)
+            if abs(state_timestamp - timestamp) < 5.0:
+                connected = state_info.get("connected", False)
+                return f"connected={connected}"
+        
+        # Try to get current state from D-Bus
+        try:
+            device_obj = self.bus.get_object(BLUEZ_SERVICE_NAME, device_path)
+            props_iface = dbus.Interface(device_obj, DBUS_PROPERTIES)
+            connected = props_iface.Get(DEVICE_INTERFACE, "Connected")
+            # Cache the state
+            with self._lock:
+                self._device_connection_states[device_path] = {
+                    "connected": bool(connected),
+                    "timestamp": timestamp
+                }
+            return f"connected={bool(connected)}"
+        except Exception:
+            return None
+    
+    def _generate_pincode_failure_summary(self, pincode_event: DBusEventCapture, 
+                                        cancel_event: DBusEventCapture, 
+                                        device_path: str) -> None:
+        """Generate a root cause analysis summary for PIN code request failures.
+        
+        Parameters
+        ----------
+        pincode_event : DBusEventCapture
+            The RequestPinCode method call event
+        cancel_event : DBusEventCapture
+            The Cancel method call event
+        device_path : str
+            Device path from the RequestPinCode event
+        """
+        time_delta = cancel_event.timestamp - pincode_event.timestamp
+        
+        print_and_log(
+            f"[!] ========== PIN CODE REQUEST FAILURE ANALYSIS ==========",
+            LOG__AGENT
+        )
+        
+        # Check agent registration status
+        agent_registered = False
+        agent_capabilities = "unknown"
+        if self._agent_instance:
+            if hasattr(self._agent_instance, "is_registered"):
+                agent_registered = self._agent_instance.is_registered()
+            if hasattr(self._agent_instance, "_capabilities"):
+                agent_capabilities = self._agent_instance._capabilities
+        
+        print_and_log(
+            f"    Agent Status: registered={agent_registered}, capabilities={agent_capabilities}",
+            LOG__AGENT
+        )
+        
+        # Check if agent method was invoked
+        pincode_invoked = False
+        if self._agent_instance and hasattr(self._agent_instance, "_method_invocations"):
+            pincode_invoked = "RequestPinCode" in self._agent_instance._method_invocations
+        
+        print_and_log(
+            f"    Agent Method Invocation: RequestPinCode invoked={pincode_invoked}",
+            LOG__AGENT
+        )
+        
+        # Check capability support
+        capability_supports = False
+        if self._agent_instance and hasattr(self._agent_instance, "_validate_capability_supports_method"):
+            capability_supports = self._agent_instance._validate_capability_supports_method("RequestPinCode")
+        
+        print_and_log(
+            f"    Capability Support: RequestPinCode supported={capability_supports}",
+            LOG__AGENT
+        )
+        
+        # Device connection state
+        device_state = self._get_device_connection_state(device_path, pincode_event.timestamp)
+        if device_state:
+            print_and_log(
+                f"    Device State: {device_state}",
+                LOG__AGENT
+            )
+        
+        # Time analysis
+        print_and_log(
+            f"    Timing: RequestPinCode → Cancel = {time_delta:.3f} seconds",
+            LOG__AGENT
+        )
+        
+        # Root cause determination
+        root_causes = []
+        if not agent_registered:
+            root_causes.append("Agent not registered with BlueZ")
+        if not capability_supports:
+            root_causes.append(f"Agent capability '{agent_capabilities}' does not support RequestPinCode (requires KeyboardOnly or KeyboardDisplay)")
+        if not pincode_invoked and capability_supports:
+            root_causes.append("Agent method not invoked despite capability support (possible BlueZ timeout or agent path mismatch)")
+        if time_delta < 0.1:
+            root_causes.append("Cancel occurred immediately (< 0.1s) - likely capability mismatch or agent not registered")
+        
+        if root_causes:
+            print_and_log(
+                f"    ROOT CAUSES:",
+                LOG__AGENT
+            )
+            for i, cause in enumerate(root_causes, 1):
+                print_and_log(
+                    f"      {i}. {cause}",
+                    LOG__AGENT
+                )
+        else:
+            print_and_log(
+                f"    ROOT CAUSE: Unknown (agent invoked but pairing failed)",
+                LOG__AGENT
+            )
+        
+        # Recommendations
+        recommendations = []
+        if not capability_supports:
+            recommendations.append("Register agent with KeyboardOnly or KeyboardDisplay capability to support RequestPinCode")
+        if not agent_registered:
+            recommendations.append("Ensure agent is registered before attempting pairing")
+        if device_state and "connected=False" in device_state:
+            recommendations.append("Device may need to be connected before pairing can proceed")
+        
+        if recommendations:
+            print_and_log(
+                f"    RECOMMENDATIONS:",
+                LOG__AGENT
+            )
+            for i, rec in enumerate(recommendations, 1):
+                print_and_log(
+                    f"      {i}. {rec}",
+                    LOG__AGENT
+                )
+        
+        print_and_log(
+            f"[!] ======================================================",
+            LOG__AGENT
+        )
 
     def get_recent_events(self, event_type: Optional[str] = None,
                          interface: Optional[str] = None,
@@ -1474,6 +2001,50 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
                             f"[!] Target device: {device_path}",
                             LOG__AGENT
                         )
+                    
+                    # CRITICAL: Verify destination matches BLEEP's agent bus unique name
+                    try:
+                        # Get BLEEP's bus unique name from the signals manager's bus
+                        bleep_bus_name = self.bus.get_unique_name()
+                        
+                        # Also try to get from registered agent instance if available
+                        agent_bus_name = None
+                        if self._agent_instance and hasattr(self._agent_instance, '_bus'):
+                            try:
+                                agent_bus_name = self._agent_instance._bus.get_unique_name()
+                            except Exception:
+                                pass
+                        
+                        # Compare destination with BLEEP's bus unique name
+                        if destination == bleep_bus_name:
+                            print_and_log(
+                                f"[+] DESTINATION VERIFIED: BlueZ is calling BLEEP agent "
+                                f"(destination={destination} matches BLEEP_bus={bleep_bus_name})",
+                                LOG__AGENT
+                            )
+                        elif agent_bus_name and destination == agent_bus_name:
+                            print_and_log(
+                                f"[+] DESTINATION VERIFIED: BlueZ is calling BLEEP agent "
+                                f"(destination={destination} matches agent_bus={agent_bus_name})",
+                                LOG__AGENT
+                            )
+                        else:
+                            print_and_log(
+                                f"[!] DESTINATION MISMATCH: BlueZ may be calling a different agent "
+                                f"(destination={destination}, BLEEP_bus={bleep_bus_name}, "
+                                f"agent_bus={agent_bus_name or 'N/A'})",
+                                LOG__AGENT
+                            )
+                            print_and_log(
+                                f"[!] If destination doesn't match, BlueZ is calling a different agent "
+                                f"registered at path {path}",
+                                LOG__AGENT
+                            )
+                    except Exception as e:
+                        print_and_log(
+                            f"[!] Could not verify destination match: {e}",
+                            LOG__AGENT
+                        )
             
             elif interface == "org.bluez.AgentManager1":
                 args_str = self._format_method_args(args)
@@ -1630,6 +2201,15 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
         # Process property changes for all properties
         for prop_name, value in changed.items():
             self._property_monitor.property_changed(path, interface, prop_name, value)
+        
+        # Track device connection state changes
+        if interface == DEVICE_INTERFACE and "Connected" in changed:
+            connected = changed["Connected"]
+            with self._lock:
+                self._device_connection_states[path] = {
+                    "connected": bool(connected),
+                    "timestamp": time.time()
+                }
             
         # Capture RSSI updates during discovery and forward to DeviceManager
         if interface == DEVICE_INTERFACE and "RSSI" in changed:

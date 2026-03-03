@@ -17,6 +17,8 @@ def parse_args(args=None):
         description="BLEEP - Bluetooth Landscape Exploration & Enumeration Platform"
     )
     parser.add_argument("--version", action="version", version=f"BLEEP {__version__}")
+    parser.add_argument("--check-env", action="store_true", 
+                       help="Check environment capabilities (tools, configs, dependencies)")
 
     # Add subparsers for different modes
     subparsers = parser.add_subparsers(dest="mode", help="Operation mode")
@@ -52,6 +54,7 @@ def parse_args(args=None):
     enum_scan.add_argument("--payload-file", help="Binary payload file path")
     enum_scan.add_argument("--force", action="store_true", help="Ignore landmine/permission map for brute writes")
     enum_scan.add_argument("--verify", action="store_true", help="Read back after each brute write")
+    enum_scan.add_argument("--controlled", action="store_true", help="Use EnumerationController for structured multi-attempt enumeration with error annotations")
 
     # Media device enumeration
     media_parser = subparsers.add_parser("media-enum", help="Connect and enumerate media device capabilities")
@@ -66,6 +69,42 @@ def parse_args(args=None):
     media_ctrl.add_argument("address", help="Target MAC address")
     media_ctrl.add_argument("action", choices=["play", "pause", "stop", "next", "previous", "volume", "info", "press"], help="Control action")
     media_ctrl.add_argument("--value", help="Value for commands: volume (0-127) or press (key code, can be hex with 0x prefix)")
+
+    # Audio profile identification
+    audio_profiles = subparsers.add_parser("audio-profiles", help="List Bluetooth audio profiles via ALSA correlation")
+    audio_profiles.add_argument("--device", help="Filter by device MAC address")
+
+    # Audio playback
+    audio_play = subparsers.add_parser("audio-play", help="Play audio file to Bluetooth device")
+    audio_play.add_argument("device", help="Target device MAC address")
+    audio_play.add_argument("file", help="Audio file path")
+    audio_play.add_argument("--volume", type=int, help="Volume (0-127)")
+    audio_play.add_argument("--codec", choices=["SBC", "MP3", "AAC"], help="Codec preference (if supported)")
+
+    # Audio recording
+    audio_record = subparsers.add_parser("audio-record", help="Record audio from Bluetooth device")
+    audio_record.add_argument("device", help="Source device MAC address")
+    audio_record.add_argument("output", help="Output file path")
+    audio_record.add_argument("--duration", type=int, help="Duration in seconds")
+
+    # Audio recon (enumerate cards/profiles, play/record, sox analysis)
+    audio_recon = subparsers.add_parser("audio-recon", help="Audio recon: enumerate BlueZ cards/profiles, play test file, record, analyse with sox")
+    audio_recon.add_argument("--device", help="Filter by device MAC address")
+    audio_recon.add_argument("--test-file", help="Path to test audio file for playback to sinks")
+    audio_recon.add_argument("--no-play", action="store_true", help="Skip playing test file to sinks")
+    audio_recon.add_argument("--no-record", action="store_true", help="Skip recording from sources/sinks")
+    audio_recon.add_argument("--out", dest="output_json", help="Write structured result to JSON file")
+    audio_recon.add_argument("--record-dir", default="/tmp", help="Directory for recordings (default: /tmp)")
+    audio_recon.add_argument("--duration", type=int, default=8, help="Recording duration per interface in seconds (default: 8)")
+
+    # Amusica – audio target discovery & manipulation
+    amusica_parser = subparsers.add_parser(
+        "amusica", help="Amusica: scan, connect, recon, and manipulate Bluetooth audio targets",
+    )
+    amusica_parser.add_argument(
+        "amusica_args", nargs=argparse.REMAINDER,
+        help="Subcommand and arguments (scan, halt, control, inject, record, status). Use 'bleep amusica --help' for details.",
+    )
 
     # Agent mode
     agent_parser = subparsers.add_parser("agent", help="Run pairing agent")
@@ -195,6 +234,24 @@ def parse_args(args=None):
     cping_parser.add_argument("--count", type=int, default=3, help="Echo count")
     cping_parser.add_argument("--timeout", type=int, default=13, help="Seconds before aborting l2ping command")
     
+    # Adapter configuration
+    aconf_parser = subparsers.add_parser("adapter-config", help="View or modify local Bluetooth adapter configuration")
+    aconf_sub = aconf_parser.add_subparsers(dest="action", help="Configuration action")
+
+    aconf_show = aconf_sub.add_parser("show", help="Show all adapter properties and boot defaults")
+    aconf_show.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
+
+    aconf_get = aconf_sub.add_parser("get", help="Get a single adapter property value")
+    aconf_get.add_argument("property", help="Property name (e.g. alias, name, class, powered, discoverable)")
+    aconf_get.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
+
+    aconf_set = aconf_sub.add_parser("set", help="Set an adapter property")
+    aconf_set.add_argument("property", help="Property to set (alias, discoverable, pairable, connectable, "
+                           "discoverable-timeout, pairable-timeout, class, local-name, ssp, sc, le, bredr, "
+                           "privacy, fast-conn, linksec, wbs)")
+    aconf_set.add_argument("values", nargs="+", help="Value(s) to set")
+    aconf_set.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
+
     # BLE CTF mode
     ctf_parser = subparsers.add_parser("ctf", help="BLE CTF challenge solver and analyzer")
     ctf_parser.add_argument("--device", type=str, default="CC:50:E3:B6:BC:A6", 
@@ -214,6 +271,13 @@ def parse_args(args=None):
 def main(args=None):
     """Main entry point for BLEEP."""
     args = parse_args(args)
+    
+    # Handle --check-env flag
+    if args.check_env:
+        from bleep.core.preflight import run_preflight_checks, print_preflight_summary
+        report = run_preflight_checks(use_cache=False)
+        print_preflight_summary(report)
+        return 0
     
     # Optional: honour BLEEP_LOG_LEVEL env var so users can tweak verbosity
     import logging as _logging, os as _os
@@ -246,6 +310,26 @@ def main(args=None):
 
         elif args.mode == "enum-scan":
             from bleep.ble_ops import scan as _scan_mod
+            
+            # Use EnumerationController if --controlled flag is set
+            if args.controlled:
+                from bleep.ble_ops.enum_controller import EnumerationController
+                controller = EnumerationController(args.address)
+                result = controller.enumerate(mode=args.variant.lower())
+                
+                if result.success:
+                    print(f"[+] Enumeration successful: {args.address}")
+                    if result.data:
+                        import json
+                        print(json.dumps(result.data, indent=2))
+                    return 0
+                else:
+                    print(f"[-] Enumeration failed: {args.address}", file=sys.stderr)
+                    if result.error_summary:
+                        print(f"    {result.error_summary}", file=sys.stderr)
+                    for annotation in result.annotations:
+                        print(f"    [{annotation.error_type}] {annotation.details}", file=sys.stderr)
+                    return 1
 
             var = args.variant.lower()
             if var == "passive":
@@ -411,6 +495,7 @@ def main(args=None):
                     f"[DEBUG] Traceback:\n{traceback.format_exc()}",
                     file=sys.stderr,
                 )
+                # TODO: Update to give the above [DEBUG] to the LOG_DEBUG output using the print_and_log() function
                 return 1
 
         elif args.mode == "gatt-enum":
@@ -679,6 +764,80 @@ def main(args=None):
             
             success = _ctrl(args.address, args.action, value)
             return 0 if success else 1
+
+        elif args.mode == "audio-profiles":
+            from bleep.ble_ops.audio_profile_correlator import AudioProfileCorrelator
+            import json
+            
+            correlator = AudioProfileCorrelator()
+            
+            if args.device:
+                # Get profiles for specific device
+                profile_info = correlator.identify_profiles_for_device(args.device)
+                print(json.dumps(profile_info, indent=2, ensure_ascii=False))
+            else:
+                # List all Bluetooth audio devices and their profiles
+                from bleep.ble_ops.audio_tools import AudioToolsHelper
+                audio_tools = AudioToolsHelper()
+                all_profiles = audio_tools.identify_bluetooth_profiles_from_alsa()
+                
+                result = {
+                    "devices": {}
+                }
+                
+                # Group by device MAC
+                for profile_uuid, devices in all_profiles.items():
+                    for device in devices:
+                        mac = device.get("mac_address")
+                        if mac:
+                            if mac not in result["devices"]:
+                                result["devices"][mac] = {
+                                    "mac_address": mac,
+                                    "profiles": []
+                                }
+                            result["devices"][mac]["profiles"].append({
+                                "uuid": profile_uuid,
+                                "profile_name": device.get("profile_name"),
+                                "backend": device.get("backend"),
+                                "sink_name": device.get("sink_name"),
+                                "source_name": device.get("source_name"),
+                            })
+                
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            
+            return 0
+
+        elif args.mode == "audio-play":
+            from bleep.dbuslayer.media_stream import MediaStreamManager
+            
+            stream_manager = MediaStreamManager(args.device)
+            success = stream_manager.play_audio_file(args.file, volume=args.volume)
+            return 0 if success else 1
+
+        elif args.mode == "audio-record":
+            from bleep.dbuslayer.media_stream import MediaStreamManager
+            from bleep.bt_ref.constants import A2DP_SOURCE_UUID
+            
+            stream_manager = MediaStreamManager(args.device, profile_uuid=A2DP_SOURCE_UUID)
+            success = stream_manager.record_audio(args.output, duration=args.duration)
+            return 0 if success else 1
+
+        elif args.mode == "audio-recon":
+            from bleep.ble_ops.audio_recon import run_audio_recon
+            run_audio_recon(
+                mac_filter=getattr(args, "device", None),
+                test_file=getattr(args, "test_file", None),
+                do_play=not getattr(args, "no_play", False),
+                do_record=not getattr(args, "no_record", False),
+                record_duration_sec=getattr(args, "duration", 8),
+                record_dir=getattr(args, "record_dir", "/tmp"),
+                output_json_path=getattr(args, "output_json", None),
+            )
+            return 0
+
+        elif args.mode == "amusica":
+            from bleep.modes.amusica import main as _amusica_main
+            return _amusica_main(args.amusica_args)
 
         elif args.mode == "db":
             from bleep.modes import db as _db_mode
@@ -1011,27 +1170,50 @@ def main(args=None):
             try:
                 records = discover_services_sdp(args.address, connectionless=connectionless_mode)
                 
-                if debug_mode and records:
-                    print_and_log(f"[classic-enum] Found {len(records)} SDP records", LOG__GENERAL)
+                if records:
+                    print_and_log(f"[+] Found {len(records)} SDP record(s) for {args.address}", LOG__GENERAL)
+                    print("\nSDP Records:")
+                    print("=" * 80)
                     for idx, rec in enumerate(records, 1):
-                        debug_info = f"  [{idx}] {rec.get('name', 'Unknown')} (UUID: {rec.get('uuid', 'N/A')}, Channel: {rec.get('channel', 'N/A')})"
-                        if rec.get('handle') is not None:
-                            debug_info += f" [Handle: {rec.get('handle')}]"
-                        if rec.get('profile_descriptors'):
-                            profiles = rec.get('profile_descriptors', [])
-                            debug_info += f" [Profiles: {len(profiles)}]"
-                            for p in profiles:
-                                profile_ver = p.get('version')
-                                spec_hint = map_profile_version_to_spec(profile_ver) if version_info_mode else None
-                                ver_str = f"Ver: {profile_ver}"
-                                if spec_hint:
-                                    ver_str += f" (~{spec_hint})"
-                                debug_info += f" (UUID: {p.get('uuid')}, {ver_str})"
-                        if rec.get('service_version') is not None:
-                            debug_info += f" [SvcVer: {rec.get('service_version')}]"
-                        if rec.get('description'):
-                            debug_info += f" [Desc: {rec.get('description')[:50]}...]"
-                        print_and_log(debug_info, LOG__GENERAL)
+                        print(f"\nRecord {idx}:")
+                        if rec.get("name"):
+                            print(f"  Name: {rec['name']}")
+                        if rec.get("uuid"):
+                            print(f"  UUID: {rec['uuid']}")
+                        if rec.get("channel") is not None:
+                            print(f"  RFCOMM Channel: {rec['channel']}")
+                        if rec.get("handle") is not None:
+                            print(f"  Service Record Handle: 0x{rec['handle']:04X}")
+                        if rec.get("service_version") is not None:
+                            print(f"  Service Version: 0x{rec['service_version']:04X}")
+                        if rec.get("description"):
+                            print(f"  Description: {rec['description']}")
+                        if rec.get("profile_descriptors"):
+                            print("  Profile Descriptors:")
+                            for p in rec["profile_descriptors"]:
+                                uuid = p.get("uuid", "Unknown")
+                                ver = p.get("version")
+                                if ver is not None:
+                                    spec_hint = map_profile_version_to_spec(ver) if version_info_mode else None
+                                    ver_str = f"0x{ver:04X}"
+                                    if spec_hint:
+                                        ver_str += f" (~{spec_hint})"
+                                    print(f"    {uuid}: Version {ver_str}")
+                                else:
+                                    print(f"    {uuid}: Version unknown")
+                    print("\n" + "=" * 80)
+
+                    # Show RFCOMM service map summary
+                    svc_map_sdp: Dict[str, int] = {}
+                    for rec in records:
+                        if rec.get("channel") is not None:
+                            key = rec.get("name") or rec.get("uuid") or f"channel_{rec['channel']}"
+                            svc_map_sdp[key] = rec["channel"]
+                    if svc_map_sdp:
+                        print(f"\nService Map ({len(svc_map_sdp)} service(s)):")
+                        for svc, ch in svc_map_sdp.items():
+                            print(f"  {svc:25} -> {ch}")
+                        print()
                 
                 # Display version information if requested (before connection attempt)
                 if version_info_mode:
@@ -1120,27 +1302,17 @@ def main(args=None):
             # Try to connect and enumerate (requires full connection)
             try:
                 _, svc_map = _c_enum(args.address)
-                print(json.dumps(svc_map, indent=2))
+                if debug_mode:
+                    print_and_log(f"[+] Connection-based enumeration: {len(svc_map)} RFCOMM services", LOG__GENERAL)
                 return 0
             except Exception as conn_exc:
-                # Connection failed, but if we have SDP records, show those instead
                 if records:
-                    # Build service map from SDP records (connectionless fallback)
-                    svc_map_fallback: Dict[str, int] = {}
-                    for rec in records:
-                        if rec.get("channel") is not None:
-                            key = rec.get("name") or rec.get("uuid") or f"channel_{rec['channel']}"
-                            svc_map_fallback[key] = rec["channel"]
-                    
-                    if svc_map_fallback:
-                        print_and_log(
-                            f"[!] Connection failed ({conn_exc}), but SDP enumeration succeeded (connectionless)",
-                            LOG__GENERAL
-                        )
-                        print(json.dumps(svc_map_fallback, indent=2))
-                        return 0
-                
-                # No SDP records and connection failed - show error
+                    print_and_log(
+                        f"[!] Connection failed ({conn_exc}), but SDP enumeration succeeded",
+                        LOG__GENERAL,
+                    )
+                    return 0
+
                 import sys as _sys_module
                 print(f"Error: {conn_exc}", file=_sys_module.stderr)
                 if debug_mode:
@@ -1231,6 +1403,10 @@ def main(args=None):
             except Exception as e:
                 print(f"[!] BLE CTF error: {e}", file=sys.stderr)
                 return 1
+
+        elif args.mode == "adapter-config":
+            from bleep.modes.adapter_config import handle_adapter_config
+            return handle_adapter_config(args)
 
         else:  # interactive (default)
             from bleep.modes.interactive import main as _interactive_main
