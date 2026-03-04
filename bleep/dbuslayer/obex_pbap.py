@@ -14,17 +14,19 @@ available, transfer error or timeout).
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
 from typing import Optional
 
 import dbus
 
-# BlueZ obex constants -------------------------------------------------------
-_OBEX_SERVICE = "org.bluez.obex"
-_OBEX_CLIENT_IFACE = "org.bluez.obex.Client1"
-_OBEX_PBAP_IFACE = "org.bluez.obex.PhonebookAccess1"
-_OBEX_TRANSFER_IFACE = "org.bluez.obex.Transfer1"
+from bleep.bt_ref.constants import (
+    OBEX_SERVICE as _OBEX_SERVICE,
+    OBEX_ROOT_PATH,
+    OBEX_CLIENT_INTERFACE as _OBEX_CLIENT_IFACE,
+    OBEX_PBAP_INTERFACE as _OBEX_PBAP_IFACE,
+)
+
+from bleep.dbuslayer._obex_common import poll_obex_transfer as _poll_transfer
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +50,7 @@ def pull_phonebook_vcf(
 
     # 1. Get Client interface
     try:
-        client_obj = bus.get_object(_OBEX_SERVICE, "/org/bluez/obex")
+        client_obj = bus.get_object(_OBEX_SERVICE, OBEX_ROOT_PATH)
         client = dbus.Interface(client_obj, _OBEX_CLIENT_IFACE)
     except dbus.exceptions.DBusException as exc:
         raise RuntimeError(
@@ -103,23 +105,9 @@ def pull_phonebook_vcf(
         # Preserve D-Bus name and message in raised RuntimeError diagnostics
         raise RuntimeError(f"PBAP PullAll failed: {error_str}") from exc
 
-    transfer_obj = bus.get_object(_OBEX_SERVICE, transfer_path)
-    props_iface = dbus.Interface(transfer_obj, "org.freedesktop.DBus.Properties")
+    result = _poll_transfer(bus, transfer_path, timeout, label="PBAP")
 
-    start = time.time()
-    while True:
-        status = str(props_iface.Get(_OBEX_TRANSFER_IFACE, "Status"))
-        if status.lower() in {"complete", "error"}:
-            break
-        if (time.time() - start) > timeout:
-            raise RuntimeError("PBAP transfer timed out")
-        time.sleep(0.2)
-
-    if status.lower() != "complete":
-        raise RuntimeError("PBAP transfer failed (Status=" + status + ")")
-
-    # Get Filename property – may be empty depending on obexd version
-    filename = str(props_iface.Get(_OBEX_TRANSFER_IFACE, "Filename"))
+    filename = result.get("filename", "")
     if not filename:
         raise RuntimeError("BlueZ did not provide Filename for completed transfer")
 

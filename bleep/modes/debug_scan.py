@@ -20,12 +20,26 @@ from bleep.modes.debug_dbus import print_detailed_dbus_error
 
 def cmd_scan(args: List[str], state: DebugState) -> None:
     """Scan for nearby BLE devices."""
+    from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+
+    adapter = _Adapter()
+    if not adapter.is_ready():
+        print("[-] Bluetooth adapter not ready")
+        return
+
     print_and_log("[*] Scanning for devices...", LOG__GENERAL)
     passive_scan(timeout=10)
 
 
 def cmd_scann(args: List[str], state: DebugState) -> None:
     """Naggy scan (DuplicateData off)."""
+    from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+
+    adapter = _Adapter()
+    if not adapter.is_ready():
+        print("[-] Bluetooth adapter not ready")
+        return
+
     from bleep.ble_ops.scan import naggy_scan
     print_and_log("[*] Naggy scan (active) …", LOG__GENERAL)
     naggy_scan(timeout=10)
@@ -33,15 +47,30 @@ def cmd_scann(args: List[str], state: DebugState) -> None:
 
 def cmd_scanp(args: List[str], state: DebugState) -> None:
     """Pokey scan (spam active 1-s scans)."""
-    from bleep.ble_ops.scan import pokey_scan
+    from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+
     if not args:
         print("Usage: scanp <MAC>")
         return
+
+    adapter = _Adapter()
+    if not adapter.is_ready():
+        print("[-] Bluetooth adapter not ready")
+        return
+
+    from bleep.ble_ops.scan import pokey_scan
     pokey_scan(args[0], timeout=10)
 
 
 def cmd_scanb(args: List[str], state: DebugState) -> None:
     """Brute scan (BR/EDR + LE)."""
+    from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+
+    adapter = _Adapter()
+    if not adapter.is_ready():
+        print("[-] Bluetooth adapter not ready")
+        return
+
     from bleep.ble_ops.scan import brute_scan
     print_and_log("[*] Brute scan …", LOG__GENERAL)
     brute_scan(timeout=20)

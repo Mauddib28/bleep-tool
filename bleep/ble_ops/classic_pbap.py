@@ -49,9 +49,19 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Constants / helpers
 # ---------------------------------------------------------------------------
-# UUIDs of interest (16-bit)
-_PBAP_PSE_UUID16 = "0x112f"  # Phonebook Access – PSE (server)
-_PBAP_PSE_UUID128 = "0000112f-0000-1000-8000-00805f9b34fb"
+from bleep.bt_ref.constants import (
+    DBUS_PROPERTIES,
+    PBAP_PSE_UUID_SHORT as _PBAP_PSE_UUID16,
+    PBAP_PSE_UUID as _PBAP_PSE_UUID128,
+    OBEX_SERVICE,
+    OBEX_ROOT_PATH,
+    OBEX_CLIENT_INTERFACE,
+    OBEX_AGENT_INTERFACE,
+    OBEX_AGENT_MANAGER_INTERFACE,
+    OBEX_SESSION_INTERFACE,
+    OBEX_PBAP_INTERFACE,
+    OBEX_TRANSFER_INTERFACE,
+)
 
 
 def _locate_pbap_channel(svc_map: Dict[str, int]) -> Optional[int]:
@@ -156,7 +166,7 @@ class _SimpleObexAgent(dbus.service.Object):
     passes *auto_auth=True*.  Works around phones that insist on OBEX auth.
     """
 
-    AGENT_IFACE = "org.bluez.obex.Agent1"
+    AGENT_IFACE = OBEX_AGENT_INTERFACE
 
     def __init__(self, bus: dbus.Bus):
         super().__init__(bus, "/bleep/ObexAgent")
@@ -196,10 +206,10 @@ class _Transfer:
 class _PbapClientAsync:
     """BlueZ obexd asynchronous PBAP wrapper (signal-driven)."""
 
-    BUS = "org.bluez.obex"
-    SESSION_IFACE = "org.bluez.obex.Session1"
-    PBAP_IFACE = "org.bluez.obex.PhonebookAccess1"
-    TRANSFER_IFACE = "org.bluez.obex.Transfer1"
+    BUS = OBEX_SERVICE
+    SESSION_IFACE = OBEX_SESSION_INTERFACE
+    PBAP_IFACE = OBEX_PBAP_INTERFACE
+    TRANSFER_IFACE = OBEX_TRANSFER_INTERFACE
 
     def __init__(self, session_path: str):
         self._bus = dbus.SessionBus()
@@ -213,7 +223,7 @@ class _PbapClientAsync:
 
         self._bus.add_signal_receiver(
             self._properties_changed,
-            dbus_interface="org.freedesktop.DBus.Properties",
+            dbus_interface=DBUS_PROPERTIES,
             signal_name="PropertiesChanged",
             path_keyword="path",
         )
@@ -306,15 +316,15 @@ def pbap_dump_async(
 
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SessionBus()
-    client = dbus.Interface(bus.get_object("org.bluez.obex", "/org/bluez/obex"),
-                            "org.bluez.obex.Client1")
+    client = dbus.Interface(bus.get_object(OBEX_SERVICE, OBEX_ROOT_PATH),
+                            OBEX_CLIENT_INTERFACE)
 
     agent: _SimpleObexAgent | None = None
     mgr = None
     if auto_auth:
         try:
             agent = _SimpleObexAgent(bus)
-            mgr = dbus.Interface(bus.get_object("org.bluez.obex", "/org/bluez/obex"), "org.bluez.obex.AgentManager1")
+            mgr = dbus.Interface(bus.get_object(OBEX_SERVICE, OBEX_ROOT_PATH), OBEX_AGENT_MANAGER_INTERFACE)
             from bleep.core.log import print_and_log, LOG__DEBUG
             print_and_log("[pbap_dump_async] Registering auto-auth OBEX agent", LOG__DEBUG)
             mgr.RegisterAgent(dbus.ObjectPath(agent.object_path), {})

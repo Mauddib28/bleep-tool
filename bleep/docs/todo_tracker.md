@@ -1830,6 +1830,110 @@ Address two issues identified after initial implementation:
 - [x] bc-18 PBAP watchdog to auto-disconnect on stalled transfer (>8 s without progress)
 - [x] bc-19 `classic_l2ping(mac, count=3)` helper using *l2ping* CLI to verify reachability before connect
 - [x] bc-13 Update CHANGELOG & todo-tracker after completing Classic Bluetooth feature set
+- [x] bc-20 RFCOMM data-exchange debug commands (`copen`, `csend`, `crecv`, `craw`):
+  - [x] Extracted shared value-parsing utility to `debug_utils.py` (reused by BLE `write` and `csend`)
+  - [x] Added `rfcomm_sock` field to `DebugState` (separate from `keepalive_sock`)
+  - [x] `copen` – open/close/status of dedicated data RFCOMM socket
+  - [x] `csend` – send raw data with format support (hex:/str:/file:/uint8:/etc.)
+  - [x] `crecv` – receive data with timeout, hex dump, save-to-file options
+  - [x] `craw` – interactive bidirectional RFCOMM session with background reader thread
+  - [x] Registered all commands in dispatch table and help text
+- [x] bc-21 Object Push Profile (`copp`) via BlueZ obexd D-Bus:
+  - [x] `dbuslayer/obex_opp.py` – D-Bus layer (`opp_send_file`, `opp_pull_business_card`)
+  - [x] `ble_ops/classic_opp.py` – operations layer with logging and service detection
+  - [x] `copp send <file>` and `copp pull [dest]` debug commands
+- [x] bc-22 Message Access Profile (`cmap`) via BlueZ obexd D-Bus:
+  - [x] `dbuslayer/obex_map.py` – D-Bus layer (`MapSession` class with full API)
+  - [x] `ble_ops/classic_map.py` – operations layer with logging and service detection
+  - [x] `cmap` debug command with sub-commands: folders, list, get, push, inbox, props, read, delete
+- [x] bc-23 Refactored value-parsing from `debug_gatt.py` into shared `debug_utils.py`
+- [x] bc-24 Documented future expansion items not covered by this change (FTP, SYNC, MNS, BIP, SPP, PAN, L2CAP raw, CLI sub-commands)
+- [x] bc-25 Updated `bl_classic_mode.md` with new command documentation and feature tracker
+
+### OBEX Expansion Roadmap (v2.7.5 – v2.7.13+)
+
+Planned path forward for Classic OBEX profile and transport augmentations.
+All versions remain within the v2.7.x range.  BlueZ D-Bus API references
+are in `workDir/BlueZDocs/org.bluez.obex.*.rst` and reference scripts in
+`workDir/BlueZScripts/`.
+
+| Phase | Version | Scope | BlueZ Interface / Bus | Reference Script(s) | bc-IDs |
+|-------|---------|-------|-----------------------|----------------------|--------|
+| 1 | v2.7.5 | OBEX FTP + transfer-poller dedup | `FileTransfer1` (session) | `ftp-client`, `list-folders`, `service-ftp.xml` | bc-26 – bc-29 |
+| 2 | v2.7.6 | CLI `classic-opp`, `classic-map`, `classic-ftp` | — (CLI wiring only) | — | bc-30 – bc-32 |
+| 3 | v2.7.7 | MAP MNS notification monitoring | `MessageAccess1` signals (session) | `map-client` | bc-33 – bc-35 |
+| 4 | v2.7.8 | MAP multi-instance MAS selection | `Client1` `Channel` byte (session) | `map-client` | bc-36 |
+| 5 | v2.7.9 | PAN networking | `Network1` + `NetworkServer1` (system) | `test-network`, `test-nap` | bc-37 – bc-40 |
+| 6 | v2.7.10 | SPP serial port emulation | `ProfileManager1` + `Profile1` (system) | `test-profile`, `service-spp.xml` | bc-41 – bc-43 |
+| 7 | v2.7.11 | SYNC profile | `Synchronization1` (session) | — | bc-44 – bc-46 |
+| 8 | v2.7.12 | BIP (Basic Imaging, experimental) | `Image1` [experimental] (session), target `"bip-avrcp"` | — | bc-47 – bc-49 |
+| 9 | v2.7.13+ | Raw OBEX over RFCOMM, L2CAP raw | N/A (protocol-level) | — | TBD |
+
+#### Phase 1 – OBEX FTP (v2.7.5)
+
+- [x] bc-26 Extract shared OBEX transfer poller into `dbuslayer/_obex_common.py`; refactor `obex_opp.py`, `obex_map.py`, `obex_pbap.py` to use it
+- [x] bc-27 FTP D-Bus layer: `dbuslayer/obex_ftp.py` (`FtpSession` context manager wrapping `FileTransfer1`)
+  - Session target: `"ftp"` (per `org.bluez.obex.Client.rst`)
+  - Methods: `ChangeFolder`, `CreateFolder`, `ListFolder`, `GetFile`, `PutFile`, `CopyFile`, `MoveFile`, `Delete`
+  - Note: `GetFile(targetfile, sourcefile)` — first arg is local, second is remote
+  - Note: `PutFile(sourcefile, targetfile)` — first arg is local, second is remote
+- [x] bc-28 FTP operations layer: `ble_ops/classic_ftp.py` (logging, service detection UUID `0x1106`, obs-DB)
+- [x] bc-29 FTP debug command `cftp` (ls/cd/get/put/mkdir/rm/cp/mv) + constants (`FTP_UUID`, `FTP_UUID_SHORT`, update `OBEX_PROFILE_UUIDS`) + dispatch wiring in `debug.py`
+
+#### Phase 2 – CLI Sub-Commands (v2.7.6)
+
+- [x] bc-30 CLI `classic-opp` command (send / pull) mirroring `classic-pbap` pattern
+- [x] bc-31 CLI `classic-map` command (folders / list / get / push / inbox) with `--type` filter per `MessageAccess.rst`
+- [x] bc-32 CLI `classic-ftp` command (ls / get / put / mkdir / rm)
+
+#### Phase 3 – MAP MNS Notification Monitoring (v2.7.7)
+
+- [x] bc-33 MAP signal-based notification watch via `PropertiesChanged` on `Message1` objects (not a custom D-Bus server — BlueZ does not expose `SetNotificationRegistration`)
+- [x] bc-34 `MapSession.get_supported_types()` and `list_filter_fields()` wrappers (per `MessageAccess.rst` `SupportedTypes` property and `ListFilterFields()` method)
+- [x] bc-35 Debug `cmap monitor start|stop` + `cmap types` + `cmap fields` sub-commands + CLI `classic-map types|fields|monitor`
+
+#### Phase 4 – MAP Multi-Instance (v2.7.8)
+
+- [x] bc-36 `MapSession` gains optional `instance` parameter → `CreateSession` `Channel` byte; `list_mas_instances()` from SDP; all ops functions accept `instance` kwarg; `cmap instances` debug sub-cmd; `classic-map --instance` CLI flag
+
+#### Phase 5 – PAN Networking (v2.7.9)
+
+- [x] bc-37 Constants: `NETWORK_INTERFACE`, `NETWORK_SERVER_INTERFACE`, PAN UUIDs (`0x1115`, `0x1116`, `0x1117`)
+- [x] bc-38 D-Bus wrapper `dbuslayer/network.py` (`NetworkClient` + `NetworkServer` on **system bus**; `Connect(role)` returns interface name, `Disconnect()`, properties: `Connected`, `Interface`, `UUID`; server `Register`/`Unregister`)
+- [x] bc-39 Operations layer `ble_ops/classic_pan.py` + debug command `cpan` (connect/disconnect/status/server register|unregister)
+- [x] bc-40 CLI `classic-pan` command (connect/disconnect/status/serve/unserve)
+
+#### Phase 6 – SPP Serial Port Emulation (v2.7.10)
+
+- [x] bc-41 D-Bus layer `dbuslayer/spp_profile.py`: `SppProfile(dbus.service.Object)` implementing `Profile1` (`NewConnection` delivers fd); `SppManager` for register/unregister via `ProfileManager1` at `/org/bluez` on **system bus**
+- [x] bc-42 Debug command `cspp` (register/unregister/status); fd exposed as `state.rfcomm_sock` for `csend`/`crecv`; CLI `classic-spp` (register/unregister/status)
+- [x] bc-43 Constants: `PROFILE_MANAGER_INTERFACE`, `PROFILE_INTERFACE` (SPP UUID already exists); operations layer `ble_ops/classic_spp.py`
+
+#### Phase 7 – SYNC Profile (v2.7.11)
+
+- [x] bc-44 D-Bus layer `dbuslayer/obex_sync.py` (`SyncSession`, target `"sync"`; methods: `SetLocation`, `GetPhonebook`, `PutPhonebook` per `Synchronization.rst`)
+- [x] bc-45 Debug command `csync` (get/put/location) + CLI `classic-sync` subparser
+- [x] bc-46 Operations layer `ble_ops/classic_sync.py`
+
+#### Phase 8 – BIP Basic Imaging (v2.7.12)
+
+- [x] bc-47 D-Bus layer `dbuslayer/obex_bip.py` (`BipSession`, target `"bip-avrcp"` per `Client.rst`; `Image1` is **[experimental]**; methods: `Get`, `Properties`, `GetThumbnail` per `Image.rst`)
+- [x] bc-48 Debug command `cbip` (get/props/thumb) + CLI `classic-bip` subparser with runtime guard for experimental interface
+- [x] bc-49 Operations layer `ble_ops/classic_bip.py`
+
+#### Phase 9 – Raw OBEX & L2CAP (v2.7.13+ — design only)
+
+- [x] bc-50 Design doc for raw OBEX framing over RFCOMM (bypassing obexd) → `bleep/protocols/obex_design.md`
+- [x] bc-51 Design doc for L2CAP raw channel access via `socket.AF_BLUETOOTH` / `BTPROTO_L2CAP` → `bleep/protocols/l2cap_design.md`
+
+#### Cross-cutting
+
+- [x] Split `debug_classic_data.py` (1,192 lines) into focused sub-modules (v2.7.14):
+  - `debug_classic_rfcomm.py` (~378 lines) — copen, csend, crecv, craw + helpers
+  - `debug_classic_obex.py` (~646 lines) — copp, cmap, cftp, csync, cbip
+  - `debug_classic_profiles.py` (~200 lines) — cpan, cspp
+  - `debug_classic_data.py` (49-line re-export shim) — backward-compatible imports
+  - Fixed `cmd_csync`/`cmd_cbip` signature bug (reversed params, non-existent `state.bdaddr`)
 
 *(collapse / expand sections as items are completed)* 
 

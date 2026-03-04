@@ -1,5 +1,5 @@
 ---
-description: User-level guide for Bluetooth Classic features (scan, SDP enumeration, PBAP) in BLEEP
+description: User-level guide for Bluetooth Classic features (scan, SDP, PBAP, RFCOMM data exchange, OPP, MAP, FTP, PAN, SPP, SYNC) in BLEEP
 ---
 
 # Bluetooth Classic Support in **BLEEP**
@@ -17,9 +17,9 @@ troubleshooting for Classic devices.
 ## 1  Requirements
 
 * BlueZ ≥ 5.55 (tested 5.66)
-* `bluetooth-obexd` service **enabled & running** – required for PBAP transfer
+* `bluetooth-obexd` service **enabled & running** – required for PBAP, OPP, and MAP
 * Adapter must be powered, discoverable / pairable as usual (`bluetoothctl`)
-* The target phone/head-unit **paired & trusted** – PBAP typically rejects
+* The target phone/head-unit **paired & trusted** – OBEX profiles typically reject
   anonymous connections.
 
 ```bash
@@ -36,8 +36,25 @@ sudo systemctl enable --now bluetooth-obexd.service
 | `classic-scan` | BR/EDR inquiry scan – lists nearby Classic devices |
 | `classic-enum <MAC>` | SDP browse + records; prints RFCOMM services table (supports `--debug` for enhanced attributes, `--connectionless` for l2ping reachability check, `--version-info` for Bluetooth version information, `--analyze` for comprehensive SDP analysis) |
 | `classic-pbap <MAC> --out <file.vcf>` | Pull full phone-book (VCF) via PBAP |
+| `classic-opp <MAC> send <file>` / `pull` | Send a file or pull business card via OPP |
+| `classic-map <MAC> folders\|list\|get\|push\|inbox\|types\|fields\|monitor\|instances [--instance N]` | Browse, manage, and monitor SMS/MMS via MAP (use `--instance` for multi-MAS) |
+| `classic-ftp <MAC> ls\|get\|put\|mkdir\|rm` | Browse and transfer files via OBEX FTP |
+| `classic-pan connect\|disconnect\|status\|serve\|unserve <MAC>` | Personal Area Networking – PAN client & server |
+| `classic-spp register\|unregister\|status [--channel N]` | SPP serial port profile registration |
+| `classic-sync <MAC> get\|put [--location int\|sim1]` | IrMC Synchronization – download/upload phonebook |
+| `classic-bip <MAC> props\|get\|thumb <handle>` | Basic Imaging Profile – image properties / download / thumbnail [experimental] |
+| Raw OBEX over RFCOMM (design doc) | ✅ |
+| L2CAP raw channel access (design doc) | ✅ |
 | Debug Mode: `csdp <MAC> [--connectionless]` | SDP discovery without full connection (connectionless mode with l2ping reachability check) |
 | Debug Mode: `pbap [options]` | Interactive PBAP phonebook dumps from connected Classic devices |
+| Debug Mode: `copen` / `csend` / `crecv` / `craw` | RFCOMM data-exchange commands (open socket, send, receive, interactive session) |
+| Debug Mode: `copp send <file>` / `copp pull` | Object Push Profile – send files or pull business cards |
+| Debug Mode: `cmap folders\|list\|get\|push\|inbox\|types\|fields\|monitor\|instances [--instance N]` | Message Access Profile – browse, manage, and monitor SMS/MMS (multi-MAS) |
+| Debug Mode: `cftp ls\|cd\|get\|put\|mkdir\|rm\|cp\|mv` | File Transfer Profile – browse and transfer files |
+| Debug Mode: `cpan connect\|disconnect\|status\|server` | Personal Area Networking (PAN) – client & server |
+| Debug Mode: `cspp register\|unregister\|status` | SPP serial port profile – incoming connections feed `csend`/`crecv` |
+| Debug Mode: `csync get\|put [--location int\|sim1]` | IrMC Synchronization – download/upload phonebook |
+| Debug Mode: `cbip props\|get\|thumb <handle>` | Basic Imaging Profile [experimental] |
 
 All commands share global CLI flags such as `--hci <index>` and logging level.
 Run `python -m bleep.cli --help` for details.
@@ -393,6 +410,364 @@ python -m bleep.cli classic-ping 14:89:FD:31:8A:7E --count 5
 # (may need sudo on some distros because *l2ping* requires CAP_NET_RAW)
 ```
 
+### 2.7  RFCOMM Data Exchange (Debug Mode)
+
+The debug shell provides raw RFCOMM data-exchange commands that operate on a
+dedicated data socket, separate from the keep-alive socket (`ckeep`).
+
+#### `copen` – Open / close the data socket
+
+```bash
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> copen 18        # by channel number
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> copen --svc SPP  # by service name
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> copen --first    # first available
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> copen --status   # check status
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> copen --close    # close
+```
+
+#### `csend` – Send data over RFCOMM
+
+```bash
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> csend str:AT+COPS?
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> csend hex:4f4b0d0a
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> csend file:/tmp/payload.bin
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> csend Hello World
+```
+
+Supports the same value formats as the BLE `write` command (`hex:`, `str:`,
+`file:`, `uint8:`, etc.).  If no data socket is open, falls back to the
+keep-alive socket with a warning.
+
+#### `crecv` – Receive data from RFCOMM
+
+```bash
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> crecv                  # 5s default timeout
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> crecv --timeout 10      # custom timeout
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> crecv --size 1024       # max buffer
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> crecv --hex             # force hex dump
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> crecv --save /tmp/rx.bin
+```
+
+#### `craw` – Interactive RFCOMM session
+
+```bash
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> craw 18          # opens channel 18
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> craw --first     # first available
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> craw --hex       # hex-dump incoming
+```
+
+Opens a bidirectional interactive session: a background reader thread prints
+incoming data, while the prompt accepts user input.  Type `quit` or press
+`Ctrl+C` to end the session.  If no socket is open, `craw` opens one for the
+session and closes it on exit.
+
+### 2.8  Object Push Profile – OPP (Debug Mode)
+
+Send files to or pull business cards from a connected Classic device via the
+OBEX Object Push Profile (UUID `0x1105`).
+
+```bash
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> copp send /tmp/photo.jpg
+[+] OPP send complete: 12345/12345 bytes transferred
+
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> copp pull /tmp/card.vcf
+[+] Business card saved → /tmp/card.vcf
+```
+
+**Prerequisites:** `bluetooth-obexd` running, device paired & trusted.  OPP
+service detection is automatic from the SDP service map; if not found the
+command attempts anyway.
+
+### 2.9  Message Access Profile – MAP (Debug Mode)
+
+Browse and manage SMS/MMS messages on a connected Classic device via the OBEX
+Message Access Profile (UUIDs `0x1132` / `0x1134`).
+
+```bash
+# List message folders
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap folders
+
+# List messages in a folder
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap list inbox
+
+# Download a specific message
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap get 12345 /tmp/msg.txt
+
+# Push / send a message
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap push /tmp/outgoing.bmsg
+
+# Trigger inbox synchronisation
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap inbox
+
+# View message properties
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap props 12345
+
+# Mark as read / unread
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap read 12345 true
+
+# Mark as deleted / undeleted
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap delete 12345
+```
+
+**Prerequisites:** same as OPP.  MAP service detection is automatic.
+
+#### MNS Notification Monitoring
+
+Monitor incoming message notifications in real-time via D-Bus
+`PropertiesChanged` signals on `Message1` objects:
+
+```
+# Start monitoring (debug mode – runs in background)
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap monitor start
+
+# Notifications appear as they arrive:
+# [MNS] /org/bluez/obex/session1/message42
+#       Status: notification
+#       Type: sms-gsm
+#       Sender: +1234567890
+
+# Stop monitoring
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap monitor stop
+```
+
+CLI equivalent (blocks until Ctrl+C):
+
+```bash
+python -m bleep.cli classic-map AA:BB:CC:DD:EE:FF monitor
+```
+
+#### Metadata Queries
+
+```
+# List message types supported by the remote device
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap types
+
+# List available filter fields for message listing
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap fields
+```
+
+CLI equivalents:
+
+```bash
+python -m bleep.cli classic-map AA:BB:CC:DD:EE:FF types
+python -m bleep.cli classic-map AA:BB:CC:DD:EE:FF fields
+```
+
+**Note:** MNS monitoring requires `PyGObject` (`python3-gi`) for the GLib
+main loop.  The monitor session stays open until explicitly stopped.
+
+#### 2.7.6  Multi-Instance MAS Selection
+
+Some devices expose multiple MAS instances (e.g. one for SMS and another for
+email), each advertising a separate RFCOMM channel in their SDP records.  Use
+`instances` to discover them and `--instance <channel>` to target a specific
+one.
+
+```
+# Discover MAS instances via SDP
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap instances
+  Channel   4  MAP SMS  (UUID 0x1132)
+  Channel  10  MAP Email  (UUID 0x1132)
+
+# Target the email MAS instance
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap --instance 10 folders
+```
+
+```bash
+# CLI equivalents
+python -m bleep.cli classic-map AA:BB:CC:DD:EE:FF instances
+python -m bleep.cli classic-map AA:BB:CC:DD:EE:FF --instance 10 folders
+```
+
+Under the hood, `--instance` passes the RFCOMM channel as the `Channel` byte
+in the `CreateSession` D-Bus call (per `org.bluez.obex.Client1`).  When
+omitted, BlueZ connects to the first available MAS.
+
+### 2.8  `cftp` – File Transfer Profile (OBEX FTP)
+
+Browse and transfer files on a connected Classic device via the OBEX File
+Transfer Profile (UUID `0x1106`, `org.bluez.obex.FileTransfer1`).
+
+```
+# List current remote folder
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cftp ls
+
+# List a specific path (navigates from root)
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cftp ls Photos/2024
+
+# Navigate to a folder (session-scoped, single-operation)
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cftp cd Documents
+
+# Download a file
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cftp get report.pdf /tmp/report.pdf
+
+# Upload a file
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cftp put /tmp/notes.txt
+
+# Create a folder
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cftp mkdir NewFolder
+
+# Delete a file or folder
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cftp rm oldfile.txt
+
+# Copy/move on remote
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cftp cp source.txt backup.txt
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cftp mv temp.dat final.dat
+```
+
+**Prerequisites:** same as OPP.  FTP service detection (UUID `0x1106`) is automatic.
+
+**Note:** Each sub-command opens and closes its own OBEX session.  The `cd`
+command is illustrative — for multi-step workflows, use the operations-layer
+functions or a `FtpSession` context manager directly.
+
+### 2.9  `cpan` / `classic-pan` – Personal Area Networking
+
+Connect to or host a Bluetooth PAN network using `org.bluez.Network1` (client)
+and `org.bluez.NetworkServer1` (server) on the **system bus**.
+
+Supported roles: `nap` (Network Access Point – internet sharing), `panu`
+(Personal Area Network User), `gn` (Group Network).
+
+```
+# Connect to a paired device as NAP client
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cpan connect nap
+[+] PAN connected – interface bnep0
+
+# Check connection status
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cpan status
+
+# Disconnect
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cpan disconnect
+
+# Register as a PAN server (accepts incoming connections)
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cpan server register nap pan0
+
+# Unregister server
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cpan server unregister nap
+```
+
+```bash
+# CLI equivalents
+python -m bleep.cli classic-pan connect AA:BB:CC:DD:EE:FF --role nap
+python -m bleep.cli classic-pan status AA:BB:CC:DD:EE:FF
+python -m bleep.cli classic-pan disconnect AA:BB:CC:DD:EE:FF
+python -m bleep.cli classic-pan serve --role nap --bridge pan0
+python -m bleep.cli classic-pan unserve --role nap
+```
+
+**Prerequisites:** Device must be paired and trusted.  The `Network1` interface
+is available on device objects; `NetworkServer1` is on the local adapter.
+A Linux bridge interface (e.g. `pan0`) may need to be created before serving.
+
+### 2.10  `cspp` / `classic-spp` – Serial Port Profile
+
+Register a custom SPP profile via BlueZ `ProfileManager1.RegisterProfile` on
+the **system bus**.  When a remote device connects, the `Profile1.NewConnection`
+callback delivers an RFCOMM file descriptor.
+
+In **debug mode**, the incoming socket is automatically set as the RFCOMM data
+socket used by `csend`/`crecv`/`craw`, enabling seamless bidirectional data
+exchange without `copen`.
+
+```
+# Register as SPP server (auto-assigned channel)
+BLEEP-DEBUG> cspp register
+
+# Register with explicit RFCOMM channel
+BLEEP-DEBUG> cspp register --channel 3 --name "My SPP"
+
+# Check status
+BLEEP-DEBUG> cspp status
+
+# Unregister
+BLEEP-DEBUG> cspp unregister
+```
+
+```bash
+# CLI – register and block until Ctrl+C (prints received data to stdout)
+python -m bleep.cli classic-spp register --channel 3
+python -m bleep.cli classic-spp status
+python -m bleep.cli classic-spp unregister
+```
+
+**Prerequisites:** `PyGObject` (`python3-gi`) required for the GLib mainloop
+integration needed by `dbus.service.Object`.  The remote device must be paired
+and trusted.
+
+---
+
+### 2.11  `csync` / `classic-sync` – IrMC Synchronization
+
+Download or upload the entire phonebook via the legacy OBEX IrMC Synchronization
+profile (`Synchronization1`, UUID `0x1104`).  Few modern devices advertise this
+service; it is primarily useful for older handsets that expose phonebook data
+through the IrMC store rather than PBAP.
+
+The object store location can be set to `"int"` (internal memory, default) or
+`"sim1"`, `"sim2"`, etc. for SIM card access.
+
+```
+# Download phonebook (internal store)
+BLEEP-DEBUG> csync get
+
+# Download phonebook from SIM card
+BLEEP-DEBUG> csync get /tmp/sim_pb.vcf --location sim1
+
+# Upload phonebook
+BLEEP-DEBUG> csync put /tmp/contacts.vcf --location int
+```
+
+```bash
+# CLI – download phonebook
+python -m bleep.cli classic-sync AA:BB:CC:DD:EE:FF get --output /tmp/pb.vcf
+python -m bleep.cli classic-sync AA:BB:CC:DD:EE:FF get --location sim1
+
+# CLI – upload phonebook
+python -m bleep.cli classic-sync AA:BB:CC:DD:EE:FF put /tmp/contacts.vcf --location int
+```
+
+**Prerequisites:** `bluetooth-obexd` must be running.  The target device must
+be paired, trusted, and must advertise IrMC Sync (UUID `0x1104`).
+
+---
+
+### 2.12  `cbip` / `classic-bip` – Basic Imaging Profile [experimental]
+
+Download images and thumbnails from a remote device via the BlueZ
+**experimental** `Image1` interface (UUID `0x111A`).  The session target is
+`"bip-avrcp"`.
+
+> **Warning:** `Image1` is marked `[experimental]` in BlueZ.  `bluetooth-obexd`
+> must be started with the `--experimental` flag for this interface to be
+> available.  The API may change or be removed without notice.
+
+```
+# Get image properties for a handle
+BLEEP-DEBUG> cbip props 1000001
+
+# Download full image
+BLEEP-DEBUG> cbip get 1000001 /tmp/image.jpg
+
+# Download thumbnail
+BLEEP-DEBUG> cbip thumb 1000001 /tmp/thumb.jpg
+```
+
+```bash
+# CLI – image properties
+python -m bleep.cli classic-bip AA:BB:CC:DD:EE:FF props 1000001
+
+# CLI – download full image
+python -m bleep.cli classic-bip AA:BB:CC:DD:EE:FF get 1000001 --output /tmp/image.jpg
+
+# CLI – download thumbnail
+python -m bleep.cli classic-bip AA:BB:CC:DD:EE:FF thumb 1000001 --output /tmp/thumb.jpg
+```
+
+**Prerequisites:** `bluetooth-obexd --experimental` must be running.  The
+target device must be paired, trusted, and must advertise BIP (UUID `0x111A`
+or `0x111B`).
+
 ---
 
 ## 3  Logging
@@ -420,18 +795,42 @@ Enable verbose CLI flag `-v` to mirror *general* log on stdout.
 | `BlueZ obexd PBAP transfer failed; see logs for details` | Transfer aborted by remote, wrong repository selected | Check `/tmp/...debug.txt`; some feature phones only expose `int/pb.vcf` after `Select` – already handled; open an issue if persists |
 | `Failed to connect … Operation timed out` | Device busy or radio glitch | Retry; Classic connect uses 5×2 s back-off |
 | `org.freedesktop.DBus.Error.NoReply` or `Timed out waiting for response` during PBAP | Bluetooth controller stuck in half-open BR/EDR connection (BlueZ bug) | In `bluetoothctl` type `disconnect <MAC>` for the target device, wait 2-3 s, then re-run the command.  Power-cycling the phone is a second fallback. |
+| `OPP CreateSession failed` or `MAP CreateSession failed` | `bluetooth-obexd` not running, or device not paired/trusted | `sudo systemctl start bluetooth-obexd`; pair & trust device first |
+| `OPP transfer timed out` / `MAP transfer timed out` | Remote device did not complete OBEX transfer in time | Increase timeout, restart remote device, check logs |
+| `csend` / `crecv` → `Send failed` / `Receive failed` | RFCOMM socket disconnected or channel mismatch | Re-open with `copen`; verify channel with `cservices` |
 
 ---
 
 ## 5  Limitations / roadmap
 
-* Only **PBAP-PSE** is implemented.  Other OBEX profiles (MAP, SYNC) pending.
-* No automatic OBEX-AUTH support; relies on BlueZ trust settings (though `--auto-auth` flag available in CLI and debug mode).
-* Integration tests for Classic flows (task **bc-12**) completed.
+### Implemented
+* **PBAP** – phone-book dump via BlueZ obexd (CLI and debug mode).
+* **OPP** – file send and business-card pull via BlueZ obexd (debug mode `copp`).
+* **MAP** – folder browse, message list/get/push, inbox update, read/delete flags, multi-instance MAS selection (debug mode `cmap`).
+* **FTP** – remote filesystem browse, get/put/mkdir/rm/cp/mv via BlueZ obexd (debug mode `cftp`).
+* **RFCOMM data exchange** – raw send/recv/interactive session over any RFCOMM channel (debug mode `copen`/`csend`/`crecv`/`craw`).
+* **PAN** – Personal Area Networking client and server via `Network1`/`NetworkServer1` (debug mode `cpan`, CLI `classic-pan`).
+* **SPP** – Serial Port Profile registration via `ProfileManager1`/`Profile1`; incoming connections delivered as RFCOMM sockets (debug mode `cspp`, CLI `classic-spp`).
+
+### Current limitations
+* No automatic OBEX-AUTH support; relies on BlueZ trust settings (though `--auto-auth` flag available for PBAP in CLI and debug mode).
+* Integration tests for Classic flows (task **bc-12**) completed; tests for new RFCOMM/OPP/MAP commands pending.
+
+### Not yet implemented (future expansion)
+* ~~**OBEX FTP**~~ – implemented in v2.7.5 (see `cftp` debug command).
+* ~~**SYNC (IrMC Sync)**~~ – implemented in v2.7.11 (`csync`, `classic-sync`).
+* ~~**MAP MNS**~~ – implemented in v2.7.7 via `PropertiesChanged` signal monitoring on `Message1` objects (`cmap monitor`, `classic-map monitor`).
+* ~~**MAP multi-instance**~~ – implemented in v2.7.8 via `--instance` flag on `cmap` and `classic-map` (`Channel` byte in `CreateSession`); `cmap instances` / `classic-map instances` for SDP-based discovery.
+* ~~**BIP (Basic Imaging Profile)**~~ – implemented in v2.7.12 (`cbip`, `classic-bip`).  **Experimental** – requires `obexd --experimental`.
+* **Raw OBEX over RFCOMM** – design document complete (`bleep/protocols/obex_design.md`).  Implementation planned for v2.7.13+.  Bypasses `obexd` to implement OBEX protocol directly on top of `classic_rfccomm_open`.
+* **L2CAP raw channel access** – design document complete (`bleep/protocols/l2cap_design.md`).  Implementation planned for v2.7.13+.  Raw data exchange over L2CAP (non-RFCOMM) channels.
+* ~~**CLI sub-commands for OPP/MAP/FTP**~~ – implemented in v2.7.6 (`classic-opp`, `classic-map`, `classic-ftp`).
+* ~~**SPP serial port emulation**~~ – implemented in v2.7.10 via `ProfileManager1.RegisterProfile`. Debug: `cspp`; CLI: `classic-spp`.
+* ~~**PAN (Personal Area Networking)**~~ – implemented in v2.7.9 via `Network1` (client) and `NetworkServer1` (server). Debug: `cpan`; CLI: `classic-pan`.
 
 ---
 
-*Last updated: 2025-11-09 (Enhanced SDP attributes, debug mode, connectionless queries, version detection, comprehensive SDP analysis, debug mode PBAP command, debug mode connectionless SDP discovery)* 
+*Last updated: 2026-03-03 (Raw OBEX & L2CAP design docs, Basic Imaging Profile, IrMC Synchronization, SPP serial port profile, PAN networking, MAP multi-instance MAS selection, MAP MNS monitoring, metadata queries, CLI sub-commands, RFCOMM data exchange, OPP, MAP, FTP, transfer-poller dedup)*
 
 ---
 
@@ -453,6 +852,38 @@ Enable verbose CLI flag `-v` to mirror *general* log on stdout.
 | bc-11 | Write documentation for Classic mode & update README TOC | ✅ completed |
 | bc-12 | Integration tests for Classic flow incl. PBAP | ✅ completed |
 | bc-13 | Update CHANGELOG / todo_tracker after full feature set | ✅ completed |
+| bc-20 | RFCOMM data-exchange commands (`copen`, `csend`, `crecv`, `craw`) | ✅ completed |
+| bc-21 | OPP D-Bus layer + ops layer + `copp` debug command | ✅ completed |
+| bc-22 | MAP D-Bus layer + ops layer + `cmap` debug command | ✅ completed |
+| bc-23 | Value-parsing utility extraction (`debug_utils.py`) | ✅ completed |
+| bc-24 | Future expansion documentation (FTP, SYNC, MNS, BIP, SPP, PAN) | ✅ completed |
+| bc-25 | Updated `bl_classic_mode.md` with new command documentation and feature tracker | ✅ completed |
+| bc-26 | Shared OBEX transfer poller `_obex_common.py` | ✅ completed |
+| bc-27 | FTP D-Bus layer `obex_ftp.py` (`FtpSession`) | ✅ completed |
+| bc-28 | FTP operations layer `classic_ftp.py` | ✅ completed |
+| bc-29 | FTP debug command `cftp` + constants + dispatch wiring | ✅ completed |
+| bc-30 | CLI `classic-opp` command (send / pull) | ✅ completed |
+| bc-31 | CLI `classic-map` command (folders / list / get / push / inbox) with `--type` filter | ✅ completed |
+| bc-32 | CLI `classic-ftp` command (ls / get / put / mkdir / rm) | ✅ completed |
+| bc-33 | MAP MNS notification watch via `PropertiesChanged` signals | ✅ completed |
+| bc-34 | `MapSession.get_supported_types()` and `list_filter_fields()` | ✅ completed |
+| bc-35 | Debug `cmap monitor/types/fields` + CLI `classic-map types/fields/monitor` | ✅ completed |
+| bc-36 | MAP multi-instance MAS selection (`--instance` flag, `cmap instances`, SDP discovery) | ✅ completed |
+| bc-37 | PAN constants: `NETWORK_INTERFACE`, `NETWORK_SERVER_INTERFACE`, PAN UUIDs | ✅ completed |
+| bc-38 | PAN D-Bus wrapper `dbuslayer/network.py` (`NetworkClient` + `NetworkServer`) | ✅ completed |
+| bc-39 | PAN operations layer `classic_pan.py` + debug command `cpan` | ✅ completed |
+| bc-40 | CLI `classic-pan` command (connect/disconnect/status/serve/unserve) | ✅ completed |
+| bc-41 | SPP D-Bus layer `spp_profile.py` (`SppProfile` + `SppManager`) | ✅ completed |
+| bc-42 | SPP debug command `cspp` (register/unregister/status) + CLI `classic-spp` | ✅ completed |
+| bc-43 | Constants `PROFILE_MANAGER_INTERFACE`, `PROFILE_INTERFACE` + ops layer | ✅ completed |
+| bc-44 | SYNC D-Bus layer `dbuslayer/obex_sync.py` (`SyncSession`, target `"sync"`) | ✅ completed |
+| bc-45 | SYNC debug command `csync` (get/put) + CLI `classic-sync` subparser | ✅ completed |
+| bc-46 | SYNC operations layer `ble_ops/classic_sync.py` + constants | ✅ completed |
+| bc-47 | BIP D-Bus layer `dbuslayer/obex_bip.py` (`BipSession`, target `"bip-avrcp"`, experimental) | ✅ completed |
+| bc-48 | BIP debug command `cbip` (props/get/thumb) + CLI `classic-bip` subparser | ✅ completed |
+| bc-49 | BIP operations layer `ble_ops/classic_bip.py` + constants | ✅ completed |
+| bc-50 | Design doc: raw OBEX framing over RFCOMM (`bleep/protocols/obex_design.md`) | ✅ completed |
+| bc-51 | Design doc: L2CAP raw channel access (`bleep/protocols/l2cap_design.md`) | ✅ completed |
 
 Legend: ⏱️ pending 🔄 in-progress ✅ completed 
 
@@ -467,4 +898,15 @@ Legend: ⏱️ pending 🔄 in-progress ✅ completed
 | Classic connection (`cconnect`) | ✅ |
 | Classic services listing (`cservices`) | ✅ |
 | Classic PBAP dump (CLI `classic-pbap` and debug mode `pbap`) | ✅ |
-| BLE scan presets (shared CLI `bleep scan --variant`) | ✅ | 
+| RFCOMM data socket (`copen` / `csend` / `crecv`) | ✅ |
+| Interactive RFCOMM session (`craw`) | ✅ |
+| Object Push Profile (`copp send` / `copp pull`) | ✅ |
+| Message Access Profile (`cmap folders\|list\|get\|push\|inbox`) | ✅ |
+| BLE scan presets (shared CLI `bleep scan --variant`) | ✅ |
+| OBEX FTP (`cftp ls\|cd\|get\|put\|mkdir\|rm\|cp\|mv`) | ✅ |
+| SYNC profile | ✅ |
+| MAP MNS notification monitoring (`cmap monitor`, `classic-map monitor`) | ✅ |
+| MAP multi-instance MAS selection (`--instance`, `cmap instances`) | ✅ |
+| CLI sub-commands (`classic-opp`, `classic-map`, `classic-ftp`) | ✅ |
+| PAN networking (`cpan`, `classic-pan`) | ✅ |
+| SPP serial port profile (`cspp`, `classic-spp`) | ✅ | | Basic Imaging Profile (`cbip`, `classic-bip`) [experimental] | ✅ |

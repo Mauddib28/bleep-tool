@@ -1,4 +1,9 @@
-"""Classic Bluetooth commands for debug mode (cscan, cconnect, cservices, ckeep, csdp, pbap)."""
+"""Classic Bluetooth commands for debug mode.
+
+Discovery / connection: cscan, cconnect, cservices, ckeep, csdp, pbap.
+Data-exchange / OBEX:   see ``debug_classic_data.py`` (copen, csend, crecv,
+                        craw, copp, cmap).
+"""
 
 from __future__ import annotations
 

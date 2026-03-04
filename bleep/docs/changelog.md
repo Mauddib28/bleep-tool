@@ -1,3 +1,524 @@
+## v2.7.14 – debug_classic_data.py Module Split (2026-03-04)
+
+### Refactored
+
+* **`bleep/modes/debug_classic_data.py`** — split from a 1,192-line monolith
+  into three focused sub-modules to improve maintainability:
+  * **`debug_classic_rfcomm.py`** (~378 lines) — `cmd_copen`, `cmd_csend`,
+    `cmd_crecv`, `cmd_craw`, plus shared helpers `_resolve_rfcomm_channel()`
+    and `_ensure_classic_connected()`.
+  * **`debug_classic_obex.py`** (~646 lines) — `cmd_copp`, `cmd_cmap`,
+    `cmd_cftp`, `cmd_csync`, `cmd_cbip`, plus shared `_print_obex_error_hints()`.
+  * **`debug_classic_profiles.py`** (~200 lines) — `cmd_cpan`, `cmd_cspp`.
+  * **`debug_classic_data.py`** (49-line shim) — re-exports all 11 `cmd_*`
+    symbols so existing imports from `debug.py` work without modification.
+
+### Fixed
+
+* **`cmd_csync` / `cmd_cbip` signature bug** — both functions had reversed
+  parameter order (`state, args` instead of `args, state`) and referenced the
+  non-existent `state.bdaddr` attribute.  Corrected to use the standard
+  `(args: List[str], state: DebugState)` signature with the
+  `state.current_device.mac_address` pattern used by all other commands.
+
+---
+
+## v2.7.13 – Raw OBEX & L2CAP Design Documents (2026-03-03)
+
+### Added
+
+* **`bleep/protocols/` package** (new) — low-level protocol implementations
+  that operate directly on raw sockets rather than through BlueZ D-Bus.
+  Currently contains design documentation only; implementation is planned for
+  future versions.
+* **Raw OBEX design document** (`bleep/protocols/obex_design.md`) — complete
+  design for a raw OBEX packet codec and client session state machine over
+  RFCOMM, bypassing `obexd`.  Covers:
+  - OBEX packet structure, opcodes, response codes, header format
+  - Connect handshake with Target header for profile selection
+  - Proposed `ObexPacket`, `ObexHeader`, `ObexClient` API
+  - Multi-packet GET/PUT transfer handling
+  - Transport independence (RFCOMM, L2CAP, TCP for testing)
+  - Integration plan with existing operations layer (`--raw` backend flag)
+  - Phased implementation roadmap (v2.7.13–v2.7.15)
+* **L2CAP design document** (`bleep/protocols/l2cap_design.md`) — complete
+  design for raw L2CAP channel access via `socket.AF_BLUETOOTH` /
+  `BTPROTO_L2CAP`.  Covers:
+  - L2CAP socket types (SEQPACKET, DGRAM, STREAM)
+  - Well-known PSM values from Bluetooth SIG Assigned Numbers
+  - Socket options (security levels, modes, PHY, channel policy)
+  - Proposed `l2cap_open()`, `l2cap_listen()`, `L2capConnection` API
+  - Security level helpers and constants
+  - Debug commands (`l2open`, `l2send`, `l2recv`, `l2raw`, `l2listen`)
+  - SDP-based dynamic PSM discovery
+  - BLE L2CAP CoC (Connection-oriented Channels) support plan
+  - Phased implementation roadmap (v2.7.13–v2.7.15+)
+
+### Documentation
+
+* `bl_classic_mode.md`: "Not yet implemented" section updated (raw OBEX and
+  L2CAP now reference design docs), bc-50 and bc-51 added to tracker and
+  marked completed, feature tracker updated.
+* `todo_tracker.md`: bc-50 and bc-51 marked completed.
+* `changelog.md`: this entry.
+
+### Modified files
+
+* `bleep/__init__.py` (version → 2.7.13)
+* `bleep/protocols/__init__.py` (new)
+* `bleep/protocols/obex_design.md` (new)
+* `bleep/protocols/l2cap_design.md` (new)
+* `bleep/docs/bl_classic_mode.md`
+* `bleep/docs/todo_tracker.md`
+* `bleep/docs/changelog.md`
+
+---
+
+## v2.7.12 – Basic Imaging Profile (experimental) (2026-03-03)
+
+### Added
+
+* **Basic Imaging Profile (BIP)** – retrieve image properties, download
+  full images, and download thumbnails via the BlueZ **experimental**
+  `Image1` interface (session target `"bip-avrcp"`):
+  - D-Bus layer: `dbuslayer/obex_bip.py` with `BipSession` context manager
+    wrapping `Properties(handle)`, `Get(targetfile, handle, description)`,
+    and `GetThumbnail(targetfile, handle)`.
+  - Operations layer: `ble_ops/classic_bip.py` with `get_properties()`,
+    `get_image()`, `get_thumbnail()`, service detection, and obs-DB
+    integration.
+  - Debug command: `cbip props|get|thumb <handle> [target_file]`.
+  - CLI subparser: `classic-bip <MAC> props|get|thumb <handle> [--output]
+    [--timeout]`.
+* **Constants:** `OBEX_IMAGE_INTERFACE`, `BIP_UUID`, `BIP_UUID_SHORT`,
+  `BIP_RESPONDER_UUID`, `BIP_RESPONDER_UUID_SHORT` added to
+  `bt_ref/constants.py`.
+
+### Changed
+
+* `debug.py` module docstring updated to include `cbip`.
+* `debug_classic_data.py` module docstring updated.
+
+### Documentation
+
+* `bl_classic_mode.md`: new section 2.12, command reference table updated,
+  feature tracker updated (BIP → ✅), "Not yet implemented" section updated
+  (SYNC and BIP marked as implemented), bc-47 through bc-49 added and marked
+  completed.
+* `todo_tracker.md`: bc-47 through bc-49 marked completed.
+* `changelog.md`: this entry.
+
+### Modified files
+
+* `bleep/__init__.py` (version → 2.7.12)
+* `bleep/bt_ref/constants.py`
+* `bleep/dbuslayer/obex_bip.py` (new)
+* `bleep/ble_ops/classic_bip.py` (new)
+* `bleep/modes/debug_classic_data.py`
+* `bleep/modes/debug.py`
+* `bleep/cli.py`
+* `bleep/docs/bl_classic_mode.md`
+* `bleep/docs/todo_tracker.md`
+* `bleep/docs/changelog.md`
+
+### Notes
+
+* `Image1` is marked **[experimental]** in BlueZ.  `bluetooth-obexd` must be
+  started with `--experimental` for BIP to function.  The API may change or
+  be removed without notice.
+
+---
+
+## v2.7.11 – IrMC Synchronization Profile (2026-03-03)
+
+### Added
+
+* **IrMC Synchronization profile** – download or upload an entire phonebook via
+  the legacy OBEX Synchronization1 interface (UUID `0x1104`):
+  - D-Bus layer: `dbuslayer/obex_sync.py` with `SyncSession` context manager
+    wrapping `SetLocation`, `GetPhonebook`, `PutPhonebook` (session target `"sync"`).
+  - Operations layer: `ble_ops/classic_sync.py` with `set_location()`,
+    `get_phonebook()`, `put_phonebook()`, service detection, and obs-DB
+    integration.
+  - Debug command: `csync get [target] [--location int|sim1]`,
+    `csync put <source> [--location int|sim1]`.
+  - CLI subparser: `classic-sync <MAC> get|put [--location] [--timeout]`.
+* **Constants:** `OBEX_SYNC_INTERFACE`, `SYNC_UUID`, `SYNC_UUID_SHORT`,
+  `SYNC_CMD_UUID`, `SYNC_CMD_UUID_SHORT` added to `bt_ref/constants.py`.
+
+### Changed
+
+* `debug.py` module docstring updated to include `csync`.
+* `debug_classic_data.py` module docstring updated.
+
+### Documentation
+
+* `bl_classic_mode.md`: new section 2.11, command reference table updated,
+  feature tracker updated (SYNC → ✅), bc-44 through bc-46 added and marked
+  completed.
+* `todo_tracker.md`: bc-44 through bc-46 marked completed.
+* `changelog.md`: this entry.
+
+### Modified files
+
+* `bleep/__init__.py` (version → 2.7.11)
+* `bleep/bt_ref/constants.py`
+* `bleep/dbuslayer/obex_sync.py` (new)
+* `bleep/ble_ops/classic_sync.py` (new)
+* `bleep/modes/debug_classic_data.py`
+* `bleep/modes/debug.py`
+* `bleep/cli.py`
+* `bleep/docs/bl_classic_mode.md`
+* `bleep/docs/todo_tracker.md`
+* `bleep/docs/changelog.md`
+
+---
+
+## v2.7.10 – SPP Serial Port Profile (2026-03-03)
+
+### Added
+
+* **SPP serial port profile** – register a custom Serial Port Profile via BlueZ
+  `ProfileManager1.RegisterProfile` on the system bus; incoming RFCOMM
+  connections are delivered as Python sockets:
+  - D-Bus layer: `dbuslayer/spp_profile.py` with `SppProfile(dbus.service.Object)`
+    implementing `Profile1` (`NewConnection` delivers fd, `RequestDisconnection`,
+    `Release`) and `SppManager` for lifecycle management (register/unregister).
+  - Operations layer: `ble_ops/classic_spp.py` with `register()`, `unregister()`,
+    `status()`, `is_registered()`.
+  - Debug mode: `cspp` command with sub-commands `register [--channel N] [--name]
+    [--role]`, `unregister`, `status`. Incoming connections automatically set
+    `state.rfcomm_sock` for use with `csend`/`crecv`/`craw`.
+  - CLI: `classic-spp` with actions `register` (blocks until Ctrl+C, prints
+    received data), `unregister`, `status`.
+  - GLib MainLoop thread for D-Bus service object dispatch.
+
+* **Profile constants** in `bt_ref/constants.py`:
+  - `PROFILE_MANAGER_INTERFACE` (`org.bluez.ProfileManager1`)
+  - `PROFILE_INTERFACE` (`org.bluez.Profile1`)
+
+### Documentation
+
+* `bl_classic_mode.md` – new section 2.10 (`cspp` / `classic-spp`); updated
+  command reference table, "Implemented" list, bc-ID tracker (bc-41 – bc-43),
+  feature tracker.
+* `todo_tracker.md` – bc-41 through bc-43 marked complete.
+* `changelog.md` – this entry.
+
+### Modified files
+
+* `bleep/__init__.py` – version `2.7.9` → `2.7.10`
+* `bleep/bt_ref/constants.py` – `PROFILE_MANAGER_INTERFACE`, `PROFILE_INTERFACE`
+* `bleep/dbuslayer/spp_profile.py` (new) – `SppProfile`, `SppManager`
+* `bleep/ble_ops/classic_spp.py` (new) – operations layer
+* `bleep/modes/debug_classic_data.py` – `cmd_cspp`
+* `bleep/modes/debug.py` – dispatch + help
+* `bleep/cli.py` – `classic-spp` subparser + handler
+* `bleep/docs/bl_classic_mode.md`
+* `bleep/docs/todo_tracker.md`
+* `bleep/docs/changelog.md`
+
+---
+
+## v2.7.9 – PAN Networking (2026-03-03)
+
+### Added
+
+* **Personal Area Networking (PAN)** – client and server support via BlueZ
+  `org.bluez.Network1` and `org.bluez.NetworkServer1` on the system bus:
+  - D-Bus layer: `dbuslayer/network.py` with `NetworkClient` (per-device:
+    `Connect(role)`, `Disconnect()`, properties `Connected`/`Interface`/`UUID`)
+    and `NetworkServer` (per-adapter: `Register(role, bridge)`, `Unregister(role)`).
+  - Operations layer: `ble_ops/classic_pan.py` with `connect()`, `disconnect()`,
+    `status()`, `register_server()`, `unregister_server()`.
+  - Debug mode: `cpan` command with sub-commands `connect [role]`, `disconnect`,
+    `status`, `server register [role] [bridge]`, `server unregister [role]`.
+  - CLI: `classic-pan` with actions `connect`, `disconnect`, `status`, `serve`,
+    `unserve`; role choices `nap`/`panu`/`gn`.
+
+* **PAN constants** in `bt_ref/constants.py`:
+  - `PAN_PANU_UUID` / `PAN_PANU_UUID_SHORT` (`0x1115`)
+  - `PAN_NAP_UUID` / `PAN_NAP_UUID_SHORT` (`0x1116`)
+  - `PAN_GN_UUID` / `PAN_GN_UUID_SHORT` (`0x1117`)
+  - `NETWORK_INTERFACE` (`org.bluez.Network1`)
+  - `NETWORK_SERVER_INTERFACE` (`org.bluez.NetworkServer1`)
+
+### Documentation
+
+* `bl_classic_mode.md` – new section 2.9 (`cpan` / `classic-pan`); updated
+  command reference table, "Implemented" list, bc-ID tracker (bc-37 – bc-40),
+  feature tracker.
+* `todo_tracker.md` – bc-37 through bc-40 marked complete.
+* `changelog.md` – this entry.
+
+### Modified files
+
+* `bleep/__init__.py` – version `2.7.8` → `2.7.9`
+* `bleep/bt_ref/constants.py` – PAN UUIDs + D-Bus interface constants
+* `bleep/dbuslayer/network.py` (new) – `NetworkClient`, `NetworkServer`
+* `bleep/ble_ops/classic_pan.py` (new) – operations layer
+* `bleep/modes/debug_classic_data.py` – `cmd_cpan`
+* `bleep/modes/debug.py` – dispatch + help
+* `bleep/cli.py` – `classic-pan` subparser + handler
+* `bleep/docs/bl_classic_mode.md`
+* `bleep/docs/todo_tracker.md`
+* `bleep/docs/changelog.md`
+
+---
+
+## v2.7.8 – MAP Multi-Instance MAS Selection (2026-03-03)
+
+### Added
+
+* **MAP multi-instance MAS selection** – target specific MAS instances on devices
+  that expose multiple Message Access Service entries (e.g. separate SMS and email):
+  - D-Bus layer: `MapSession.__init__()` gains optional `instance` parameter; the
+    RFCOMM channel is passed as `Channel` byte to `CreateSession` (per
+    `org.bluez.obex.Client1`).
+  - Operations layer: all `classic_map.py` functions (`list_folders`, `list_messages`,
+    `get_message`, `push_message`, `update_inbox`, `get_supported_types`,
+    `list_filter_fields`, `start_message_monitor`) accept `instance` kwarg.
+  - New `list_mas_instances(mac)` function discovers MAP-MSE SDP records and
+    returns their RFCOMM channel numbers for instance targeting.
+  - Debug mode: `cmap instances` sub-command; all `cmap` sub-commands accept
+    `--instance <channel>`.
+  - CLI: `classic-map --instance <channel>` flag; `classic-map <MAC> instances`
+    action for SDP-based discovery.
+
+### Changed
+
+* Internal helper `_session()` added to `classic_map.py` to reduce boilerplate
+  when constructing `MapSession` with optional `instance`.
+
+### Documentation
+
+* `bl_classic_mode.md` – new section 2.7.6 (Multi-Instance MAS Selection);
+  updated command reference table, "Implemented" list, bc-ID tracker (bc-36),
+  feature tracker.
+* `todo_tracker.md` – bc-36 marked complete.
+* `changelog.md` – this entry.
+
+### Modified files
+
+* `bleep/__init__.py` – version `2.7.7` → `2.7.8`
+* `bleep/dbuslayer/obex_map.py` – `instance` parameter + `Channel` byte
+* `bleep/ble_ops/classic_map.py` – `instance` kwarg threaded through all functions;
+  `list_mas_instances()` added
+* `bleep/modes/debug_classic_data.py` – `--instance` parsing; `instances` sub-cmd
+* `bleep/cli.py` – `--instance` flag on `classic-map`; `instances` action
+* `bleep/docs/bl_classic_mode.md`
+* `bleep/docs/todo_tracker.md`
+* `bleep/docs/changelog.md`
+
+---
+
+## v2.7.7 – MAP MNS Notification Monitoring & Metadata Queries (2026-03-03)
+
+### Added
+
+* **MAP MNS notification monitoring** – real-time monitoring of incoming message notifications via D-Bus `PropertiesChanged` signals on `Message1` objects within the MAP session:
+  - D-Bus layer: `MapSession.start_notification_watch(callback)` and `stop_notification_watch()` using a background GLib MainLoop thread.
+  - Operations layer: `start_message_monitor()` and `stop_message_monitor()` with session lifecycle management.
+  - Debug mode: `cmap monitor start|stop` sub-commands.
+  - CLI: `classic-map <MAC> monitor` (blocks until Ctrl+C).
+  - Graceful teardown on `MapSession.close()`.
+
+* **MAP metadata queries**:
+  - `MapSession.get_supported_types()` – reads `SupportedTypes` property from `MessageAccess1` (returns e.g. `EMAIL`, `SMS_GSM`, `SMS_CDMA`, `MMS`, `IM`).
+  - `MapSession.list_filter_fields()` – calls `ListFilterFields()` method (returns field names for `ListMessages` filtering).
+  - Operations wrappers: `get_supported_types()`, `list_filter_fields()`.
+  - Debug mode: `cmap types`, `cmap fields` sub-commands.
+  - CLI: `classic-map <MAC> types`, `classic-map <MAC> fields`.
+
+### Changed
+
+* **`obex_map.py`** – added GLib MainLoop imports (with graceful fallback), MNS signal handling, metadata query methods, and auto-cleanup in `close()`.
+* **`classic_map.py`** – added `_active_monitors` dict for session lifecycle, new public functions for MNS and metadata.
+* **`debug_classic_data.py`** – extended `cmd_cmap` help text and added `types`, `fields`, `monitor` sub-commands.
+* **`cli.py`** – added `types`, `fields`, `monitor` sub-parsers to `classic-map`; monitor uses `signal.pause()` for blocking.
+
+### Documentation
+
+* **`bl_classic_mode.md`** – added MNS monitoring and metadata query documentation, updated command reference table, bc-ID tracker (bc-33 through bc-35), feature tracker, and limitations/roadmap.
+* **`todo_tracker.md`** – marked bc-33 through bc-35 complete.
+* **`changelog.md`** – this entry.
+
+### Files Modified
+
+* `bleep/__init__.py` — version bumped to 2.7.7
+* `bleep/dbuslayer/obex_map.py` — MNS watch, metadata queries, GLib integration
+* `bleep/ble_ops/classic_map.py` — MNS lifecycle, metadata wrappers
+* `bleep/modes/debug_classic_data.py` — `cmap types|fields|monitor` sub-commands
+* `bleep/cli.py` — `classic-map types|fields|monitor` sub-parsers and handlers
+* `bleep/docs/bl_classic_mode.md` — expanded documentation
+* `bleep/docs/todo_tracker.md` — marked Phase 3 items complete
+* `bleep/docs/changelog.md` — this entry
+
+---
+
+## v2.7.6 – CLI Sub-Commands for OPP, MAP, and FTP (2026-03-03)
+
+### Added
+
+* **`classic-opp` CLI command** – top-level CLI for Object Push Profile:
+  - `classic-opp <MAC> send <file> [--timeout N]` – send a file via OPP.
+  - `classic-opp <MAC> pull [--out dest.vcf] [--timeout N]` – pull the default business card.
+
+* **`classic-map` CLI command** – top-level CLI for Message Access Profile:
+  - `classic-map <MAC> folders` – list message folders.
+  - `classic-map <MAC> list [folder] [--type SMS|MMS]` – list messages with optional type filter.
+  - `classic-map <MAC> get <handle> [--out dest.txt]` – download a message.
+  - `classic-map <MAC> push <file> [folder]` – push/send a bMessage file.
+  - `classic-map <MAC> inbox` – trigger inbox update on remote device.
+
+* **`classic-ftp` CLI command** – top-level CLI for File Transfer Profile:
+  - `classic-ftp <MAC> ls [path]` – list remote folder contents.
+  - `classic-ftp <MAC> get <remote> [--out dest] [--path folder] [--timeout N]` – download a file.
+  - `classic-ftp <MAC> put <file> [--name remote_name] [--path folder] [--timeout N]` – upload a file.
+  - `classic-ftp <MAC> mkdir <name> [--path folder]` – create a remote folder.
+  - `classic-ftp <MAC> rm <name> [--path folder]` – delete a remote file or folder.
+
+### Changed
+
+* **`MapSession.list_messages()`** (`obex_map.py`) – now accepts optional `filters` dict (passed to D-Bus `ListMessages` as filter properties).
+* **`classic_map.list_messages()`** (`classic_map.py`) – now accepts optional `filters` kwarg for type filtering.
+
+### Documentation
+
+* **`bl_classic_mode.md`** – added CLI command entries to reference table, updated bc-ID tracker (bc-30 through bc-32), feature tracker, and limitations/roadmap.
+* **`todo_tracker.md`** – marked bc-30 through bc-32 complete.
+* **`changelog.md`** – this entry.
+
+### Files Modified
+
+* `bleep/__init__.py` — version bumped to 2.7.6
+* `bleep/cli.py` — added `classic-opp`, `classic-map`, `classic-ftp` subparsers and execution handlers
+* `bleep/dbuslayer/obex_map.py` — `list_messages()` gains `filters` parameter
+* `bleep/ble_ops/classic_map.py` — `list_messages()` gains `filters` kwarg pass-through
+* `bleep/docs/bl_classic_mode.md` — expanded documentation
+* `bleep/docs/todo_tracker.md` — marked Phase 2 items complete
+* `bleep/docs/changelog.md` — this entry
+
+---
+
+## v2.7.5 – OBEX File Transfer Profile & Transfer Poller Deduplication (2026-03-03)
+
+### Added
+
+* **File Transfer Profile (`cftp`)** (debug mode) – browse and transfer files on remote Classic devices via OBEX FTP (UUID `0x1106`, `org.bluez.obex.FileTransfer1`):
+  - D-Bus layer: `bleep/dbuslayer/obex_ftp.py` with `FtpSession` context manager wrapping `FileTransfer1`.
+  - Operations layer: `bleep/ble_ops/classic_ftp.py` with logging, service detection, and obs-DB hooks.
+  - `cftp` debug command with sub-commands: `ls`, `cd`, `get`, `put`, `mkdir`, `rm`, `cp`, `mv`.
+  - Constants: `FTP_UUID`, `FTP_UUID_SHORT`; `OBEX_PROFILE_UUIDS` updated.
+
+* **Shared OBEX transfer poller** (`bleep/dbuslayer/_obex_common.py`) – extracted duplicated `_poll_transfer()` logic from `obex_opp.py`, `obex_map.py`, and `obex_pbap.py` into a single `poll_obex_transfer()` function. Also provides `cancel_obex_transfer()` and `unwrap_dbus()` utilities.
+
+* **OBEX expansion roadmap** documented in `todo_tracker.md` – nine-phase plan (v2.7.5 – v2.7.13+) covering FTP, CLI wiring, MAP MNS, MAP multi-instance, PAN, SPP, SYNC, BIP, and raw OBEX/L2CAP.
+
+### Changed
+
+* **`obex_opp.py`** – replaced inline `_poll_transfer()` with shared `poll_obex_transfer()` from `_obex_common.py`. Removed unused `time` import.
+* **`obex_map.py`** – replaced inline `_poll_transfer()` and `_unwrap()` with shared functions from `_obex_common.py`. Removed unused `time` import.
+* **`obex_pbap.py`** – replaced inline transfer polling loop with shared `poll_obex_transfer()`. Removed unused `time`, `OBEX_TRANSFER_INTERFACE`, and `DBUS_PROPERTIES` imports.
+
+### Documentation
+
+* **`bl_classic_mode.md`** – added section 2.8 (`cftp` commands), updated command reference table, limitations/roadmap, bc-ID tracker (bc-26 through bc-29), and feature tracker.
+* **`todo_tracker.md`** – added OBEX Expansion Roadmap section with nine phases and bc-26 through bc-51 entries.
+* **`changelog.md`** – this entry.
+
+### Files Added
+
+* `bleep/dbuslayer/_obex_common.py` — shared OBEX transfer polling, cancel, and D-Bus type unwrapping
+* `bleep/dbuslayer/obex_ftp.py` — FTP D-Bus layer (`FtpSession` class)
+* `bleep/ble_ops/classic_ftp.py` — FTP operations layer
+
+### Files Modified
+
+* `bleep/__init__.py` — version bumped to 2.7.5
+* `bleep/bt_ref/constants.py` — added `FTP_UUID`, `FTP_UUID_SHORT`; updated `OBEX_PROFILE_UUIDS`
+* `bleep/dbuslayer/obex_opp.py` — refactored to use shared poller
+* `bleep/dbuslayer/obex_map.py` — refactored to use shared poller and unwrap
+* `bleep/dbuslayer/obex_pbap.py` — refactored to use shared poller
+* `bleep/modes/debug_classic_data.py` — added `cmd_cftp` function
+* `bleep/modes/debug.py` — updated imports, dispatch table, help text for `cftp`
+* `bleep/docs/bl_classic_mode.md` — expanded documentation
+* `bleep/docs/todo_tracker.md` — OBEX expansion roadmap
+* `bleep/docs/changelog.md` — this entry
+
+---
+
+## v2.7.4 – Classic Channel Data Exchange Expansion (2026-03-03)
+
+### Added
+
+* **RFCOMM data-exchange commands** (debug mode) – new `copen`, `csend`, `crecv`, `craw` commands provide full send/receive capability over Classic RFCOMM channels:
+  - `copen` opens a dedicated data socket (separate from the keep-alive socket) by channel number, service name, or first available.
+  - `csend` sends data with format support (`hex:`, `str:`, `file:`, `uint8:`, etc.) matching the BLE `write` format vocabulary.
+  - `crecv` receives data with configurable timeout, buffer size, hex dump display, and save-to-file.
+  - `craw` starts an interactive bidirectional RFCOMM session with a background reader thread.
+
+* **Object Push Profile (`copp`)** (debug mode) – send files or pull business cards via OPP (UUID `0x1105`):
+  - D-Bus layer: `bleep/dbuslayer/obex_opp.py` wrapping `org.bluez.obex.ObjectPush1`.
+  - Operations layer: `bleep/ble_ops/classic_opp.py` with logging and service detection.
+  - `copp send <file>` and `copp pull [dest.vcf]` debug commands.
+
+* **Message Access Profile (`cmap`)** (debug mode) – browse and manage SMS/MMS via MAP (UUIDs `0x1132`/`0x1134`):
+  - D-Bus layer: `bleep/dbuslayer/obex_map.py` with `MapSession` class wrapping `org.bluez.obex.MessageAccess1` and `org.bluez.obex.Message1`.
+  - Operations layer: `bleep/ble_ops/classic_map.py` with logging and service detection.
+  - `cmap` debug command with sub-commands: `folders`, `list`, `get`, `push`, `inbox`, `props`, `read`, `delete`.
+
+* **Shared value-parsing utility** (`bleep/modes/debug_utils.py`) – extracted from `debug_gatt.py` to avoid duplication. Both BLE `write` and Classic `csend` now share `parse_value()`. Also provides `hexdump()` and `VALUE_FORMAT_HELP`.
+
+* **`rfcomm_sock` field** on `DebugState` – dedicated data-exchange socket independent of `keepalive_sock`.
+
+### Changed
+
+* **`cmd_write` in `debug_gatt.py`** refactored to use shared `parse_value()` from `debug_utils.py` instead of inline parsing logic. Behaviour unchanged.
+
+* **`debug_classic.py`** module header expanded; now imports `select`, `threading`, and shared utilities. Internal `_resolve_rfcomm_channel()` and `_ensure_classic_connected()` helpers extracted for reuse across `copen`, `ckeep`, and `craw`.
+
+### Documentation
+
+* **`bl_classic_mode.md`** – added sections 2.7 (RFCOMM Data Exchange), 2.8 (OPP), 2.9 (MAP). Updated command reference table, limitations/roadmap (now documents 10 future expansion items), and feature tracker.
+* **`todo_tracker.md`** – added tracking entries bc-20 through bc-25.
+* **`changelog.md`** – this entry.
+
+### Future Expansion (documented, not implemented)
+
+* OBEX FTP (`org.bluez.obex.FileTransfer1`)
+* SYNC profile (`org.bluez.obex.Synchronization1`)
+* MAP MNS push notifications
+* MAP multi-instance MAS support
+* BIP (Basic Imaging Profile)
+* Raw OBEX over RFCOMM (bypassing obexd)
+* L2CAP raw channel access
+* CLI sub-commands for OPP/MAP (`classic-opp`, `classic-map`)
+* SPP serial port emulation via `ProfileManager1.RegisterProfile`
+* PAN networking via `org.bluez.Network1`
+
+### Files Added
+
+* `bleep/modes/debug_utils.py` — shared `parse_value()`, `hexdump()`, `VALUE_FORMAT_HELP`
+* `bleep/modes/debug_classic_data.py` — RFCOMM data-exchange + OBEX commands (split from `debug_classic.py`)
+* `bleep/dbuslayer/obex_opp.py` — OPP D-Bus layer
+* `bleep/dbuslayer/obex_map.py` — MAP D-Bus layer (`MapSession` class)
+* `bleep/ble_ops/classic_opp.py` — OPP operations layer
+* `bleep/ble_ops/classic_map.py` — MAP operations layer
+
+### Files Modified
+
+* `bleep/__init__.py` — version bumped to 2.7.4
+* `bleep/modes/debug_state.py` — added `rfcomm_sock` field
+* `bleep/modes/debug_classic.py` — trimmed; data-exchange commands moved to `debug_classic_data.py`
+* `bleep/modes/debug_gatt.py` — refactored `cmd_write` to use shared parser
+* `bleep/modes/debug.py` — updated imports (two classic modules), dispatch table, help text
+* `bleep/docs/bl_classic_mode.md` — expanded documentation
+* `bleep/docs/todo_tracker.md` — new tracking entries
+* `bleep/docs/changelog.md` — this entry
+
+---
+
 ## v2.7.3 – Classic Enumeration Robustness Fix (2026-03-02)
 
 ### Fixed

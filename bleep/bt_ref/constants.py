@@ -46,6 +46,90 @@ AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".Agent1"  # Correct: Standard BlueZ pair
 MESH_AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".mesh.ProvisioningAgent1"
 MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".AgentManager1"
 
+# BlueZ Profile Manager / Profile interfaces (system bus, per org.bluez.ProfileManager.rst)
+PROFILE_MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".ProfileManager1"
+PROFILE_INTERFACE = BLUEZ_SERVICE_NAME + ".Profile1"
+
+# ============================================================================
+# OBEX Interface Constants (BlueZ obexd – session bus)
+# ============================================================================
+# obexd runs on the session D-Bus under "org.bluez.obex".
+# Reference: BlueZ doc/org.bluez.obex.*.rst
+
+OBEX_SERVICE = "org.bluez.obex"
+OBEX_ROOT_PATH = "/org/bluez/obex"
+OBEX_CLIENT_INTERFACE = OBEX_SERVICE + ".Client1"
+OBEX_SESSION_INTERFACE = OBEX_SERVICE + ".Session1"
+OBEX_TRANSFER_INTERFACE = OBEX_SERVICE + ".Transfer1"
+OBEX_AGENT_INTERFACE = OBEX_SERVICE + ".Agent1"
+OBEX_AGENT_MANAGER_INTERFACE = OBEX_SERVICE + ".AgentManager1"
+
+# OBEX profile-specific interfaces
+OBEX_PBAP_INTERFACE = OBEX_SERVICE + ".PhonebookAccess1"
+OBEX_OPP_INTERFACE = OBEX_SERVICE + ".ObjectPush1"
+OBEX_MAP_INTERFACE = OBEX_SERVICE + ".MessageAccess1"
+OBEX_MAP_MESSAGE_INTERFACE = OBEX_SERVICE + ".Message1"
+OBEX_FTP_INTERFACE = OBEX_SERVICE + ".FileTransfer1"
+OBEX_SYNC_INTERFACE = OBEX_SERVICE + ".Synchronization1"
+OBEX_IMAGE_INTERFACE = OBEX_SERVICE + ".Image1"  # [experimental]
+
+# ============================================================================
+# Classic Profile UUIDs (Bluetooth SIG Assigned Numbers)
+# ============================================================================
+# 16-bit short forms and 128-bit canonical forms for Classic service detection.
+# Full list: bleep.bt_ref.uuids.SPEC_UUID_NAMES__SERV_CLASS
+
+# SPP (Serial Port Profile)
+SPP_UUID = "00001101-0000-1000-8000-00805f9b34fb"
+SPP_UUID_SHORT = "0x1101"
+
+# OPP (Object Push Profile)
+OPP_UUID = "00001105-0000-1000-8000-00805f9b34fb"
+OPP_UUID_SHORT = "0x1105"
+
+# PBAP (Phonebook Access Profile – PSE)
+PBAP_PSE_UUID = "0000112f-0000-1000-8000-00805f9b34fb"
+PBAP_PSE_UUID_SHORT = "0x112f"
+
+# FTP (OBEX File Transfer Profile)
+FTP_UUID = "00001106-0000-1000-8000-00805f9b34fb"
+FTP_UUID_SHORT = "0x1106"
+
+# MAP (Message Access Profile)
+MAP_MSE_UUID = "00001132-0000-1000-8000-00805f9b34fb"
+MAP_MSE_UUID_SHORT = "0x1132"
+MAP_UUID = "00001134-0000-1000-8000-00805f9b34fb"
+MAP_UUID_SHORT = "0x1134"
+
+# SYNC (IrMC Synchronization)
+SYNC_UUID = "00001104-0000-1000-8000-00805f9b34fb"
+SYNC_UUID_SHORT = "0x1104"
+SYNC_CMD_UUID = "00001107-0000-1000-8000-00805f9b34fb"
+SYNC_CMD_UUID_SHORT = "0x1107"
+
+# BIP (Basic Imaging Profile) — [experimental] in BlueZ
+BIP_UUID = "0000111a-0000-1000-8000-00805f9b34fb"
+BIP_UUID_SHORT = "0x111a"
+BIP_RESPONDER_UUID = "0000111b-0000-1000-8000-00805f9b34fb"
+BIP_RESPONDER_UUID_SHORT = "0x111b"
+
+# PAN (Personal Area Networking)
+PAN_PANU_UUID = "00001115-0000-1000-8000-00805f9b34fb"
+PAN_PANU_UUID_SHORT = "0x1115"
+PAN_NAP_UUID = "00001116-0000-1000-8000-00805f9b34fb"
+PAN_NAP_UUID_SHORT = "0x1116"
+PAN_GN_UUID = "00001117-0000-1000-8000-00805f9b34fb"
+PAN_GN_UUID_SHORT = "0x1117"
+
+# BlueZ PAN D-Bus interfaces (system bus, per org.bluez.Network.rst / NetworkServer.rst)
+NETWORK_INTERFACE = BLUEZ_SERVICE_NAME + ".Network1"
+NETWORK_SERVER_INTERFACE = BLUEZ_SERVICE_NAME + ".NetworkServer1"
+
+# Aggregate set for classic OBEX profile detection
+OBEX_PROFILE_UUIDS = frozenset({
+    OPP_UUID, FTP_UUID, PBAP_PSE_UUID, MAP_MSE_UUID, MAP_UUID,
+})
+
 # Result/Error Codes
 RESULT_OK = 0
 RESULT_ERR = 1

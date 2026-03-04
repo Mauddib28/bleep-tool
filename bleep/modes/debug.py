@@ -11,7 +11,8 @@ The shell is organised into focused submodules:
 - ``debug_dbus``      – D-Bus helpers, navigation (ls/cd/pwd), introspection
 - ``debug_connect``   – connect / disconnect / info
 - ``debug_gatt``      – GATT operations, notification callback
-- ``debug_classic``   – Classic BT commands (cscan, csdp, pbap, …)
+- ``debug_classic``   – Classic BT discovery (cscan, csdp, pbap, …)
+- ``debug_classic_data`` – Classic data exchange (copen, csend, crecv, craw, copp, cmap, cftp, csync, cbip)
 - ``debug_pairing``   – Pairing / agent commands
 - ``debug_scan``      – Scan / enumeration commands
 - ``debug_aoi``       – AOI analysis and database commands
@@ -69,6 +70,10 @@ from bleep.modes.debug_classic import (
     cmd_cscan, cmd_cconnect, cmd_cservices, cmd_ckeep,
     cmd_csdp, cmd_pbap,
 )
+from bleep.modes.debug_classic_data import (
+    cmd_copen, cmd_csend, cmd_crecv, cmd_craw,
+    cmd_copp, cmd_cmap, cmd_cftp, cmd_cpan, cmd_cspp, cmd_csync, cmd_cbip,
+)
 from bleep.modes.debug_pairing import cmd_agent, cmd_pair
 from bleep.modes.debug_scan import (
     cmd_scan, cmd_scann, cmd_scanp, cmd_scanb,
@@ -96,6 +101,17 @@ def _cmd_help(args, state):
     print("  disconnect                 - Disconnect from current device")
     print("  cservices                  - List RFCOMM service→channel map for Classic device")
     print("  ckeep [--first|--svc NAME|CHANNEL]|--close - Open/close keep-alive RFCOMM socket")
+    print("  copen [--first|--svc NAME|CHANNEL]|--close|--status - Open/close RFCOMM data socket")
+    print("  csend <hex:XX|str:XX|file:PATH|data>       - Send data over RFCOMM")
+    print("  crecv [--timeout N] [--size N] [--hex] [--save FILE] - Receive from RFCOMM")
+    print("  craw [channel|--svc NAME|--first] [--hex]  - Interactive RFCOMM send/recv session")
+    print("  copp send <file> | pull [dest.vcf]         - Object Push Profile (send/pull)")
+    print("  cmap folders|list|get|push|inbox|props|read|delete - Message Access Profile")
+    print("  cftp ls|cd|get|put|mkdir|rm|cp|mv           - File Transfer Profile (browse/transfer)")
+    print("  cpan connect|disconnect|status|server       - Personal Area Networking (PAN)")
+    print("  cspp register|unregister|status             - SPP serial port profile")
+    print("  csync get|put [--location int|sim1]         - IrMC Synchronization (phonebook)")
+    print("  cbip props|get|thumb <handle>               - Basic Imaging Profile [experimental]")
     print("  agent status|register|unregister - Pairing agent visibility/control (debug)")
     print("  pair <MAC> [--pin CODE] [--cap CAP] [--timeout SEC] - Pair with device (default: KeyboardDisplay)")
     print("  csdp <mac> [--connectionless] [--l2ping-count N] [--l2ping-timeout N] - SDP discovery")
@@ -160,6 +176,17 @@ def _build_dispatch_table(state: DebugState):
         "disconnect":    _wrap(cmd_disconnect),
         "cservices":     _wrap(cmd_cservices),
         "ckeep":         _wrap(cmd_ckeep),
+        "copen":         _wrap(cmd_copen),
+        "csend":         _wrap(cmd_csend),
+        "crecv":         _wrap(cmd_crecv),
+        "craw":          _wrap(cmd_craw),
+        "copp":          _wrap(cmd_copp),
+        "cmap":          _wrap(cmd_cmap),
+        "cftp":          _wrap(cmd_cftp),
+        "cpan":          _wrap(cmd_cpan),
+        "cspp":          _wrap(cmd_cspp),
+        "csync":         _wrap(cmd_csync),
+        "cbip":          _wrap(cmd_cbip),
         "agent":         _wrap(cmd_agent),
         "pair":          _wrap(cmd_pair),
         "csdp":          _wrap(cmd_csdp),

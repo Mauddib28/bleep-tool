@@ -42,11 +42,13 @@ dbg = 0
 # Default adapter
 DEFAULT_ADAPTER = "hci0"
 
-# D-Bus configuration
-DBUS_SERVICE = "org.bluez"
-DBUS_NAMESPACE = "/org/bluez/"
-DBUS_PROPERTIES = "org.freedesktop.DBus.Properties"
-DBUS_OBJECT_MANAGER = "org.freedesktop.DBus.ObjectManager"
+# D-Bus configuration – re-exported from the canonical source in bt_ref.constants
+from bleep.bt_ref.constants import (  # noqa: E402
+    BLUEZ_SERVICE_NAME as DBUS_SERVICE,
+    BLUEZ_NAMESPACE as DBUS_NAMESPACE,
+    DBUS_PROPERTIES,
+    DBUS_OM_IFACE as DBUS_OBJECT_MANAGER,
+)
 
 # Agent paths
 AGENT_PATH = "/test/agent"

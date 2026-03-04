@@ -13,6 +13,7 @@ import dbus
 
 from bleep.core.log import print_and_log, LOG__DEBUG, LOG__GENERAL
 from bleep.bt_ref.utils import get_name_from_uuid
+from bleep.modes.debug_utils import parse_value
 from bleep.ble_ops.conversion import format_device_class, decode_appearance, decode_pnp_id
 from bleep.ble_ops.modalias import format_modalias_info
 
@@ -433,37 +434,11 @@ def cmd_write(args: List[str], state: DebugState) -> None:
 
     value_str = args[1]
 
-    _PACK_MAP = {
-        'hex': None, 'str': None,
-        'uint8': 'B', 'int8': 'b',
-        'uint16': '<H', 'int16': '<h', 'uint16be': '>H', 'int16be': '>h',
-        'uint32': '<I', 'int32': '<i', 'uint32be': '>I', 'int32be': '>i',
-        'float': '<f', 'floatbe': '>f',
-        'double': '<d', 'doublebe': '>d',
-    }
-
     try:
-        if ':' in value_str:
-            fmt, val = value_str.split(':', 1)
-            fmt = fmt.lower()
-            if fmt == 'hex':
-                clean_val = ''.join(c for c in val if c in '0123456789abcdefABCDEF')
-                if len(clean_val) % 2 != 0:
-                    clean_val = '0' + clean_val
-                value = bytes.fromhex(clean_val)
-            elif fmt == 'str':
-                value = val.encode()
-            elif fmt in _PACK_MAP and _PACK_MAP[fmt] is not None:
-                pack_fmt = _PACK_MAP[fmt]
-                if 'f' in pack_fmt or 'd' in pack_fmt:
-                    value = struct.pack(pack_fmt, float(val))
-                else:
-                    value = struct.pack(pack_fmt, int(val))
-            else:
-                print(f"[-] Unknown format: {fmt}")
-                return
-        else:
-            value = value_str.encode()
+        value, err = parse_value(value_str)
+        if err:
+            print(f"[-] {err}")
+            return
 
         state.current_device.write_characteristic(uuid, value)
 

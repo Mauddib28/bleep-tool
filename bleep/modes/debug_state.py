@@ -47,6 +47,7 @@ class DebugState:
     glib_thread: Optional[threading.Thread] = None
     current_mine_map: Any = None
     current_perm_map: Any = None
+    rfcomm_sock: Any = None
     db_available: bool = False
     obs: Any = None
 

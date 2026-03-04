@@ -228,6 +228,149 @@ def parse_args(args=None):
     pbap_parser.add_argument("--auto-auth", action="store_true", help="Register temporary OBEX agent that auto-accepts authentication/prompts")
     pbap_parser.add_argument("--watchdog", type=int, default=8, help="Watchdog seconds before aborting stalled transfer (0 to disable)")
 
+    # OPP CLI
+    opp_parser = subparsers.add_parser(
+        "classic-opp",
+        help="Send a file or pull a business card via Object Push Profile",
+    )
+    opp_parser.add_argument("address", help="Target MAC address")
+    opp_sub = opp_parser.add_subparsers(dest="action", help="OPP action")
+    opp_send = opp_sub.add_parser("send", help="Send a file to the remote device")
+    opp_send.add_argument("file", help="Local file path to send")
+    opp_send.add_argument("--timeout", type=int, default=120, help="Transfer timeout in seconds")
+    opp_pull = opp_sub.add_parser("pull", help="Pull the default business card")
+    opp_pull.add_argument("--out", default=None, help="Destination VCF path")
+    opp_pull.add_argument("--timeout", type=int, default=60, help="Transfer timeout in seconds")
+
+    # MAP CLI
+    map_parser = subparsers.add_parser(
+        "classic-map",
+        help="Browse and manage SMS/MMS via Message Access Profile",
+    )
+    map_parser.add_argument("address", help="Target MAC address")
+    map_parser.add_argument(
+        "--instance", type=int, default=None,
+        help="RFCOMM channel of a specific MAS instance (use 'instances' to discover)",
+    )
+    map_sub = map_parser.add_subparsers(dest="action", help="MAP action")
+    map_folders = map_sub.add_parser("folders", help="List message folders")
+    map_list = map_sub.add_parser("list", help="List messages in a folder")
+    map_list.add_argument("folder", nargs="?", default="inbox", help="Folder name (default: inbox)")
+    map_list.add_argument("--type", dest="msg_type", default=None, help="Filter by type (e.g. SMS, MMS)")
+    map_get = map_sub.add_parser("get", help="Download a message by handle")
+    map_get.add_argument("handle", help="Message handle")
+    map_get.add_argument("--out", default=None, help="Destination file path")
+    map_push = map_sub.add_parser("push", help="Push/send a message file")
+    map_push.add_argument("file", help="Local bMessage file path")
+    map_push.add_argument("folder", nargs="?", default="telecom/msg/outbox", help="Target folder")
+    map_inbox = map_sub.add_parser("inbox", help="Trigger inbox update on remote device")
+    map_sub.add_parser("types", help="List supported message types")
+    map_sub.add_parser("fields", help="List available filter fields")
+    map_monitor = map_sub.add_parser("monitor", help="Monitor incoming message notifications (MNS)")
+    map_monitor.add_argument("--timeout", type=int, default=300, help="Session timeout in seconds")
+    map_sub.add_parser("instances", help="Discover MAS instances via SDP")
+
+    # FTP CLI
+    ftp_parser = subparsers.add_parser(
+        "classic-ftp",
+        help="Browse and transfer files via OBEX File Transfer Profile",
+    )
+    ftp_parser.add_argument("address", help="Target MAC address")
+    ftp_sub = ftp_parser.add_subparsers(dest="action", help="FTP action")
+    ftp_ls = ftp_sub.add_parser("ls", help="List remote folder contents")
+    ftp_ls.add_argument("path", nargs="?", default="", help="Remote folder path")
+    ftp_get = ftp_sub.add_parser("get", help="Download a file from the remote device")
+    ftp_get.add_argument("remote", help="Remote file name")
+    ftp_get.add_argument("--out", default=None, help="Local destination path")
+    ftp_get.add_argument("--path", dest="remote_path", default="", help="Remote folder to navigate to first")
+    ftp_get.add_argument("--timeout", type=int, default=120, help="Transfer timeout in seconds")
+    ftp_put = ftp_sub.add_parser("put", help="Upload a file to the remote device")
+    ftp_put.add_argument("file", help="Local file path to upload")
+    ftp_put.add_argument("--name", default="", help="Remote file name (default: same as local)")
+    ftp_put.add_argument("--path", dest="remote_path", default="", help="Remote folder to navigate to first")
+    ftp_put.add_argument("--timeout", type=int, default=120, help="Transfer timeout in seconds")
+    ftp_mkdir = ftp_sub.add_parser("mkdir", help="Create a folder on the remote device")
+    ftp_mkdir.add_argument("name", help="Folder name to create")
+    ftp_mkdir.add_argument("--path", dest="remote_path", default="", help="Remote folder to navigate to first")
+    ftp_rm = ftp_sub.add_parser("rm", help="Delete a file or folder on the remote device")
+    ftp_rm.add_argument("name", help="File or folder name to delete")
+    ftp_rm.add_argument("--path", dest="remote_path", default="", help="Remote folder to navigate to first")
+
+    # PAN CLI
+    pan_parser = subparsers.add_parser(
+        "classic-pan",
+        help="Personal Area Networking – connect, disconnect, or serve PAN profiles",
+    )
+    pan_sub = pan_parser.add_subparsers(dest="action", help="PAN action")
+    pan_connect = pan_sub.add_parser("connect", help="Connect to a remote PAN device")
+    pan_connect.add_argument("address", help="Target MAC address")
+    pan_connect.add_argument("--role", default="nap", choices=["nap", "panu", "gn"],
+                             help="PAN role (default: nap)")
+    pan_disconnect = pan_sub.add_parser("disconnect", help="Disconnect from a PAN device")
+    pan_disconnect.add_argument("address", help="Target MAC address")
+    pan_status = pan_sub.add_parser("status", help="Show Network1 properties for a device")
+    pan_status.add_argument("address", help="Target MAC address")
+    pan_serve = pan_sub.add_parser("serve", help="Register a local PAN server")
+    pan_serve.add_argument("--role", default="nap", choices=["nap", "panu", "gn"],
+                           help="PAN role (default: nap)")
+    pan_serve.add_argument("--bridge", default="pan0",
+                           help="Bridge interface name (default: pan0)")
+    pan_unserve = pan_sub.add_parser("unserve", help="Unregister a local PAN server")
+    pan_unserve.add_argument("--role", default="nap", choices=["nap", "panu", "gn"],
+                             help="PAN role (default: nap)")
+
+    # SPP CLI
+    spp_parser = subparsers.add_parser(
+        "classic-spp",
+        help="Register an SPP serial port profile and wait for connections",
+    )
+    spp_sub = spp_parser.add_subparsers(dest="action", help="SPP action")
+    spp_register = spp_sub.add_parser("register", help="Register SPP profile and block for connections")
+    spp_register.add_argument("--channel", type=int, default=None,
+                              help="RFCOMM channel (default: auto-assigned)")
+    spp_register.add_argument("--name", default="BLEEP SPP", help="Profile name")
+    spp_register.add_argument("--role", default="server", choices=["server", "client"],
+                              help="Profile role (default: server)")
+    spp_sub.add_parser("unregister", help="Unregister SPP profile")
+    spp_sub.add_parser("status", help="Show SPP profile status")
+
+    # IrMC Synchronization CLI
+    sync_parser = subparsers.add_parser(
+        "classic-sync",
+        help="IrMC Synchronization – download or upload phonebook (OBEX Sync)",
+    )
+    sync_parser.add_argument("address", help="Target MAC address")
+    sync_sub = sync_parser.add_subparsers(dest="action", help="Sync action")
+    sync_get = sync_sub.add_parser("get", help="Download phonebook from device")
+    sync_get.add_argument("--output", default="", help="Local file path (default: auto)")
+    sync_get.add_argument("--location", default="int",
+                          help="Object store: 'int' (internal, default) or 'sim1', 'sim2', …")
+    sync_get.add_argument("--timeout", type=int, default=60, help="Transfer timeout in seconds")
+    sync_put = sync_sub.add_parser("put", help="Upload phonebook to device")
+    sync_put.add_argument("file", help="Local VCF file to upload")
+    sync_put.add_argument("--location", default="int",
+                          help="Object store: 'int' (internal, default) or 'sim1', 'sim2', …")
+    sync_put.add_argument("--timeout", type=int, default=60, help="Transfer timeout in seconds")
+
+    # Basic Imaging Profile CLI (experimental)
+    bip_parser = subparsers.add_parser(
+        "classic-bip",
+        help="Basic Imaging Profile – image properties / download / thumbnail [experimental]",
+    )
+    bip_parser.add_argument("address", help="Target MAC address")
+    bip_sub = bip_parser.add_subparsers(dest="action", help="BIP action")
+    bip_props = bip_sub.add_parser("props", help="Get image properties for a handle")
+    bip_props.add_argument("handle", help="Image handle (e.g. '1000001')")
+    bip_props.add_argument("--timeout", type=int, default=30, help="Timeout in seconds")
+    bip_get = bip_sub.add_parser("get", help="Download full image by handle")
+    bip_get.add_argument("handle", help="Image handle")
+    bip_get.add_argument("--output", default="", help="Local file path (default: auto)")
+    bip_get.add_argument("--timeout", type=int, default=60, help="Transfer timeout in seconds")
+    bip_thumb = bip_sub.add_parser("thumb", help="Download image thumbnail by handle")
+    bip_thumb.add_argument("handle", help="Image handle")
+    bip_thumb.add_argument("--output", default="", help="Local file path (default: auto)")
+    bip_thumb.add_argument("--timeout", type=int, default=60, help="Transfer timeout in seconds")
+
     # Classic ping
     cping_parser = subparsers.add_parser("classic-ping", help="L2CAP echo (l2ping) reachability test")
     cping_parser.add_argument("address", help="Target MAC address")
@@ -1352,6 +1495,453 @@ def main(args=None):
                     print(f"[+] Saved {repo} → {path} ({len(lines)} lines)")
                 except Exception as exc:
                     print(f"[!] Failed to write {path}: {exc}", file=sys.stderr)
+            return 0
+
+        elif args.mode == "classic-opp":
+            if not args.action:
+                opp_parser.print_help()
+                return 0
+
+            mac = args.address
+
+            if args.action == "send":
+                from bleep.ble_ops.classic_opp import send_file
+                try:
+                    result = send_file(mac, args.file, timeout=args.timeout)
+                    transferred = result.get("transferred", "?")
+                    size = result.get("size", "?")
+                    print(f"[+] OPP send complete: {transferred}/{size} bytes transferred")
+                except FileNotFoundError as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "pull":
+                from bleep.ble_ops.classic_opp import pull_business_card
+                dest = args.out or f"/tmp/{mac.replace(':', '').lower()}_card.vcf"
+                try:
+                    result_path = pull_business_card(mac, dest, timeout=args.timeout)
+                    print(f"[+] Business card saved → {result_path}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            return 0
+
+        elif args.mode == "classic-map":
+            if not args.action:
+                map_parser.print_help()
+                return 0
+
+            mac = args.address
+            inst = args.instance
+
+            if args.action == "folders":
+                from bleep.ble_ops.classic_map import list_folders
+                try:
+                    folders = list_folders(mac, instance=inst)
+                    if not folders:
+                        print("[*] No folders found")
+                    else:
+                        for f in folders:
+                            print(f"  {f.get('Name', '(unnamed)')}/")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "list":
+                from bleep.ble_ops.classic_map import list_messages
+                try:
+                    filters = {}
+                    if args.msg_type:
+                        filters["Type"] = args.msg_type
+                    msgs = list_messages(
+                        mac, args.folder,
+                        filters=filters if filters else None,
+                        instance=inst,
+                    )
+                    if not msgs:
+                        print(f"[*] No messages in {args.folder}")
+                    else:
+                        for m in msgs:
+                            handle = m.get("handle", "?")
+                            subject = m.get("Subject", "(no subject)")
+                            status = m.get("Status", "")
+                            print(f"  {handle}  {subject}  [{status}]")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "get":
+                from bleep.ble_ops.classic_map import get_message
+                dest = args.out or f"/tmp/map_msg_{args.handle}.txt"
+                try:
+                    result = get_message(mac, args.handle, dest, instance=inst)
+                    print(f"[+] Message saved → {result}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "push":
+                from bleep.ble_ops.classic_map import push_message
+                try:
+                    push_message(mac, args.file, args.folder, instance=inst)
+                    print(f"[+] Message pushed to {args.folder}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "inbox":
+                from bleep.ble_ops.classic_map import update_inbox
+                try:
+                    update_inbox(mac, instance=inst)
+                    print("[+] Inbox update requested")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "types":
+                from bleep.ble_ops.classic_map import get_supported_types
+                try:
+                    types = get_supported_types(mac, instance=inst)
+                    if not types:
+                        print("[*] No supported types reported")
+                    else:
+                        print("Supported message types:")
+                        for t in types:
+                            print(f"  {t}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "fields":
+                from bleep.ble_ops.classic_map import list_filter_fields
+                try:
+                    fields = list_filter_fields(mac, instance=inst)
+                    if not fields:
+                        print("[*] No filter fields reported")
+                    else:
+                        print("Available filter fields:")
+                        for f in fields:
+                            print(f"  {f}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "monitor":
+                import signal as _signal
+                from bleep.ble_ops.classic_map import start_message_monitor, stop_message_monitor
+
+                def _mns_print(path: str, props: dict) -> None:
+                    print(f"[MNS] {path}")
+                    for k, v in props.items():
+                        print(f"      {k}: {v}")
+
+                try:
+                    start_message_monitor(mac, _mns_print, timeout=args.timeout, instance=inst)
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+                print("[+] MNS monitor active – press Ctrl+C to stop")
+                try:
+                    _signal.pause()
+                except KeyboardInterrupt:
+                    pass
+                finally:
+                    stop_message_monitor(mac)
+                    print("\n[+] MNS monitor stopped")
+
+            elif args.action == "instances":
+                from bleep.ble_ops.classic_map import list_mas_instances
+                try:
+                    instances_list = list_mas_instances(mac)
+                    if not instances_list:
+                        print("[*] No MAS instances found via SDP")
+                    else:
+                        print(f"MAS Instances on {mac}:")
+                        for mi in instances_list:
+                            print(f"  Channel {mi['channel']:>3}  {mi.get('name', '')}  (UUID {mi.get('uuid', '?')})")
+                        print("\nUse --instance <channel> to target a specific MAS.")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            return 0
+
+        elif args.mode == "classic-ftp":
+            if not args.action:
+                ftp_parser.print_help()
+                return 0
+
+            mac = args.address
+
+            if args.action == "ls":
+                from bleep.ble_ops.classic_ftp import list_folder
+                try:
+                    entries = list_folder(mac, args.path)
+                    if not entries:
+                        print("[*] Folder is empty")
+                    else:
+                        print(f"\n{'Type':<8} {'Size':>10}  Name")
+                        print("-" * 40)
+                        for e in entries:
+                            etype = e.get("Type", "?")
+                            esize = e.get("Size", "")
+                            ename = e.get("Name", "(unnamed)")
+                            if etype == "folder":
+                                print(f"{'dir':<8} {'':>10}  {ename}/")
+                            else:
+                                print(f"{'file':<8} {esize:>10}  {ename}")
+                        print()
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "get":
+                from bleep.ble_ops.classic_ftp import get_file
+                dest = args.out or f"/tmp/{args.remote}"
+                try:
+                    result = get_file(
+                        mac, args.remote, dest,
+                        remote_path=args.remote_path, timeout=args.timeout,
+                    )
+                    print(f"[+] Downloaded → {result}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "put":
+                from bleep.ble_ops.classic_ftp import put_file
+                try:
+                    result = put_file(
+                        mac, args.file, args.name,
+                        remote_path=args.remote_path, timeout=args.timeout,
+                    )
+                    transferred = result.get("transferred", "?")
+                    size = result.get("size", "?")
+                    print(f"[+] Uploaded: {transferred}/{size} bytes")
+                except FileNotFoundError as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "mkdir":
+                from bleep.ble_ops.classic_ftp import create_folder
+                try:
+                    create_folder(mac, args.name, remote_path=args.remote_path)
+                    print(f"[+] Created folder: {args.name}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "rm":
+                from bleep.ble_ops.classic_ftp import delete_item
+                try:
+                    delete_item(mac, args.name, remote_path=args.remote_path)
+                    print(f"[+] Deleted: {args.name}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            return 0
+
+        elif args.mode == "classic-pan":
+            if not args.action:
+                pan_parser.print_help()
+                return 0
+
+            if args.action == "connect":
+                from bleep.ble_ops.classic_pan import connect as pan_connect
+                try:
+                    iface = pan_connect(args.address, args.role)
+                    print(f"[+] PAN connected – interface {iface}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "disconnect":
+                from bleep.ble_ops.classic_pan import disconnect as pan_disconnect
+                try:
+                    pan_disconnect(args.address)
+                    print("[+] PAN disconnected")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "status":
+                from bleep.ble_ops.classic_pan import status as pan_status
+                try:
+                    info = pan_status(args.address)
+                    print(f"  Connected : {info.get('connected', False)}")
+                    print(f"  Interface : {info.get('interface', '(none)')}")
+                    print(f"  UUID/Role : {info.get('uuid', '(none)')}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "serve":
+                from bleep.ble_ops.classic_pan import register_server
+                try:
+                    register_server(args.role, args.bridge)
+                    print(f"[+] PAN server registered (role={args.role}, bridge={args.bridge})")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "unserve":
+                from bleep.ble_ops.classic_pan import unregister_server
+                try:
+                    unregister_server(args.role)
+                    print(f"[+] PAN server unregistered (role={args.role})")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            return 0
+
+        elif args.mode == "classic-spp":
+            if not args.action:
+                spp_parser.print_help()
+                return 0
+
+            if args.action == "register":
+                import signal as _signal
+                from bleep.ble_ops.classic_spp import register as spp_register, unregister as spp_unregister
+
+                def _on_connect(device_path: str, sock, fd_props: dict) -> None:
+                    print(f"[SPP] Connection from {device_path}")
+                    print(f"[SPP] Socket fd={sock.fileno()} – reading data...")
+                    try:
+                        while True:
+                            data = sock.recv(1024)
+                            if not data:
+                                break
+                            sys.stdout.buffer.write(data)
+                            sys.stdout.buffer.flush()
+                    except (OSError, KeyboardInterrupt):
+                        pass
+                    finally:
+                        sock.close()
+                        print("\n[SPP] Connection closed")
+
+                try:
+                    spp_register(
+                        channel=args.channel, name=args.name, role=args.role,
+                        on_connect=_on_connect,
+                    )
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+                print("[+] SPP profile registered – press Ctrl+C to stop")
+                try:
+                    _signal.pause()
+                except KeyboardInterrupt:
+                    pass
+                finally:
+                    spp_unregister()
+                    print("\n[+] SPP profile unregistered")
+
+            elif args.action == "unregister":
+                from bleep.ble_ops.classic_spp import unregister as spp_unregister
+                try:
+                    spp_unregister()
+                    print("[+] SPP profile unregistered")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "status":
+                from bleep.ble_ops.classic_spp import status as spp_status
+                info = spp_status()
+                if not info.get("registered"):
+                    print("[*] SPP profile not registered")
+                else:
+                    print(f"  Registered : True")
+                    print(f"  UUID       : {info.get('uuid', '?')}")
+                    print(f"  Name       : {info.get('name', '?')}")
+                    print(f"  Role       : {info.get('role', '?')}")
+                    print(f"  Channel    : {info.get('channel') or 'auto'}")
+
+            return 0
+
+        elif args.mode == "classic-sync":
+            if not args.action:
+                sync_parser.print_help()
+                return 0
+
+            if args.action == "get":
+                from bleep.ble_ops.classic_sync import get_phonebook
+                try:
+                    result = get_phonebook(
+                        args.address, args.output,
+                        location=args.location, timeout=args.timeout,
+                    )
+                    print(f"[+] Phonebook saved → {result}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "put":
+                from bleep.ble_ops.classic_sync import put_phonebook
+                try:
+                    put_phonebook(
+                        args.address, args.file,
+                        location=args.location, timeout=args.timeout,
+                    )
+                    print("[+] Phonebook uploaded OK")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            return 0
+
+        elif args.mode == "classic-bip":
+            if not args.action:
+                bip_parser.print_help()
+                return 0
+
+            if args.action == "props":
+                from bleep.ble_ops.classic_bip import get_properties
+                try:
+                    props = get_properties(
+                        args.address, args.handle, timeout=args.timeout,
+                    )
+                    for i, entry in enumerate(props):
+                        print(f"  [{i}] {entry}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "get":
+                from bleep.ble_ops.classic_bip import get_image
+                try:
+                    result = get_image(
+                        args.address, args.output, args.handle,
+                        timeout=args.timeout,
+                    )
+                    print(f"[+] Image saved → {result}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "thumb":
+                from bleep.ble_ops.classic_bip import get_thumbnail
+                try:
+                    result = get_thumbnail(
+                        args.address, args.output, args.handle,
+                        timeout=args.timeout,
+                    )
+                    print(f"[+] Thumbnail saved → {result}")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
             return 0
 
         elif args.mode == "classic-ping":
