@@ -234,18 +234,9 @@ def cmd_ckeep(args: List[str], state: DebugState) -> None:
 
     if (opts.first or opts.svc) and not state.current_mapping:
         try:
-            from bleep.ble_ops.classic_sdp import discover_services_sdp
+            from bleep.ble_ops.classic_sdp import discover_services_sdp, build_svc_map
             records = discover_services_sdp(state.current_device.mac_address)
-            state.current_mapping = {
-                (r["name"] or r["uuid"] or f"handle_{r.get('handle', 'unknown')}"): {
-                    "uuid": r.get("uuid"), "name": r.get("name"),
-                    "channel": r.get("channel"), "handle": r.get("handle"),
-                    "service_version": r.get("service_version"),
-                    "description": r.get("description"),
-                    "profile_descriptors": r.get("profile_descriptors"),
-                }
-                for r in records
-            }
+            state.current_mapping = build_svc_map(records)
         except Exception as exc:
             error_str = format_dbus_error(exc)
             print(f"[-] SDP discovery failed: {error_str}")
@@ -313,7 +304,7 @@ def cmd_csdp(args: List[str], state: DebugState) -> None:
     mac = opts.mac.strip().upper()
 
     try:
-        from bleep.ble_ops.classic_sdp import discover_services_sdp, discover_services_sdp_connectionless
+        from bleep.ble_ops.classic_sdp import discover_services_sdp, discover_services_sdp_connectionless, build_svc_map
 
         if opts.connectionless:
             print_and_log(f"[*] Performing connectionless SDP discovery for {mac}...", LOG__GENERAL)
@@ -373,16 +364,7 @@ def cmd_csdp(args: List[str], state: DebugState) -> None:
 
         print("\n" + "=" * 80)
 
-        svc_map: Dict[str, dict] = {}
-        for rec in records:
-            key = rec.get("name") or rec.get("uuid") or f"handle_{rec.get('handle', 'unknown')}"
-            svc_map[key] = {
-                "uuid": rec.get("uuid"), "name": rec.get("name"),
-                "channel": rec.get("channel"), "handle": rec.get("handle"),
-                "service_version": rec.get("service_version"),
-                "description": rec.get("description"),
-                "profile_descriptors": rec.get("profile_descriptors"),
-            }
+        svc_map = build_svc_map(records)
 
         rfcomm_count = sum(1 for v in svc_map.values() if v.get("channel") is not None)
         if svc_map:

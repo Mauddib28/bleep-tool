@@ -1943,6 +1943,13 @@ are in `workDir/BlueZDocs/org.bluez.obex.*.rst` and reference scripts in
   - `debug_connect.py` — info message updated for non-RFCOMM inclusion
   - `cli.py` — `classic-enum` summary updated
 
+- [x] bc-53 Fix SDP parsing gap: XML parser & collision-safe svc_map (v2.7.16):
+  - `classic_sdp.py` — replaced `browse --tree` with `browse --xml` in fallback chain
+  - `classic_sdp.py` — new `_parse_xml_record()` / `_parse_browse_xml()` for structured XML parsing
+  - `classic_sdp.py` — new `build_svc_map()` public helper with duplicate-key disambiguation
+  - `classic_sdp.py` — D-Bus path no longer requires RFCOMM channel to accept results
+  - All inline `svc_map` builders (`classic_connect.py`, `debug_classic.py`, `debug_classic_rfcomm.py`, `debug_pairing.py`, `cli.py`) replaced with shared `build_svc_map()`
+
 *(collapse / expand sections as items are completed)* 
 
 ## User Mode Implementation Tasks

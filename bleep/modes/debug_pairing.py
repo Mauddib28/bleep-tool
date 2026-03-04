@@ -131,7 +131,7 @@ def _post_pair_connect(mac: str, device_path: str, state: DebugState) -> None:
 def post_pair_connect_classic(mac: str, device_path: str, state: DebugState) -> None:
     """Attempt classic connection after pairing: SDP + keepalive socket."""
     from bleep.dbuslayer.device_classic import system_dbus__bluez_device__classic
-    from bleep.ble_ops.classic_sdp import discover_services_sdp
+    from bleep.ble_ops.classic_sdp import discover_services_sdp, build_svc_map
     from bleep.ble_ops.classic_connect import classic_rfccomm_open
 
     dev = system_dbus__bluez_device__classic(mac)
@@ -139,15 +139,7 @@ def post_pair_connect_classic(mac: str, device_path: str, state: DebugState) -> 
     svc_map: dict = {}
     try:
         records = discover_services_sdp(mac)
-        for rec in records:
-            key = rec.get("name") or rec.get("uuid") or f"handle_{rec.get('handle', 'unknown')}"
-            svc_map[key] = {
-                "uuid": rec.get("uuid"), "name": rec.get("name"),
-                "channel": rec.get("channel"), "handle": rec.get("handle"),
-                "service_version": rec.get("service_version"),
-                "description": rec.get("description"),
-                "profile_descriptors": rec.get("profile_descriptors"),
-            }
+        svc_map = build_svc_map(records)
         rfcomm_count = sum(1 for v in svc_map.values() if v.get("channel") is not None)
         if svc_map:
             print_and_log(

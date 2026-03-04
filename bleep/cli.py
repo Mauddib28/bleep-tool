@@ -1346,13 +1346,9 @@ def main(args=None):
                                     print(f"    {uuid}: Version unknown")
                     print("\n" + "=" * 80)
 
-                    # Show service map summary
-                    svc_map_sdp: Dict[str, dict] = {}
-                    for rec in records:
-                        key = rec.get("name") or rec.get("uuid") or f"handle_{rec.get('handle', 'unknown')}"
-                        svc_map_sdp[key] = {
-                            "uuid": rec.get("uuid"), "channel": rec.get("channel"),
-                        }
+                    # Show service map summary (bc-53 collision-safe)
+                    from bleep.ble_ops.classic_sdp import build_svc_map
+                    svc_map_sdp = build_svc_map(records)
                     rfcomm_n = sum(1 for v in svc_map_sdp.values() if v.get("channel") is not None)
                     if svc_map_sdp:
                         print(f"\nService Map ({len(svc_map_sdp)} service(s), {rfcomm_n} with RFCOMM):")

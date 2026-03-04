@@ -1,3 +1,46 @@
+## v2.7.16 – SDP XML Parser & Collision-safe Service Map (2026-03-04)
+
+### Fixed
+
+* **`bleep/ble_ops/classic_sdp.py`** — Replaced `sdptool browse --tree` with
+  `sdptool browse --xml` in the fallback chain.  The previous `--tree` output
+  was incorrectly parsed by `_parse_records()` (designed for `sdptool records`),
+  causing `name=None`, `uuid=None`, and L2CAP PSM values being misidentified as
+  RFCOMM channels.  The new `_parse_browse_xml()` function reliably extracts all
+  SDP attributes from the structured XML output.  Discovery chain is now:
+  D-Bus → `browse --xml` → `records`.
+
+* **`bleep/ble_ops/classic_sdp.py`** — D-Bus `GetServiceRecords` path no longer
+  requires at least one RFCOMM channel to accept the result, aligning with the
+  v2.7.15 enriched mapping that includes all services.
+
+### Added
+
+* **`bleep/ble_ops/classic_sdp.py`** — New `_parse_xml_record()` and
+  `_parse_browse_xml()` functions for parsing `sdptool browse --xml` output.
+  Extracts Service Name (0x0100), Description (0x0101), Service Record Handle
+  (0x0000), Service Class ID (0x0001), Protocol Descriptor List (0x0004),
+  Profile Descriptor List (0x0009), and Service Version (0x0300).
+
+* **`bleep/ble_ops/classic_sdp.py`** — New `build_svc_map()` public helper that
+  builds a collision-safe `Dict[str, Dict]` from raw SDP records.  Duplicate
+  keys (e.g. two "Voice Gateway" entries from different handles) are
+  disambiguated by appending the SDP handle.
+
+### Changed
+
+* **`bleep/ble_ops/classic_connect.py`**, **`bleep/modes/debug_classic.py`**,
+  **`bleep/modes/debug_classic_rfcomm.py`**, **`bleep/modes/debug_pairing.py`**,
+  **`bleep/cli.py`** — All inline `svc_map` construction loops replaced with
+  the shared `build_svc_map()` helper, eliminating code duplication and
+  ensuring consistent collision handling across all entry points.
+
+### Internal
+
+* Tracking ID: `bc-53`
+
+---
+
 ## v2.7.15 – Enriched Classic SDP Service Mapping (2026-03-04)
 
 ### Changed

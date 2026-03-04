@@ -32,7 +32,7 @@ from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
 from bleep.dbuslayer.device_classic import (
     system_dbus__bluez_device__classic as _ClassicDevice,
 )
-from bleep.ble_ops.classic_sdp import discover_services_sdp
+from bleep.ble_ops.classic_sdp import discover_services_sdp, build_svc_map
 
 # optional observation DB
 try:
@@ -156,23 +156,14 @@ def connect_and_enumerate__bluetooth__classic(
         if not device.connect(retry=3, wait_timeout=timeout_connect * 2):
             raise _errors.ConnectionError(target_bt_addr, "connect failed after pairing")
 
-    # Enumerate services via sdptool — keep full SDP record per entry
+    # Enumerate services via sdptool — collision-safe svc_map (bc-53)
     records = discover_services_sdp(target_bt_addr)
-    svc_map: Dict[str, Dict[str, Any]] = {}
-    svc_items = []
-    for rec in records:
-        key = rec.get("name") or rec.get("uuid") or f"handle_{rec.get('handle', 'unknown')}"
-        svc_map[key] = {
-            "uuid": rec.get("uuid"),
-            "name": rec.get("name"),
-            "channel": rec.get("channel"),
-            "handle": rec.get("handle"),
-            "service_version": rec.get("service_version"),
-            "description": rec.get("description"),
-            "profile_descriptors": rec.get("profile_descriptors"),
-        }
-        if rec.get("channel") is not None:
-            svc_items.append({"uuid": rec["uuid"], "channel": rec["channel"], "name": rec.get("name")})
+    svc_map = build_svc_map(records)
+    svc_items = [
+        {"uuid": v["uuid"], "channel": v["channel"], "name": v.get("name")}
+        for v in svc_map.values()
+        if v.get("channel") is not None
+    ]
 
     rfcomm_count = sum(1 for v in svc_map.values() if v.get("channel") is not None)
     print_and_log(

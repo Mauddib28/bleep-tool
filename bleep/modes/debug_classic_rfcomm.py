@@ -33,18 +33,9 @@ def _resolve_rfcomm_channel(
     """
     if (getattr(opts, "first", False) or getattr(opts, "svc", None)) and not state.current_mapping:
         try:
-            from bleep.ble_ops.classic_sdp import discover_services_sdp
+            from bleep.ble_ops.classic_sdp import discover_services_sdp, build_svc_map
             records = discover_services_sdp(state.current_device.mac_address)
-            state.current_mapping = {
-                (r["name"] or r["uuid"] or f"handle_{r.get('handle', 'unknown')}"): {
-                    "uuid": r.get("uuid"), "name": r.get("name"),
-                    "channel": r.get("channel"), "handle": r.get("handle"),
-                    "service_version": r.get("service_version"),
-                    "description": r.get("description"),
-                    "profile_descriptors": r.get("profile_descriptors"),
-                }
-                for r in records
-            }
+            state.current_mapping = build_svc_map(records)
         except Exception as exc:
             print(f"[-] SDP discovery failed: {format_dbus_error(exc)}")
             return None

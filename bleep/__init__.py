@@ -2,7 +2,7 @@
 BLEEP - Bluetooth Landscape Exploration & Enumeration Platform
 """
 
-__version__ = "2.7.15"
+__version__ = "2.7.16"
 __author__ = "Paul A. Wortman"
 
 # Functional Debug Mode - 2025/07/09

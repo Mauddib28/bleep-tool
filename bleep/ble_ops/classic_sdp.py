@@ -6,17 +6,19 @@ BlueZ’s *sdptool* binary to obtain the full SDP record (required for RFCOMM
 channel extraction) because BlueZ’s D-Bus API only exposes the service UUID
 list, not the protocol descriptor details.
 
+Discovery chain (bc-53):
+    1. ``Device1.GetServiceRecords`` (D-Bus, fast, BlueZ >= 5.66)
+    2. ``sdptool browse --xml <addr>`` (structured XML, reliable parsing)
+    3. ``sdptool records <addr>`` (human-readable, regex-parsed fallback)
+
 Typical usage
 -------------
->>> from bleep.ble_ops.classic_sdp import discover_services_sdp, discover_services_sdp_connectionless
+>>> from bleep.ble_ops.classic_sdp import discover_services_sdp, build_svc_map
 >>> records = discover_services_sdp("AA:BB:CC:DD:EE:FF")
->>> for rec in records:
-...     print(rec["name"], rec["channel"], rec["uuid"])
+>>> svc_map = build_svc_map(records)   # collision-safe keyed map
 
 Connectionless mode (with l2ping reachability check):
 >>> records = discover_services_sdp("AA:BB:CC:DD:EE:FF", connectionless=True)
->>> # Or use dedicated function:
->>> records = discover_services_sdp_connectionless("AA:BB:CC:DD:EE:FF")
 
 Returned structure is a list of dicts::
     {"name": str | None,
@@ -203,16 +205,48 @@ def _discover_services_dbus(mac_address: str, timeout: int = 5) -> List[Dict[str
                 "raw": xml_text.strip(),
             })
 
-        if parsed and any(r.get("channel") is not None for r in parsed):
-            print_and_log("[classic_sdp] D-Bus GetServiceRecords successful", LOG__DEBUG)
+        if parsed:
+            print_and_log(
+                f"[classic_sdp] D-Bus GetServiceRecords successful – {len(parsed)} record(s)",
+                LOG__DEBUG,
+            )
             return parsed
 
-        print_and_log("[classic_sdp] D-Bus records lacked RFCOMM info", LOG__DEBUG)
+        print_and_log("[classic_sdp] D-Bus GetServiceRecords returned no parseable records", LOG__DEBUG)
         return []
 
     except Exception as exc:  # noqa: BLE001 – log & fallback
         print_and_log(f"[classic_sdp] D-Bus SDP path raised: {exc}", LOG__DEBUG)
         return []
+
+
+# ---------------------------------------------------------------------------
+# svc_map builder (bc-53)
+# ---------------------------------------------------------------------------
+
+
+def build_svc_map(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Build a collision-safe service-map from raw SDP records.
+
+    Duplicate keys (e.g. two *Voice Gateway* entries from different
+    handles) are disambiguated by appending the SDP handle.
+    """
+    svc_map: Dict[str, Dict[str, Any]] = {}
+    for rec in records:
+        key = rec.get("name") or rec.get("uuid") or f"handle_{rec.get('handle', 'unknown')}"
+        if key in svc_map:
+            h = rec.get("handle")
+            key = f"{key} (0x{h:04x})" if h is not None else f"{key} ({len(svc_map)})"
+        svc_map[key] = {
+            "uuid": rec.get("uuid"),
+            "name": rec.get("name"),
+            "channel": rec.get("channel"),
+            "handle": rec.get("handle"),
+            "service_version": rec.get("service_version"),
+            "description": rec.get("description"),
+            "profile_descriptors": rec.get("profile_descriptors"),
+        }
+    return svc_map
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +352,145 @@ def _parse_records(raw_output: str) -> List[Dict[str, Any]]:
             "raw": block.strip(),
         }
         results.append(record)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# XML parser for ``sdptool browse --xml`` output (bc-53)
+# ---------------------------------------------------------------------------
+
+# Matches ``<?xml ...?>`` processing instructions that delimit records in
+# concatenated sdptool XML output.
+_XML_PI_RE = re.compile(r"<\?xml[^?]*\?>")
+
+
+def _parse_xml_record(xml_text: str) -> Dict[str, Any]:
+    """Parse a single SDP record XML fragment into a record dict.
+
+    Uses the same attribute-extraction logic as ``_discover_services_dbus``
+    but operates on standalone XML produced by *sdptool*.
+    """
+    root = ET.fromstring(xml_text)
+
+    name_val: Optional[str] = None
+    uuid_val: Optional[str] = None
+    channel_val: Optional[int] = None
+    handle_val: Optional[int] = None
+    profile_descriptors: Optional[List[Dict[str, Any]]] = None
+    service_version_val: Optional[int] = None
+    description_val: Optional[str] = None
+
+    for attr in root.findall("attribute"):
+        attr_id = attr.get("id", "").lower()
+
+        if attr_id == "0x0100":  # Service Name
+            name_val = attr.findtext("text") or None
+
+        elif attr_id == "0x0101":  # Service Description
+            description_val = attr.findtext("text") or None
+
+        elif attr_id == "0x0000":  # Service Record Handle
+            for tag in ("uint32", "uint16", "uint8"):
+                elem = attr.find(tag)
+                if elem is not None and elem.text:
+                    try:
+                        handle_val = int(elem.text, 0)
+                    except (ValueError, AttributeError):
+                        pass
+                    break
+
+        elif attr_id == "0x0001":  # Service Class ID List
+            for uuid_elem in attr.iter("uuid"):
+                raw = (uuid_elem.text or "").strip()
+                if not raw:
+                    continue
+                low = raw.lower()
+                if low.endswith("0000-1000-8000-00805f9b34fb"):
+                    uuid_val = f"0x{low[4:8]}"
+                elif len(raw) == 36 and "-" in raw:
+                    uuid_val = low
+                else:
+                    uuid_val = f"0x{low.replace('0x', '')}"
+                break  # first Service Class UUID
+
+        elif attr_id == "0x0004":  # Protocol Descriptor List
+            for seq in attr.iter("sequence"):
+                proto_uuid_elem = seq.find("uuid")
+                if proto_uuid_elem is None:
+                    continue
+                proto = (proto_uuid_elem.text or "").lower()
+                if proto.endswith("0003"):  # RFCOMM UUID
+                    chan_elem = seq.find("uint8") or seq.find("uint16")
+                    if chan_elem is not None and chan_elem.text:
+                        try:
+                            channel_val = int(chan_elem.text, 0)
+                        except (ValueError, AttributeError):
+                            pass
+
+        elif attr_id == "0x0009":  # Bluetooth Profile Descriptor List
+            profile_list: List[Dict[str, Any]] = []
+            for seq in attr.iter("sequence"):
+                p_uuid_elem = seq.find("uuid")
+                if p_uuid_elem is None:
+                    continue
+                raw_u = (p_uuid_elem.text or "").strip()
+                if not raw_u:
+                    continue
+                low_u = raw_u.lower()
+                if low_u.endswith("0000-1000-8000-00805f9b34fb"):
+                    p_uuid = f"0x{low_u[4:8]}"
+                elif len(raw_u) == 36 and "-" in raw_u:
+                    p_uuid = low_u
+                else:
+                    p_uuid = f"0x{low_u.replace('0x', '')}"
+                p_ver: Optional[int] = None
+                ver_elem = seq.find("uint16") or seq.find("uint8")
+                if ver_elem is not None and ver_elem.text:
+                    try:
+                        p_ver = int(ver_elem.text, 0)
+                    except (ValueError, AttributeError):
+                        pass
+                profile_list.append({"uuid": p_uuid, "version": p_ver})
+            if profile_list:
+                profile_descriptors = profile_list
+
+        elif attr_id == "0x0300":  # Service Version
+            ver_elem = attr.find("uint16") or attr.find("uint8")
+            if ver_elem is not None and ver_elem.text:
+                try:
+                    service_version_val = int(ver_elem.text, 0)
+                except (ValueError, AttributeError):
+                    pass
+
+    return {
+        "name": name_val,
+        "uuid": uuid_val,
+        "channel": channel_val,
+        "handle": handle_val,
+        "profile_descriptors": profile_descriptors,
+        "service_version": service_version_val,
+        "description": description_val,
+        "raw": xml_text.strip(),
+    }
+
+
+def _parse_browse_xml(raw_output: str) -> List[Dict[str, Any]]:
+    """Parse concatenated XML output from ``sdptool browse --xml``.
+
+    *sdptool* emits one ``<?xml …?>`` + ``<record>…</record>`` fragment per
+    SDP record, separated by whitespace.  We split on the PI boundary and
+    parse each fragment individually.
+    """
+    fragments = _XML_PI_RE.split(raw_output)
+    results: List[Dict[str, Any]] = []
+    for frag in fragments:
+        frag = frag.strip()
+        if not frag or not frag.startswith("<"):
+            continue
+        try:
+            results.append(_parse_xml_record(frag))
+        except ET.ParseError:
+            continue
     return results
 
 
@@ -456,77 +629,67 @@ def discover_services_sdp(
 
     path = _ensure_sdptool()
 
-    # Strategy: try faster 'browse --tree' first. Fallback to the slower 'records'
+    # Strategy (bc-53): ``browse --xml`` gives structured XML that the
+    # XML parser handles reliably (no RFCOMM/L2CAP confusion).
+    # ``records`` is the final fallback — its human-readable format is
+    # what ``_parse_records()`` was designed for.
+    _CMD_XML = "browse_xml"
+    _CMD_REC = "records"
     cmds_to_try = [
-        [path, "browse", "--tree", mac_address],
-        [path, "records", mac_address],
+        (_CMD_XML, [path, "browse", "--xml", mac_address]),
+        (_CMD_REC, [path, "records", mac_address]),
     ]
 
     last_error: Optional[str] = None
-    for idx, cmd in enumerate(cmds_to_try, start=1):
+    for idx, (tag, cmd) in enumerate(cmds_to_try, start=1):
         print_and_log(f"[*] Running '{' '.join(cmd)}' (attempt {idx})", LOG__DEBUG)
         try:
             proc = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=timeout if cmd[-2] != "records" else timeout * 2,
+                timeout=timeout if tag == _CMD_XML else timeout * 2,
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            last_error = f"sdptool {'records' if 'records' in cmd else 'browse'} timed out"
+            last_error = f"sdptool {tag} timed out"
             continue
 
         if proc.returncode != 0:
             last_error = proc.stderr.strip() or proc.stdout.strip()
             continue
 
-        # ------------------------------------------------------------------
-        # Debug helpers – dump raw output & parsed results when LOG__DEBUG is
-        # enabled so that users can see exactly what *sdptool* returned and
-        # how the regex parser interpreted it.  This makes troubleshooting
-        # parsing-failures (e.g. vendor-specific record formatting) easier.
-        # ------------------------------------------------------------------
-
-        # Log the raw text (trimmed to avoid flooding the terminal if debug
-        # logging is not turned on globally).
         if LOG__DEBUG:
-            print_and_log("[classic_sdp] ---- raw sdptool output ----", LOG__DEBUG)
-            print_and_log(proc.stdout.strip() or "<empty>", LOG__DEBUG)
-            print_and_log("[classic_sdp] ---- end raw output ----", LOG__DEBUG)
+            preview = proc.stdout.strip()[:2000] if tag == _CMD_XML else proc.stdout.strip()
+            print_and_log(f"[classic_sdp] ---- raw sdptool {tag} output ----", LOG__DEBUG)
+            print_and_log(preview or "<empty>", LOG__DEBUG)
+            print_and_log(f"[classic_sdp] ---- end raw {tag} output ----", LOG__DEBUG)
 
-        parsed = _parse_records(proc.stdout)
+        parsed = _parse_browse_xml(proc.stdout) if tag == _CMD_XML else _parse_records(proc.stdout)
 
-        # Log the parsed intermediate structure
         if LOG__DEBUG:
-            print_and_log(f"[classic_sdp] Parsed {len(parsed)} record block(s)", LOG__DEBUG)
+            print_and_log(f"[classic_sdp] Parsed {len(parsed)} record(s) via {tag}", LOG__DEBUG)
             for idx_rec, rec in enumerate(parsed, start=1):
                 debug_info = f"  [{idx_rec}] name={rec.get('name')} uuid={rec.get('uuid')} channel={rec.get('channel')}"
                 if rec.get('handle') is not None:
-                    debug_info += f" handle={rec.get('handle')}"
+                    debug_info += f" handle=0x{rec['handle']:04x}"
                 if rec.get('profile_descriptors'):
-                    debug_info += f" profiles={len(rec.get('profile_descriptors', []))}"
+                    debug_info += f" profiles={len(rec['profile_descriptors'])}"
                 if rec.get('service_version') is not None:
-                    debug_info += f" svc_ver={rec.get('service_version')}"
+                    debug_info += f" svc_ver=0x{rec['service_version']:04x}"
                 print_and_log(debug_info, LOG__DEBUG)
 
-        # Accept any parsed records.  Prefer results that contain at least
-        # one RFCOMM channel; if the faster `browse --tree` only returns
-        # records without channel info, fall back to `sdptool records`.
         if parsed:
             if any(rec.get("channel") is not None for rec in parsed):
                 successful_records = parsed
                 break
-            # Records present but no RFCOMM channels — save as fallback and
-            # try the next (slower) command for more complete output.
             successful_records = parsed
             if idx == len(cmds_to_try):
                 break
-            last_error = "No RFCOMM channels in browse output"
+            last_error = f"No RFCOMM channels in {tag} output"
             continue
-        last_error = "No services found"
-    
-    # If we successfully parsed records, store and return them
+        last_error = f"No services found via {tag}"
+
     if successful_records:
         _store_sdp_records(mac_address, successful_records)
         return successful_records
