@@ -1935,6 +1935,14 @@ are in `workDir/BlueZDocs/org.bluez.obex.*.rst` and reference scripts in
   - `debug_classic_data.py` (49-line re-export shim) — backward-compatible imports
   - Fixed `cmd_csync`/`cmd_cbip` signature bug (reversed params, non-existent `state.bdaddr`)
 
+- [x] bc-52 Enrich `current_mapping` from `Dict[str, int]` to `Dict[str, Dict]` with full SDP record fields (v2.7.15):
+  - `classic_connect.py` — builds enriched `svc_map` with all SDP record fields
+  - `debug_classic.py` — `_ch()` helper, rewritten `cmd_cservices` (normal + detailed), updated `cmd_ckeep`/`cmd_csdp`/`cmd_pbap`
+  - `debug_classic_rfcomm.py` — `_resolve_rfcomm_channel` updated for enriched dicts
+  - `debug_pairing.py` — `post_pair_connect_classic` builds enriched dicts
+  - `debug_connect.py` — info message updated for non-RFCOMM inclusion
+  - `cli.py` — `classic-enum` summary updated
+
 *(collapse / expand sections as items are completed)* 
 
 ## User Mode Implementation Tasks

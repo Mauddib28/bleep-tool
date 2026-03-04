@@ -1346,16 +1346,20 @@ def main(args=None):
                                     print(f"    {uuid}: Version unknown")
                     print("\n" + "=" * 80)
 
-                    # Show RFCOMM service map summary
-                    svc_map_sdp: Dict[str, int] = {}
+                    # Show service map summary
+                    svc_map_sdp: Dict[str, dict] = {}
                     for rec in records:
-                        if rec.get("channel") is not None:
-                            key = rec.get("name") or rec.get("uuid") or f"channel_{rec['channel']}"
-                            svc_map_sdp[key] = rec["channel"]
+                        key = rec.get("name") or rec.get("uuid") or f"handle_{rec.get('handle', 'unknown')}"
+                        svc_map_sdp[key] = {
+                            "uuid": rec.get("uuid"), "channel": rec.get("channel"),
+                        }
+                    rfcomm_n = sum(1 for v in svc_map_sdp.values() if v.get("channel") is not None)
                     if svc_map_sdp:
-                        print(f"\nService Map ({len(svc_map_sdp)} service(s)):")
-                        for svc, ch in svc_map_sdp.items():
-                            print(f"  {svc:25} -> {ch}")
+                        print(f"\nService Map ({len(svc_map_sdp)} service(s), {rfcomm_n} with RFCOMM):")
+                        for svc, entry in svc_map_sdp.items():
+                            ch = entry.get("channel")
+                            ch_str = f"-> ch {ch}" if ch is not None else "(no RFCOMM)"
+                            print(f"  {svc:25} {ch_str}")
                         print()
                 
                 # Display version information if requested (before connection attempt)
@@ -1446,7 +1450,7 @@ def main(args=None):
             try:
                 _, svc_map = _c_enum(args.address)
                 if debug_mode:
-                    print_and_log(f"[+] Connection-based enumeration: {len(svc_map)} RFCOMM services", LOG__GENERAL)
+                    print_and_log(f"[+] Connection-based enumeration: {len(svc_map)} services", LOG__GENERAL)
                 return 0
             except Exception as conn_exc:
                 if records:

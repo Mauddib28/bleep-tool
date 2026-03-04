@@ -210,7 +210,7 @@ def cmd_info(args: List[str], state: DebugState) -> None:
             for k, v in info.items():
                 print(f"  {k}: {v}")
             if state.current_mapping:
-                print(f"  RFCOMM services: {len(state.current_mapping)} (use 'cservices' to list)")
+                print(f"  SDP services: {len(state.current_mapping)} (use 'cservices' to list)")
     else:
         _info_from_dbus_path(state.current_path, state)
 

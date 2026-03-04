@@ -36,12 +36,20 @@ def _resolve_rfcomm_channel(
             from bleep.ble_ops.classic_sdp import discover_services_sdp
             records = discover_services_sdp(state.current_device.mac_address)
             state.current_mapping = {
-                (r["name"] or r["uuid"]): r["channel"]
-                for r in records if r.get("channel")
+                (r["name"] or r["uuid"] or f"handle_{r.get('handle', 'unknown')}"): {
+                    "uuid": r.get("uuid"), "name": r.get("name"),
+                    "channel": r.get("channel"), "handle": r.get("handle"),
+                    "service_version": r.get("service_version"),
+                    "description": r.get("description"),
+                    "profile_descriptors": r.get("profile_descriptors"),
+                }
+                for r in records
             }
         except Exception as exc:
             print(f"[-] SDP discovery failed: {format_dbus_error(exc)}")
             return None
+
+    from bleep.modes.debug_classic import _ch
 
     channel: Optional[int] = None
     if getattr(opts, "channel", None):
@@ -52,8 +60,9 @@ def _resolve_rfcomm_channel(
             return None
     elif getattr(opts, "svc", None):
         key = opts.svc.lower()
-        for name, ch in (state.current_mapping or {}).items():
-            if key in name.lower() or key in str(ch):
+        for name, entry in (state.current_mapping or {}).items():
+            ch = _ch(entry)
+            if key in name.lower() or (ch is not None and key in str(ch)):
                 channel = ch
                 break
         if channel is None:
@@ -61,7 +70,7 @@ def _resolve_rfcomm_channel(
             return None
     elif getattr(opts, "first", False):
         if state.current_mapping:
-            channel = next(iter(state.current_mapping.values()))
+            channel = _ch(next(iter(state.current_mapping.values())))
         else:
             print("[-] Service map empty – run 'cservices' or specify channel")
             return None

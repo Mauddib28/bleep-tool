@@ -11,9 +11,28 @@ import argparse
 from typing import Dict, List, Optional
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
+from bleep.bt_ref.utils import get_name_from_uuid
 
 from bleep.modes.debug_state import DebugState
 from bleep.modes.debug_dbus import format_dbus_error, print_detailed_dbus_error
+
+
+# ---------------------------------------------------------------------------
+# Mapping helpers
+# ---------------------------------------------------------------------------
+
+
+def _ch(entry) -> Optional[int]:
+    """Extract RFCOMM channel from a Classic mapping entry.
+
+    Handles both the enriched ``dict`` format (v2.7.15+) and the legacy
+    ``int`` format for graceful transition.
+    """
+    if isinstance(entry, int):
+        return entry
+    if isinstance(entry, dict):
+        return entry.get("channel")
+    return None
 
 
 def cmd_cscan(args: List[str], state: DebugState) -> None:
@@ -89,7 +108,11 @@ def cmd_cconnect(args: List[str], state: DebugState) -> None:
 
 
 def cmd_cservices(args: List[str], state: DebugState) -> None:
-    """List RFCOMM service→channel map for connected Classic device."""
+    """List Classic services from the enriched SDP mapping.
+
+    Normal mode shows a one-line summary per service with UUID translation.
+    ``detailed on`` shows handle, version, profile descriptors, and description.
+    """
     if state.current_mode != "classic" or not state.current_device:
         print("[-] No Classic device connected")
         return
@@ -97,9 +120,59 @@ def cmd_cservices(args: List[str], state: DebugState) -> None:
         print("[-] No service map available (enumeration may have failed)")
         return
 
-    print("\nRFCOMM Services (service → channel):")
-    for svc, ch in state.current_mapping.items():
-        print(f"  {svc:25} → {ch}")
+    rfcomm_count = sum(1 for v in state.current_mapping.values() if _ch(v) is not None)
+    total = len(state.current_mapping)
+    print(f"\nClassic Services — {total} total ({rfcomm_count} with RFCOMM):")
+
+    if state.detailed_view:
+        print("=" * 80)
+        for i, (key, entry) in enumerate(state.current_mapping.items(), 1):
+            if not isinstance(entry, dict):
+                print(f"\n  {key:25} → ch {entry}")
+                continue
+            uuid = entry.get("uuid") or ""
+            uuid_name = get_name_from_uuid(uuid) if uuid else ""
+            print(f"\nRecord {i}:")
+            if entry.get("name"):
+                print(f"  Name        : {entry['name']}")
+            if uuid:
+                label = f"{uuid} ({uuid_name})" if uuid_name and uuid_name != "Unknown" else uuid
+                print(f"  UUID        : {label}")
+            if entry.get("channel") is not None:
+                print(f"  RFCOMM Ch   : {entry['channel']}")
+            if entry.get("handle") is not None:
+                print(f"  Handle      : 0x{entry['handle']:04X}")
+            if entry.get("service_version") is not None:
+                print(f"  Version     : 0x{entry['service_version']:04X}")
+            if entry.get("description"):
+                print(f"  Description : {entry['description']}")
+            if entry.get("profile_descriptors"):
+                print("  Profiles    :")
+                for p in entry["profile_descriptors"]:
+                    p_uuid = p.get("uuid", "?")
+                    p_name = get_name_from_uuid(p_uuid) if p_uuid else ""
+                    p_label = f"{p_uuid} ({p_name})" if p_name and p_name != "Unknown" else p_uuid
+                    ver = p.get("version")
+                    ver_str = f"v0x{ver:04X}" if ver is not None else ""
+                    print(f"    {p_label} {ver_str}")
+        print("\n" + "=" * 80)
+    else:
+        for key, entry in state.current_mapping.items():
+            ch = _ch(entry)
+            if not isinstance(entry, dict):
+                print(f"  {key:30} ch {ch}")
+                continue
+            uuid = entry.get("uuid") or ""
+            uuid_name = get_name_from_uuid(uuid) if uuid else ""
+            name_part = entry.get("name") or ""
+            if uuid_name and uuid_name != "Unknown" and uuid_name != name_part:
+                display = f"{name_part} ({uuid_name})" if name_part else uuid_name
+            else:
+                display = name_part or uuid or key
+            ch_str = f"ch {ch}" if ch is not None else "(no RFCOMM)"
+            print(f"  {display:40} {ch_str}")
+        print("    (use 'detailed on' then 'cservices' for full SDP records)")
+
     print()
 
 
@@ -164,8 +237,14 @@ def cmd_ckeep(args: List[str], state: DebugState) -> None:
             from bleep.ble_ops.classic_sdp import discover_services_sdp
             records = discover_services_sdp(state.current_device.mac_address)
             state.current_mapping = {
-                (r["name"] or r["uuid"]): r["channel"]
-                for r in records if r.get("channel")
+                (r["name"] or r["uuid"] or f"handle_{r.get('handle', 'unknown')}"): {
+                    "uuid": r.get("uuid"), "name": r.get("name"),
+                    "channel": r.get("channel"), "handle": r.get("handle"),
+                    "service_version": r.get("service_version"),
+                    "description": r.get("description"),
+                    "profile_descriptors": r.get("profile_descriptors"),
+                }
+                for r in records
             }
         except Exception as exc:
             error_str = format_dbus_error(exc)
@@ -182,8 +261,9 @@ def cmd_ckeep(args: List[str], state: DebugState) -> None:
             return
     elif opts.svc:
         key = opts.svc.lower()
-        for name, ch in state.current_mapping.items():
-            if key in name.lower() or key in str(ch):
+        for name, entry in state.current_mapping.items():
+            ch = _ch(entry)
+            if key in name.lower() or (ch is not None and key in str(ch)):
                 channel = ch
                 break
         if channel is None:
@@ -191,7 +271,7 @@ def cmd_ckeep(args: List[str], state: DebugState) -> None:
             return
     elif opts.first:
         if state.current_mapping:
-            channel = next(iter(state.current_mapping.values()))
+            channel = _ch(next(iter(state.current_mapping.values())))
         else:
             print("[-] Service map empty – run 'cservices' or specify channel")
             return
@@ -293,16 +373,24 @@ def cmd_csdp(args: List[str], state: DebugState) -> None:
 
         print("\n" + "=" * 80)
 
-        svc_map: Dict[str, int] = {}
+        svc_map: Dict[str, dict] = {}
         for rec in records:
-            if rec.get("channel") is not None:
-                name = rec.get("name") or rec.get("uuid") or f"Service-{rec.get('handle', 'unknown')}"
-                svc_map[name] = rec["channel"]
+            key = rec.get("name") or rec.get("uuid") or f"handle_{rec.get('handle', 'unknown')}"
+            svc_map[key] = {
+                "uuid": rec.get("uuid"), "name": rec.get("name"),
+                "channel": rec.get("channel"), "handle": rec.get("handle"),
+                "service_version": rec.get("service_version"),
+                "description": rec.get("description"),
+                "profile_descriptors": rec.get("profile_descriptors"),
+            }
 
+        rfcomm_count = sum(1 for v in svc_map.values() if v.get("channel") is not None)
         if svc_map:
-            print(f"\nService Map ({len(svc_map)} service(s)):")
-            for svc, ch in svc_map.items():
-                print(f"  {svc:25} → {ch}")
+            print(f"\nService Map ({len(svc_map)} service(s), {rfcomm_count} with RFCOMM):")
+            for svc, entry in svc_map.items():
+                ch = entry.get("channel")
+                ch_str = f"→ ch {ch}" if ch is not None else "(no RFCOMM)"
+                print(f"  {svc:25} {ch_str}")
 
             if not state.current_device:
                 print_and_log("[*] No device connected - service map not stored globally", LOG__DEBUG)
@@ -344,12 +432,16 @@ def cmd_pbap(args: List[str], state: DebugState) -> None:
 
     pbap_channel = None
     if state.current_mapping:
-        for key, ch in state.current_mapping.items():
+        for key, entry in state.current_mapping.items():
             low = key.lower()
+            uuid_low = ""
+            if isinstance(entry, dict):
+                uuid_low = (entry.get("uuid") or "").lower()
             if ("phonebook" in low or "pbap" in low
                     or low == "0x112f" or low == "112f"
-                    or low == "0000112f-0000-1000-8000-00805f9b34fb"):
-                pbap_channel = ch
+                    or low == "0000112f-0000-1000-8000-00805f9b34fb"
+                    or "112f" in uuid_low):
+                pbap_channel = _ch(entry)
                 break
 
     if not pbap_channel:

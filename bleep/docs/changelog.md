@@ -1,3 +1,47 @@
+## v2.7.15 – Enriched Classic SDP Service Mapping (2026-03-04)
+
+### Changed
+
+* **`bleep/ble_ops/classic_connect.py`** — `svc_map` return type changed from
+  `Dict[str, int]` to `Dict[str, Dict[str, Any]]`.  Each entry now carries the
+  full SDP record: `uuid`, `name`, `channel`, `handle`, `service_version`,
+  `description`, and `profile_descriptors`.  Services without an RFCOMM channel
+  are now included (previously filtered out).
+
+* **`bleep/modes/debug_classic.py`**:
+  * New `_ch(entry)` helper for uniform channel extraction from both the
+    enriched dict and legacy int formats.
+  * `cmd_cservices` rewritten — normal mode shows a one-line summary with UUID
+    translation; `detailed on` shows handle, version, profile descriptors, and
+    description per record.
+  * `cmd_ckeep` SDP fallback and channel resolution updated to build enriched
+    dicts and use `_ch()`.
+  * `cmd_csdp` local `svc_map` build updated to enriched dicts; summary now
+    shows total services and RFCOMM count.
+  * `cmd_pbap` PBAP channel lookup now uses `_ch()` and also matches on UUID
+    field inside the enriched dict.
+
+* **`bleep/modes/debug_classic_rfcomm.py`** — `_resolve_rfcomm_channel()` SDP
+  fallback now builds enriched dicts; `--svc` and `--first` lookups use `_ch()`.
+
+* **`bleep/modes/debug_pairing.py`** — `post_pair_connect_classic()` builds
+  enriched dicts from SDP records; keep-alive channel extraction updated.
+
+* **`bleep/modes/debug_connect.py`** — `cmd_info` Classic info message updated
+  from "RFCOMM services" to "SDP services" to reflect inclusion of non-RFCOMM
+  records.
+
+* **`bleep/cli.py`** — `classic-enum` SDP summary display updated to enriched
+  format; connection-based enumeration message updated.
+
+### Design Notes
+
+The enriched `current_mapping` provides BLE-like service detail parity for
+Classic connections.  The `_ch()` helper ensures backward compatibility if any
+legacy `int` values remain in the mapping during transition.
+
+---
+
 ## v2.7.14 – debug_classic_data.py Module Split (2026-03-04)
 
 ### Refactored

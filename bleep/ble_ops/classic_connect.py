@@ -156,19 +156,27 @@ def connect_and_enumerate__bluetooth__classic(
         if not device.connect(retry=3, wait_timeout=timeout_connect * 2):
             raise _errors.ConnectionError(target_bt_addr, "connect failed after pairing")
 
-    # Enumerate services via sdptool
+    # Enumerate services via sdptool — keep full SDP record per entry
     records = discover_services_sdp(target_bt_addr)
-    svc_map: Dict[str, int] = {}
+    svc_map: Dict[str, Dict[str, Any]] = {}
     svc_items = []
     for rec in records:
-        if rec["channel"] is None:
-            continue  # skip services without RFCOMM
-        key = rec["name"] or rec["uuid"] or f"channel_{rec['channel']}"
-        svc_map[key] = rec["channel"]
-        svc_items.append({"uuid": rec["uuid"], "channel": rec["channel"], "name": rec.get("name")})
+        key = rec.get("name") or rec.get("uuid") or f"handle_{rec.get('handle', 'unknown')}"
+        svc_map[key] = {
+            "uuid": rec.get("uuid"),
+            "name": rec.get("name"),
+            "channel": rec.get("channel"),
+            "handle": rec.get("handle"),
+            "service_version": rec.get("service_version"),
+            "description": rec.get("description"),
+            "profile_descriptors": rec.get("profile_descriptors"),
+        }
+        if rec.get("channel") is not None:
+            svc_items.append({"uuid": rec["uuid"], "channel": rec["channel"], "name": rec.get("name")})
 
+    rfcomm_count = sum(1 for v in svc_map.values() if v.get("channel") is not None)
     print_and_log(
-        f"[+] Classic enumeration complete – found {len(svc_map)} RFCOMM services",
+        f"[+] Classic enumeration complete – {len(svc_map)} services ({rfcomm_count} with RFCOMM)",
         LOG__GENERAL,
     )
 

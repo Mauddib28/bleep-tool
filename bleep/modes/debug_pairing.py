@@ -140,18 +140,31 @@ def post_pair_connect_classic(mac: str, device_path: str, state: DebugState) -> 
     try:
         records = discover_services_sdp(mac)
         for rec in records:
-            if rec.get("channel") is None:
-                continue
-            key = rec.get("name") or rec.get("uuid") or f"channel_{rec['channel']}"
-            svc_map[key] = rec["channel"]
+            key = rec.get("name") or rec.get("uuid") or f"handle_{rec.get('handle', 'unknown')}"
+            svc_map[key] = {
+                "uuid": rec.get("uuid"), "name": rec.get("name"),
+                "channel": rec.get("channel"), "handle": rec.get("handle"),
+                "service_version": rec.get("service_version"),
+                "description": rec.get("description"),
+                "profile_descriptors": rec.get("profile_descriptors"),
+            }
+        rfcomm_count = sum(1 for v in svc_map.values() if v.get("channel") is not None)
         if svc_map:
-            print_and_log(f"[+] SDP enumeration: {len(svc_map)} RFCOMM service(s) found", LOG__GENERAL)
+            print_and_log(
+                f"[+] SDP enumeration: {len(svc_map)} service(s) ({rfcomm_count} with RFCOMM)",
+                LOG__GENERAL,
+            )
     except Exception as exc:
         print_and_log(f"[*] SDP enumeration unavailable: {exc}", LOG__DEBUG)
 
     keepalive_ok = False
-    if svc_map:
-        first_channel = next(iter(svc_map.values()))
+    first_channel = None
+    for entry in svc_map.values():
+        ch = entry.get("channel") if isinstance(entry, dict) else entry
+        if ch is not None:
+            first_channel = ch
+            break
+    if first_channel is not None:
         try:
             state.keepalive_sock = classic_rfccomm_open(mac, first_channel, timeout=5.0)
             keepalive_ok = True
