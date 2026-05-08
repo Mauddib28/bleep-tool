@@ -26,6 +26,10 @@ class SignalType(enum.Enum):
     PROPERTY_CHANGE = "property_change"
     READ = "read"
     WRITE = "write"
+    DEVICE_CONNECT = "device_connect"
+    DEVICE_DISCONNECT = "device_disconnect"
+    PAIR_START = "pair_start"
+    PAIR_COMPLETE = "pair_complete"
     ANY = "any"
 
 
@@ -87,7 +91,7 @@ class SignalFilter:
             return False
         
         # Check device MAC
-        if self.device_mac and device_mac and self.device_mac.lower() != device_mac.lower():
+        if self.device_mac and device_mac and self.device_mac.upper() != device_mac.upper():
             return False
         
         # Check service UUID

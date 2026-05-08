@@ -189,4 +189,4 @@ results = brute_write_range(
 ## References
 
 - [BLE CTF GitHub Repository](https://github.com/hackgnar/ble_ctf)
-- [BLEEP Documentation](https://github.com/your-org/bleep)
+- [BLEEP CLI Quick-Start](cli_usage.md)

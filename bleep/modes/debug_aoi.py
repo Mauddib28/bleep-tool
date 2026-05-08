@@ -21,7 +21,7 @@ def cmd_aoi(args: List[str], state: DebugState) -> None:
 
     mac = None
     if args:
-        mac = args[0]
+        mac = args[0].upper()
     elif state.current_device:
         mac = state.current_device.mac_address
 

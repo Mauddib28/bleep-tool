@@ -49,28 +49,20 @@ The D-Bus Reliability Framework provides comprehensive tools and patterns for im
    - Location: `bleep/scripts/dbus_diagnostic.py`
    - Purpose: Test and demonstrate D-Bus reliability features
 
-### Additional Resources
+### Verification & Testing
 
-1. **[RELIABILITY_VERIFICATION.md](../../RELIABILITY_VERIFICATION.md)**
-   - Instructions for verifying D-Bus reliability improvements
-   - Testing procedures
-   - Expected behavior
+The diagnostic tool (`bleep/scripts/dbus_diagnostic.py`) can be used to verify
+reliability features are working correctly:
 
-2. **[DIAGNOSTIC_TOOL_FIXES.md](../../DIAGNOSTIC_TOOL_FIXES.md)**
-   - Details of fixes made to the diagnostic tool
-   - Common issues and solutions
+```bash
+python -m bleep.scripts.dbus_diagnostic --all
+```
 
-3. **[USING_DBUS_RELIABILITY.md](../../USING_DBUS_RELIABILITY.md)**
-   - Guide for using D-Bus reliability features
-   - Examples and patterns
-   - Testing without BlueZ
-
-4. **[PHASE4_COMPLETED.md](../../PHASE4_COMPLETED.md)**
-   - Summary of Phase 4 implementation
-   - Benefits of D-Bus reliability improvements
-
-5. **[DBUS_RELIABILITY_SUMMARY.md](../../DBUS_RELIABILITY_SUMMARY.md)**
-   - Comprehensive summary of all D-Bus reliability improvements
+Key verification areas:
+- **Timeout enforcement** — Confirm that hung D-Bus calls are interrupted after the configured timeout.
+- **BlueZ monitoring** — Verify stall/restart detection via `bluez_monitor.py`.
+- **Connection recovery** — Test reconnection strategies after simulated failures.
+- **Metrics collection** — Inspect latency/success-rate statistics via `LatencyTracker`.
 
 ## Integration with BLEEP
 
@@ -147,6 +139,17 @@ except Exception:
 elapsed = time.time() - start_time
 record_operation("operation_name", elapsed, success)
 ```
+
+## Related: D-Bus Client Lifetime Analysis
+
+Not all BlueZ D-Bus interfaces behave identically with respect to caller
+lifetime.  A detailed audit of the BlueZ C source code revealed that some
+interfaces install a `g_dbus_add_disconnect_watch()` on the calling D-Bus
+client (tearing down the resource when the caller exits the bus), while others
+do not.  See **[PAN connection analysis](pan_connection_analysis.md)** §2 for
+the full findings — particularly the table in §2.3 showing which BlueZ
+interfaces track the caller and which do not.  This is essential reading for
+any new D-Bus wrapper development.
 
 ## Conclusion
 

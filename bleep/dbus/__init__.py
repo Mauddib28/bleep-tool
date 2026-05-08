@@ -1,5 +1,10 @@
 """
 D-Bus interface functionality for BLEEP.
+
+Sub-modules:
+
+- ``connection_pool`` – D-Bus connection pooling.
+- ``timeout_manager`` – Timeout enforcement for D-Bus calls.
 """
 
 # Avoid circular-import explosions by **lazy-loading** sub-modules on first
@@ -10,7 +15,7 @@ from importlib import import_module as _import_module
 from types import ModuleType as _ModuleType
 from typing import TYPE_CHECKING as _TYPE_CHECKING
 
-__all__ = ["adapter", "gatt", "timeout_manager"]
+__all__ = ["connection_pool", "timeout_manager"]
 
 
 def __getattr__(name: str) -> _ModuleType:  # pragma: no cover – import meta-hook
@@ -24,6 +29,5 @@ def __getattr__(name: str) -> _ModuleType:  # pragma: no cover – import meta-h
 # Help static analysers / type checkers resolve sub-modules without executing
 # them at runtime.
 if _TYPE_CHECKING:  # pragma: no cover – mypy/pylance only
-    from . import adapter  # noqa: F401  (re-export for typing tools)
-    from . import gatt     # noqa: F401
+    from . import connection_pool  # noqa: F401
     from . import timeout_manager  # noqa: F401

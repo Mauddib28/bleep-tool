@@ -23,6 +23,7 @@ from gi.repository import GLib
 from bleep.bt_ref.constants import (
     DBUS_PROPERTIES,
     GATT_CHARACTERISTIC_INTERFACE,
+    GATT_SERVICE_INTERFACE,
     DBUS_OM_IFACE,
     DEVICE_INTERFACE,
     AGENT_INTERFACE,
@@ -807,14 +808,21 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
             dbus_interface=DBUS_OM_IFACE,
             signal_name="InterfacesRemoved",
         )
-        self._matches.extend([match_pc, match_added, match_removed])
+        # Device1.Disconnected — structured disconnect reason (BZ-8)
+        match_disconnected = self.bus.add_signal_receiver(
+            self._device_disconnected,
+            dbus_interface=DEVICE_INTERFACE,
+            signal_name="Disconnected",
+            path_keyword="path",
+        )
+        self._matches.extend([match_pc, match_added, match_removed, match_disconnected])
 
     def _detach_bus_listeners(self):
         for m in self._matches:
             try:
                 m.remove()
-            except Exception:
-                pass
+            except Exception as _e:
+                print_and_log(f"[DEBUG] D-Bus match removal failed: {_e}", LOG__DEBUG)
         self._matches.clear()
         self._signal_correlator.clear()
         # Also detach method call listeners if they were attached (deprecated)
@@ -2222,7 +2230,7 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
                         # Extract MAC from path: /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX
                         mac_part = path.split("/dev_")[-1]
                         # Convert XX_XX_XX_XX_XX_XX to XX:XX:XX:XX:XX:XX
-                        mac_address = mac_part.replace("_", ":").lower()
+                        mac_address = mac_part.replace("_", ":").upper()
                         # Forward to DeviceManager if discovery is active
                         if hasattr(self._device_manager, "is_discovery_active") and self._device_manager.is_discovery_active():
                             if hasattr(self._device_manager, "_capture_rssi_from_signal"):
@@ -2237,6 +2245,24 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
                         # Ignore path parsing errors (non-critical)
                         pass
             
+        # Route GattService1 property changes to the owning Service object
+        if interface == GATT_SERVICE_INTERFACE:
+            for dev_path, device in self._devices.items():
+                if not path.startswith(dev_path):
+                    continue
+                if hasattr(device, "_services"):
+                    for svc in device._services:
+                        if svc.path == path:
+                            try:
+                                svc._props_changed(interface, changed, invalidated)
+                            except Exception as e:
+                                print_and_log(
+                                    f"[ERROR] Service signal dispatch error: {e}",
+                                    LOG__DEBUG,
+                                )
+                            break
+                break
+
         # Handle GATT characteristic notifications specifically
         if interface == GATT_CHARACTERISTIC_INTERFACE and "Value" in changed:
             value = bytes(changed["Value"])
@@ -2323,7 +2349,86 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
                 except Exception:
                     pass
             return
-    
+
+    # ------------------------------------------------------------------
+    # Callbacks – Device1.Disconnected (BZ-8)
+    # ------------------------------------------------------------------
+    def _device_disconnected(self, reason: str, message: str = "",
+                             path: str | None = None):
+        """Handle the Device1 ``Disconnected`` signal.
+
+        Unlike the ``Connected`` property change (which only says True/False),
+        this signal carries a structured *reason* string (e.g.
+        ``org.bluez.Reason.Timeout``) and a human-readable *message*.
+        """
+        from bleep.core.error_handling import DISCONNECT_REASON_MAP
+
+        if path is None:
+            return
+
+        reason_str = str(reason)
+        message_str = str(message) if message else ""
+        human = DISCONNECT_REASON_MAP.get(reason_str, reason_str)
+
+        ts = time.time()
+
+        # Enrich existing connection state tracking
+        with self._lock:
+            self._device_connection_states[path] = {
+                "connected": False,
+                "timestamp": ts,
+                "disconnect_reason": reason_str,
+                "disconnect_message": message_str,
+                "disconnect_human": human,
+            }
+
+        # Record for signal correlation
+        capture = SignalCapture(
+            interface=DEVICE_INTERFACE,
+            path=path,
+            signal_name="Disconnected",
+            args=(reason_str, message_str),
+            timestamp=ts,
+            source="disconnect",
+        )
+        self._signal_correlator.add_capture(capture)
+
+        # Forward to registered device instance
+        for dev_path, device in self._devices.items():
+            if path != dev_path:
+                continue
+            if hasattr(device, "on_disconnected"):
+                try:
+                    device.on_disconnected(reason_str, message_str)
+                except Exception as e:
+                    print_and_log(
+                        f"[ERROR] Device disconnect handler error: {e}",
+                        LOG__DEBUG,
+                    )
+            break
+
+        print_and_log(
+            f"[*] Device {path} disconnected: {human}"
+            + (f" ({message_str})" if message_str else ""),
+            LOG__DEBUG,
+        )
+
+    def get_disconnect_reason(self, device_path: str) -> Optional[Dict[str, str]]:
+        """Return the last disconnect reason for *device_path*, or ``None``.
+
+        Returns a dict with keys ``reason``, ``message``, ``human`` if a
+        ``Disconnected`` signal was captured for this device, else ``None``.
+        """
+        with self._lock:
+            state = self._device_connection_states.get(device_path)
+            if state and "disconnect_reason" in state:
+                return {
+                    "reason": state["disconnect_reason"],
+                    "message": state.get("disconnect_message", ""),
+                    "human": state.get("disconnect_human", ""),
+                }
+        return None
+
     def handle_read_event(self, char_path: str, value: bytes) -> None:
         """Handle a characteristic read event.
         

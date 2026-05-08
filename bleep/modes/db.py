@@ -5,7 +5,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from bleep.core import observations as _obs
+try:
+    from bleep.core import observations as _obs
+except Exception:  # noqa: BLE001
+    _obs = None
 
 
 def _conn():
@@ -146,6 +149,10 @@ def export_device(mac: str, out: Path | None) -> None:
 
 
 def main(argv: list[str]) -> int:
+    if _obs is None:
+        print("Error: Observation database module unavailable (sqlite3 or dependencies missing)")
+        return 1
+
     p = argparse.ArgumentParser("bleep db", description="BLEEP observation DB utilities")
     sub = p.add_subparsers(dest="cmd")
 

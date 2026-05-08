@@ -15,9 +15,9 @@ import shlex
 from typing import List
 
 from bleep.core.log import print_and_log, LOG__GENERAL
-from bleep.ble_ops.scan import passive_scan
-from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
-from bleep.ble_ops import ctf as _ctf
+from bleep.ble_ops.le.scan import passive_scan
+from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+from bleep.ble_ops.le import ctf as _ctf
 
 _PROMPT = "BLEEP> "
 

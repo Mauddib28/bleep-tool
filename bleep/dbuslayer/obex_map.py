@@ -75,7 +75,7 @@ class MapSession:
                 f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
             ) from exc
 
-        session_args: Dict[str, Any] = {"Target": "map"}
+        session_args = dbus.Dictionary({"Target": "map"}, signature="sv")
         if instance is not None:
             session_args["Channel"] = dbus.Byte(instance)
 
@@ -117,8 +117,43 @@ class MapSession:
         self._map.SetFolder(folder)
 
     def list_folders(self) -> List[Dict[str, Any]]:
-        raw = self._map.ListFolders(dbus.Dictionary({}, signature="sv"))
+        raw = self._map.ListFolders(
+            dbus.Dictionary({}, signature="sv"), timeout=self._timeout,
+        )
         return [dict(item) for item in raw]
+
+    def walk_folder_tree(self, max_depth: int = 10) -> List[Dict[str, Any]]:
+        """Recursively enumerate the MAP folder hierarchy from the current position.
+
+        Returns a nested structure:
+        ``[{"name": "telecom", "children": [{"name": "msg", "children": [...]}]}]``
+
+        *max_depth* prevents runaway recursion on pathological devices.
+        """
+        tree: List[Dict[str, Any]] = []
+        try:
+            folders = self.list_folders()
+        except dbus.exceptions.DBusException as exc:
+            print_and_log(
+                f"[MAP] ListFolders failed during tree walk: {exc}", LOG__DEBUG,
+            )
+            return tree
+        for entry in folders:
+            name = entry.get("Name", "")
+            if not name:
+                continue
+            node: Dict[str, Any] = {"name": name, "children": []}
+            if max_depth > 0:
+                try:
+                    self.set_folder(name)
+                    node["children"] = self.walk_folder_tree(max_depth - 1)
+                    self.set_folder("..")
+                except dbus.exceptions.DBusException as exc:
+                    print_and_log(
+                        f"[MAP] Cannot descend into '{name}': {exc}", LOG__DEBUG,
+                    )
+            tree.append(node)
+        return tree
 
     # -- message access ------------------------------------------------------
 
@@ -126,14 +161,80 @@ class MapSession:
         self, folder: str = "", filters: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         filt = dbus.Dictionary(filters or {}, signature="sv")
-        raw = self._map.ListMessages(folder, filt)
-        return [
-            {"path": str(path), **{str(k): _unwrap(v) for k, v in props.items()}}
-            for path, props in raw
-        ]
+        print_and_log(
+            f"[MAP] D-Bus ListMessages(folder='{folder}', filter={filters})",
+            LOG__DEBUG,
+        )
+        raw = self._map.ListMessages(folder, filt, timeout=self._timeout * 4)
+        print_and_log(
+            f"[MAP] ListMessages returned {type(raw).__name__} "
+            f"(len={len(raw) if hasattr(raw, '__len__') else 'N/A'})",
+            LOG__DEBUG,
+        )
 
-    def get_message(self, handle: str, dest: str, *, attachment: bool = True) -> Path:
-        """Download message *handle* to *dest* file path."""
+        messages: List[Dict[str, Any]] = []
+        # a{oa{sv}} is represented as dbus.Dictionary by the Python dbus library.
+        if isinstance(raw, dbus.Dictionary):
+            for path, props in raw.items():
+                messages.append(
+                    {"path": str(path),
+                     **{str(k): _unwrap(v) for k, v in props.items()}}
+                )
+        elif isinstance(raw, dbus.Array):
+            # Fallback: some BlueZ versions may return an array of structs.
+            for item in raw:
+                if isinstance(item, (tuple, list)) and len(item) == 2:
+                    path, props = item
+                    messages.append(
+                        {"path": str(path),
+                         **{str(k): _unwrap(v) for k, v in props.items()}}
+                    )
+                elif isinstance(item, dict):
+                    messages.append(
+                        {str(k): _unwrap(v) for k, v in item.items()}
+                    )
+                else:
+                    print_and_log(
+                        f"[MAP] Unexpected item in ListMessages array: "
+                        f"{type(item).__name__}",
+                        LOG__DEBUG,
+                    )
+        else:
+            print_and_log(
+                f"[MAP] ListMessages returned unexpected type: "
+                f"{type(raw).__name__}",
+                LOG__DEBUG,
+            )
+            raise TypeError(
+                f"ListMessages returned unexpected type: {type(raw).__name__}"
+            )
+
+        return messages
+
+    def _populate_message_objects(self, folder: str) -> None:
+        """Navigate to *folder* and call ``ListMessages`` to create message
+        D-Bus objects within this session.  The reference BlueZ ``map-client``
+        does this before every ``Get``, ``GetAll``, or ``SetProperty`` call.
+        """
+        if folder:
+            self.set_folder(folder)
+        self._map.ListMessages(
+            "", dbus.Dictionary({}, signature="sv"),
+            timeout=self._timeout * 4,
+        )
+
+    def get_message(
+        self, handle: str, dest: str,
+        *, attachment: bool = True, folder: str = "",
+    ) -> Path:
+        """Download message *handle* to *dest* file path.
+
+        *folder* must be the MAP folder that contains the message (e.g.
+        ``telecom/msg/inbox``).  ``ListMessages`` is called within this
+        session to materialise the message D-Bus object before access.
+        """
+        if folder:
+            self._populate_message_objects(folder)
         dest = os.path.abspath(dest)
         path = f"{self._session_path}/message{handle}"
         obj = self._bus.get_object(_OBEX_SERVICE, path)
@@ -162,7 +263,7 @@ class MapSession:
         self._poll_transfer(transfer_path)
 
     def update_inbox(self) -> None:
-        self._map.UpdateInbox()
+        self._map.UpdateInbox(timeout=self._timeout)
 
     # -- metadata queries ----------------------------------------------------
 
@@ -170,15 +271,26 @@ class MapSession:
         """Return ``SupportedTypes`` property from ``MessageAccess1``.
 
         Possible values: ``EMAIL``, ``SMS_GSM``, ``SMS_CDMA``, ``MMS``, ``IM``.
+
+        Returns an empty list when the property is unavailable (e.g.
+        BlueZ 5.64 does not expose ``SupportedTypes``).
         """
-        session_obj = self._bus.get_object(_OBEX_SERVICE, self._session_path)
-        props = dbus.Interface(session_obj, DBUS_PROPERTIES)
-        raw = props.Get(_OBEX_MAP_IFACE, "SupportedTypes")
-        return [str(t) for t in raw]
+        try:
+            session_obj = self._bus.get_object(_OBEX_SERVICE, self._session_path)
+            props = dbus.Interface(session_obj, DBUS_PROPERTIES)
+            raw = props.Get(_OBEX_MAP_IFACE, "SupportedTypes")
+            return [str(t) for t in raw]
+        except dbus.exceptions.DBusException as exc:
+            print_and_log(
+                f"[MAP] SupportedTypes unavailable: "
+                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
+            return []
 
     def list_filter_fields(self) -> List[str]:
         """Return all field names usable in ``ListMessages`` ``Fields`` filter."""
-        raw = self._map.ListFilterFields()
+        raw = self._map.ListFilterFields(timeout=self._timeout)
         return [str(f) for f in raw]
 
     # -- MNS notification monitoring -----------------------------------------
@@ -249,24 +361,42 @@ class MapSession:
 
     # -- message properties --------------------------------------------------
 
-    def get_message_properties(self, handle: str) -> Dict[str, Any]:
+    def get_message_properties(
+        self, handle: str, *, folder: str = "",
+    ) -> Dict[str, Any]:
+        if folder:
+            self._populate_message_objects(folder)
         path = f"{self._session_path}/message{handle}"
         obj = self._bus.get_object(_OBEX_SERVICE, path)
         props = dbus.Interface(obj, DBUS_PROPERTIES)
         raw = props.GetAll(_OBEX_MSG_IFACE)
         return {str(k): _unwrap(v) for k, v in raw.items()}
 
-    def set_message_read(self, handle: str, read: bool = True) -> None:
+    def set_message_read(
+        self, handle: str, read: bool = True, *, folder: str = "",
+    ) -> None:
+        if folder:
+            self._populate_message_objects(folder)
         path = f"{self._session_path}/message{handle}"
         obj = self._bus.get_object(_OBEX_SERVICE, path)
-        msg = dbus.Interface(obj, _OBEX_MSG_IFACE)
-        msg.SetProperty("Read", dbus.Boolean(read))
+        props = dbus.Interface(obj, DBUS_PROPERTIES)
+        props.Set(
+            _OBEX_MSG_IFACE, "Read",
+            dbus.Boolean(read, variant_level=1),
+        )
 
-    def set_message_deleted(self, handle: str, deleted: bool = True) -> None:
+    def set_message_deleted(
+        self, handle: str, deleted: bool = True, *, folder: str = "",
+    ) -> None:
+        if folder:
+            self._populate_message_objects(folder)
         path = f"{self._session_path}/message{handle}"
         obj = self._bus.get_object(_OBEX_SERVICE, path)
-        msg = dbus.Interface(obj, _OBEX_MSG_IFACE)
-        msg.SetProperty("Deleted", dbus.Boolean(deleted))
+        props = dbus.Interface(obj, DBUS_PROPERTIES)
+        props.Set(
+            _OBEX_MSG_IFACE, "Deleted",
+            dbus.Boolean(deleted, variant_level=1),
+        )
 
     # -- internal ------------------------------------------------------------
 

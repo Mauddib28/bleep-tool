@@ -36,6 +36,10 @@ _DBUS_PROPERTY_MAP: dict[str, tuple[str, bool]] = {
     "uuids":                ("UUIDs", False),
     "modalias":             ("Modalias", False),
     "roles":                ("Roles", False),
+    "power-state":          ("PowerState", False),
+    "manufacturer":         ("Manufacturer", False),
+    "version":              ("Version", False),
+    "experimental-features": ("ExperimentalFeatures", False),
 }
 
 # Properties only reachable via bluetoothctl mgmt
@@ -111,8 +115,10 @@ def _print_show(adapter_name: str) -> int:
 
     display_order = [
         "Address", "AddressType", "Name", "Alias", "Class",
-        "Powered", "Connectable", "Discoverable", "DiscoverableTimeout",
-        "Pairable", "PairableTimeout", "Discovering",
+        "Powered", "PowerState", "Connectable", "Discoverable",
+        "DiscoverableTimeout", "Pairable", "PairableTimeout",
+        "Discovering", "Manufacturer", "Version",
+        "ExperimentalFeatures",
     ]
     printed = set()
     for key in display_order:
@@ -120,6 +126,12 @@ def _print_show(adapter_name: str) -> int:
             val = info[key]
             if key == "Class" and isinstance(val, int):
                 val = _format_class(val)
+            elif key == "ExperimentalFeatures" and isinstance(val, list):
+                print(f"  {key:.<28s} [{len(val)} feature(s)]")
+                for feat in val:
+                    print(f"    {feat}")
+                printed.add(key)
+                continue
             print(f"  {key:.<28s} {val}")
             printed.add(key)
 

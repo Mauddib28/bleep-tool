@@ -12,7 +12,7 @@ import sys
 from typing import Dict, Any, Optional
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__USER
-from bleep.ble_ops.audio_profile_correlator import AudioProfileCorrelator
+from bleep.ble_ops.audio.audio_profile_correlator import AudioProfileCorrelator
 from bleep.dbuslayer.media_stream import MediaStreamManager
 
 __all__ = ["list_audio_profiles", "play_audio_file", "record_audio", "main"]
@@ -64,7 +64,7 @@ def list_audio_profiles(mac_address: Optional[str] = None) -> None:
                         print_and_log(f"      Source: {alsa_dev['source_name']}", LOG__USER)
     else:
         # List all Bluetooth audio devices
-        from bleep.ble_ops.audio_tools import AudioToolsHelper
+        from bleep.ble_ops.audio.audio_tools import AudioToolsHelper
         audio_tools = AudioToolsHelper()
         all_profiles = audio_tools.identify_bluetooth_profiles_from_alsa()
         
@@ -103,22 +103,28 @@ def list_audio_profiles(mac_address: Optional[str] = None) -> None:
 def play_audio_file(mac_address: str, file_path: str, **kwargs) -> bool:
     """
     Play audio file to Bluetooth device.
-    
+
+    The ``profile_uuid`` identifies the **remote endpoint** role on the
+    target device.  For playback the remote device advertises an A2DP
+    Sink endpoint (it receives audio); the associated MediaTransport
+    will carry the complementary local A2DP Source UUID.
+
     Parameters
     ----------
     mac_address : str
-        MAC address of target Bluetooth device
+        MAC address of target Bluetooth device.
     file_path : str
-        Path to audio file (MP3, WAV, FLAC, etc.)
+        Path to audio file (MP3, WAV, FLAC, etc.).
     **kwargs
         Additional options:
+
         - volume: Volume level (0-127)
-        - profile_uuid: Profile UUID (defaults to A2DP Sink)
-    
+        - profile_uuid: Remote endpoint UUID (defaults to A2DP Sink)
+
     Returns
     -------
     bool
-        True if playback succeeded, False otherwise
+        True if playback succeeded, False otherwise.
     """
     profile_uuid = kwargs.get("profile_uuid")
     volume = kwargs.get("volume")
@@ -130,22 +136,28 @@ def play_audio_file(mac_address: str, file_path: str, **kwargs) -> bool:
 def record_audio(mac_address: str, output_path: str, **kwargs) -> bool:
     """
     Record audio from Bluetooth device.
-    
+
+    The ``profile_uuid`` identifies the **remote endpoint** role on the
+    source device.  For recording the remote device advertises an A2DP
+    Source endpoint (it sends audio); the associated MediaTransport
+    will carry the complementary local A2DP Sink UUID.
+
     Parameters
     ----------
     mac_address : str
-        MAC address of source Bluetooth device
+        MAC address of source Bluetooth device.
     output_path : str
-        Path to output audio file
+        Path to output audio file.
     **kwargs
         Additional options:
+
         - duration: Recording duration in seconds (None = until stopped)
-        - profile_uuid: Profile UUID (defaults to A2DP Source)
-    
+        - profile_uuid: Remote endpoint UUID (defaults to A2DP Source)
+
     Returns
     -------
     bool
-        True if recording succeeded, False otherwise
+        True if recording succeeded, False otherwise.
     """
     from bleep.bt_ref.constants import A2DP_SOURCE_UUID
     profile_uuid = kwargs.get("profile_uuid", A2DP_SOURCE_UUID)
@@ -232,7 +244,7 @@ def main() -> int:
         return 0 if success else 1
     
     elif args.command == "recon":
-        from bleep.ble_ops.audio_recon import run_audio_recon
+        from bleep.ble_ops.audio.audio_recon import run_audio_recon
         run_audio_recon(
             mac_filter=getattr(args, "device", None),
             test_file=getattr(args, "test_file", None),

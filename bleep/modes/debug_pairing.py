@@ -8,73 +8,24 @@ from typing import List
 import dbus
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__AGENT
-from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+from bleep.pairing import (
+    find_device_path,
+    resolve_device_for_pair,
+    remove_stale_bond,
+    register_pair_agent,
+    check_pair_status,
+    report_pair_status,
+)
 
 from bleep.modes.debug_state import DebugState, ensure_glib_mainloop, stop_glib_mainloop
 from bleep.modes.debug_dbus import format_dbus_error
-from bleep.modes.debug_connect import find_device_path, get_device_transport
+from bleep.modes.debug_connect import get_device_transport
 
 
 # ---------------------------------------------------------------------------
-# Pairing helpers
+# Post-pair helpers (debug-mode specific — they update DebugState)
 # ---------------------------------------------------------------------------
-
-def _remove_stale_bond(mac: str, device_path: str, adapter) -> str | None:
-    """Remove an existing pairing and re-discover the device."""
-    try:
-        bus = dbus.SystemBus()
-        dev_props = dbus.Interface(
-            bus.get_object("org.bluez", device_path),
-            "org.freedesktop.DBus.Properties",
-        )
-        already_paired = bool(dev_props.Get("org.bluez.Device1", "Paired"))
-        if already_paired:
-            print_and_log(f"[*] Device {mac} already paired – removing stale bond first", LOG__GENERAL)
-            adapter_obj = dbus.Interface(
-                bus.get_object("org.bluez", "/org/bluez/hci0"),
-                "org.bluez.Adapter1",
-            )
-            adapter_obj.RemoveDevice(device_path)
-            time.sleep(0.5)
-            print(f"[*] Re-discovering {mac} after bond removal…")
-            adapter.set_discovery_filter({"Transport": "auto"})
-            adapter.run_scan__timed(duration=15)
-            return find_device_path(mac)
-    except dbus.exceptions.DBusException:
-        pass
-    return device_path
-
-
-def _resolve_device_for_pair(mac: str, adapter) -> str | None:
-    """Discover and return a device D-Bus path, or None."""
-    device_path = find_device_path(mac)
-    if device_path is None:
-        print(f"[*] Device {mac} not in BlueZ object tree – running 15s discovery…")
-        adapter.set_discovery_filter({"Transport": "auto"})
-        adapter.run_scan__timed(duration=15)
-        device_path = find_device_path(mac)
-    return device_path
-
-
-def _register_pair_agent(io_handler, cap: str) -> bool:
-    """Clear any existing agent and register a fresh one. Returns True on success."""
-    from bleep.dbuslayer.agent import ensure_default_pairing_agent, clear_default_pairing_agent
-    import bleep.dbuslayer.agent as _agent_mod
-
-    existing = getattr(_agent_mod, "_DEFAULT_AGENT", None)
-    if existing is not None and existing.is_registered():
-        try:
-            clear_default_pairing_agent()
-        except Exception:
-            pass
-
-    try:
-        ensure_default_pairing_agent(capabilities=cap, auto_accept=True, io_handler=io_handler)
-        return True
-    except Exception as exc:
-        print(f"[-] Agent registration failed: {exc}")
-        return False
-
 
 def _post_pair_monitor(mac: str, device_path: str, connect_time: float) -> None:
     """Monitor a freshly paired device for auto-disconnect."""
@@ -131,8 +82,8 @@ def _post_pair_connect(mac: str, device_path: str, state: DebugState) -> None:
 def post_pair_connect_classic(mac: str, device_path: str, state: DebugState) -> None:
     """Attempt classic connection after pairing: SDP + keepalive socket."""
     from bleep.dbuslayer.device_classic import system_dbus__bluez_device__classic
-    from bleep.ble_ops.classic_sdp import discover_services_sdp, build_svc_map
-    from bleep.ble_ops.classic_connect import classic_rfccomm_open
+    from bleep.ble_ops.classic.sdp import discover_services_sdp, build_svc_map
+    from bleep.ble_ops.classic.connect import classic_rfccomm_open
 
     dev = system_dbus__bluez_device__classic(mac)
 
@@ -150,19 +101,28 @@ def post_pair_connect_classic(mac: str, device_path: str, state: DebugState) -> 
         print_and_log(f"[*] SDP enumeration unavailable: {exc}", LOG__DEBUG)
 
     keepalive_ok = False
-    first_channel = None
+    candidates = []
     for entry in svc_map.values():
         ch = entry.get("channel") if isinstance(entry, dict) else entry
-        if ch is not None:
-            first_channel = ch
-            break
-    if first_channel is not None:
+        if ch is not None and ch not in candidates:
+            candidates.append(ch)
+
+    last_err = None
+    for ch in candidates:
         try:
-            state.keepalive_sock = classic_rfccomm_open(mac, first_channel, timeout=5.0)
+            state.keepalive_sock = classic_rfccomm_open(mac, ch, timeout=5.0)
             keepalive_ok = True
-            print_and_log(f"[+] Keep-alive socket opened on RFCOMM channel {first_channel}", LOG__GENERAL)
+            print_and_log(f"[+] Keep-alive socket opened on RFCOMM channel {ch}", LOG__GENERAL)
+            break
         except Exception as exc:
-            print_and_log(f"[*] Keep-alive socket failed (channel {first_channel}): {exc}", LOG__DEBUG)
+            print_and_log(f"[*] Keep-alive socket failed (channel {ch}): {exc}", LOG__DEBUG)
+            last_err = exc
+
+    if not keepalive_ok and candidates and last_err is not None:
+        print_and_log(
+            f"[*] All {len(candidates)} RFCOMM channel(s) failed — last error: {last_err}",
+            LOG__GENERAL,
+        )
 
     state.current_device = dev
     state.current_mapping = svc_map if svc_map else None
@@ -329,6 +289,10 @@ def cmd_pair(args: List[str], state: DebugState) -> None:
     parser.add_argument("--passkey", type=int, default=None)
     parser.add_argument("--interactive", action="store_true")
     parser.add_argument("--test", action="store_true")
+    parser.add_argument("--check", action="store_true",
+                        help="Check pairing state only – do not pair")
+    parser.add_argument("--reset", action="store_true",
+                        help="Force-remove existing bond before pairing")
     parser.add_argument("--brute", action="store_true")
     parser.add_argument("--passkey-brute", action="store_true")
     parser.add_argument("--range", default=None, dest="pin_range")
@@ -341,6 +305,8 @@ def cmd_pair(args: List[str], state: DebugState) -> None:
     parser.add_argument("--cap", default="KeyboardDisplay",
                         choices=["NoInputNoOutput", "DisplayOnly", "DisplayYesNo",
                                  "KeyboardOnly", "KeyboardDisplay"])
+    parser.add_argument("--probe", action="store_true",
+                        help="Discover auth method by cycling capabilities, then cancel")
 
     try:
         opts = parser.parse_args(args)
@@ -350,26 +316,88 @@ def cmd_pair(args: List[str], state: DebugState) -> None:
     mac = opts.mac.upper()
     cap = opts.cap
 
-    if opts.brute:
+    # --check: report pairing state only
+    if opts.check:
+        status = check_pair_status(mac)
+        report_pair_status(mac, status)
+        return
+
+    if opts.probe:
+        _cmd_pair_probe(mac, opts.timeout, state)
+    elif opts.brute:
         _cmd_pair_brute(mac, opts, cap, state)
     elif opts.interactive:
-        _cmd_pair_single(mac, cap, opts.timeout, "cli", test_mode=opts.test, state=state)
+        _cmd_pair_single(mac, cap, opts.timeout, "cli",
+                         test_mode=opts.test, reset=opts.reset, state=state)
     else:
         pin = opts.pin if opts.pin is not None else "0000"
         _cmd_pair_single(mac, cap, opts.timeout, "auto", pin=pin, passkey=opts.passkey,
-                         test_mode=opts.test, state=state)
+                         test_mode=opts.test, reset=opts.reset, state=state)
+
+
+def _cmd_pair_probe(mac: str, timeout: int, state: DebugState) -> None:
+    """Discover auth method by cycling capabilities, then cancel pairing."""
+    import dbus
+    import dbus.mainloop.glib
+    from bleep.dbuslayer.agent import attempt_downgrade_pair
+    from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as Adapter
+
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SystemBus()
+    adapter = Adapter()
+    device_path = f"{adapter.adapter_path}/dev_{mac.replace(':', '_')}"
+
+    print(f"[*] Probing auth method for {mac} (cycling capabilities)...")
+    result = attempt_downgrade_pair(bus, device_path, timeout=timeout)
+
+    print(f"\n{'='*60}")
+    print(f"Auth Probe Results for {mac}")
+    print(f"{'='*60}")
+    for att in result["attempts"]:
+        auth = att["auth_method"] or "none"
+        print(f"  {att['capability']:<20}  {att['result']:<30}  auth={auth}")
+    print(f"{'='*60}")
+
+    if result["success"]:
+        print(f"[+] Paired successfully with '{result['capability']}' (auth: {result['auth_method']})")
+        try:
+            dev_iface = dbus.Interface(
+                bus.get_object("org.bluez", device_path), "org.bluez.Device1"
+            )
+            dev_iface.CancelPairing()
+            print("[*] Pairing canceled (probe complete)")
+        except dbus.exceptions.DBusException:
+            pass
+    else:
+        print(f"[-] No capability succeeded — device requires explicit auth")
 
 
 def _cmd_pair_single(
     mac: str, cap: str, timeout: int, io_mode: str,
     pin: str = "0000", passkey: int | None = None,
-    test_mode: bool = False, *, state: DebugState,
+    test_mode: bool = False, reset: bool = False,
+    *, state: DebugState,
 ) -> None:
     """Execute a single pairing attempt."""
     from bleep.dbuslayer.agent import PairingAgent
     from bleep.dbuslayer.agent_io import create_io_handler
     from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as Adapter
     import bleep.dbuslayer.agent as _agent_mod
+
+    # Pre-pair status check
+    status = check_pair_status(mac)
+    if status["paired"] and not reset:
+        report_pair_status(mac, status)
+        if status["connected"]:
+            print("[*] Device is already paired and connected – skipping pairing")
+            print("[*] Use --reset to force-remove the existing bond and re-pair")
+            return
+        print("[*] Device is already paired – attempting connection only")
+        print("[*] Use --reset to force-remove the existing bond and re-pair")
+        device_path = find_device_path(mac)
+        if device_path:
+            _post_pair_connect(mac, device_path, state)
+        return
 
     if io_mode == "cli":
         print_and_log(f"[*] Pair target: {mac}  mode: interactive  capability: {cap}  timeout: {timeout}s", LOG__GENERAL)
@@ -384,22 +412,24 @@ def _cmd_pair_single(
 
     stop_glib_mainloop(state)
 
-    if not _register_pair_agent(io_handler, cap):
+    if not register_pair_agent(io_handler, cap):
         ensure_glib_mainloop(state)
         return
 
     adapter = Adapter()
-    device_path = _resolve_device_for_pair(mac, adapter)
+    device_path = resolve_device_for_pair(mac, adapter)
     if device_path is None:
         print(f"[-] Device {mac} not found. Ensure it is powered on and in range.")
         ensure_glib_mainloop(state)
         return
 
-    device_path = _remove_stale_bond(mac, device_path, adapter)
-    if device_path is None:
-        print(f"[-] Device {mac} not re-discovered after bond removal.")
-        ensure_glib_mainloop(state)
-        return
+    # Remove stale bond if --reset was requested or unconditionally (legacy behaviour)
+    if reset:
+        device_path = remove_stale_bond(mac, device_path, adapter)
+        if device_path is None:
+            print(f"[-] Device {mac} not re-discovered after bond removal.")
+            ensure_glib_mainloop(state)
+            return
 
     agent = getattr(_agent_mod, "_DEFAULT_AGENT", None)
     if not isinstance(agent, PairingAgent):

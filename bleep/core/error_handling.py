@@ -49,16 +49,12 @@ def controller_stall_mitigation(mac: str) -> None:
 # Rich BlueZ/DBus → RESULT_ERR mapping  (monolith table distilled)
 # ---------------------------------------------------------------------------
 # **CANONICAL DECODER**: This is the single source of truth for D-Bus error
-# name/message → RESULT_ERR code mapping. All other error mapping systems
-# should delegate to decode_dbus_error() or be consolidated into this module.
-#
-# TODO (B5 consolidation): The following systems in this file duplicate/overlap
-# with decode_dbus_error() and should be refactored to delegate:
-#   - system_dbus__error_handling_service.evaluate__dbus_error() (lines ~156-188)
-#     has its own name→code mapping logic that should use decode_dbus_error()
-#   - BlueZErrorHandler.ERROR_MESSAGES (line ~318) is user-friendly text only
-#     (not code mapping), but could be enhanced to use decode_dbus_error() for
-#     code derivation before formatting messages
+# name/message → RESULT_ERR code mapping.  All other error mapping systems
+# delegate here:
+#   - evaluate__dbus_error()       → delegates to decode_dbus_error()
+#   - bt_ref.error_map             → calls decode_dbus_error() first
+#   - core.errors.map_dbus_error() → calls decode_dbus_error() first
+#   - BlueZErrorHandler            → calls decode_dbus_error() for code derivation
 
 _DBUS_ERROR_NAME_MAP = {
     # Generic failures ---------------------------------------------------
@@ -79,28 +75,76 @@ _DBUS_ERROR_NAME_MAP = {
     "org.bluez.Error.InProgress": RESULT_ERR_ACTION_IN_PROGRESS,
     "org.bluez.Error.InvalidArguments": RESULT_ERR_BAD_ARGS,
     "org.bluez.Error.InvalidValueLength": RESULT_ERR_BAD_ARGS,
-    "org.bluez.Error.AlreadyConnected": RESULT_ERR_WRONG_STATE,
+    "org.bluez.Error.AlreadyConnected": RESULT_ERR_ALREADY_CONNECTED,
     # GATT specific – BlueZ sometimes surfaces as InvalidArguments
     "org.bluez.Error.NotFound": RESULT_ERR_NOT_FOUND,
     # bt_ref parity / common BlueZ resource names ------------------------
     "org.bluez.Error.NotAvailable": RESULT_ERR_NOT_FOUND,
     "org.bluez.Error.DoesNotExist": RESULT_ERR_NOT_FOUND,
+    # Connection / pairing (from org.bluez.Device.rst) -------------------
+    "org.bluez.Error.NotReady": RESULT_ERR_NOT_POWERED,
+    "org.bluez.Error.BREDR.ProfileUnavailable": RESULT_ERR_PROFILE_UNAVAILABLE,
+    "org.bluez.Error.AuthenticationCanceled": RESULT_ERR_AUTH_CANCELED,
+    "org.bluez.Error.AuthenticationFailed": RESULT_ERR_ACCESS_DENIED,
+    "org.bluez.Error.AuthenticationRejected": RESULT_ERR_AUTH_REJECTED,
+    "org.bluez.Error.AuthenticationTimeout": RESULT_ERR_AUTH_TIMEOUT,
+    "org.bluez.Error.ConnectionAttemptFailed": RESULT_ERR_UNKNOWN_CONNECT_FAILURE,
 }
 
-# Fallback substring search when name not present (BlueZ mixes English strings)
+# Fallback substring search when name not present (BlueZ mixes English strings).
+# Checked in order; more specific substrings must precede generic ones.
 _DBUS_MESSAGE_MAP = {
+    # BR/EDR connection errors (from workDir/BlueZDocs/errors.txt)
+    "br-connection-profile unavailable": RESULT_ERR_PROFILE_UNAVAILABLE,
+    "br-connection-page timeout": RESULT_ERR_PAGE_TIMEOUT,
+    "br-connection-already connected": RESULT_ERR_ALREADY_CONNECTED,
+    "br-connection-concurrent connection limit": RESULT_ERR_CONNECTION_LIMIT,
+    "br-connection-refused": RESULT_ERR_CONNECTION_REFUSED,
+    "br-connection-timeout": RESULT_ERR_TIMEOUT,
+    "br-connection-aborted by remote": RESULT_ERR_CONNECTION_ABORTED_REMOTE,
+    "br-connection-aborted by local": RESULT_ERR_CONNECTION_ABORTED_LOCAL,
+    "br-connection-create socket": RESULT_ERR_SOCKET_ERROR,
+    "br-connection-not powered": RESULT_ERR_NOT_POWERED,
+    "br-connection-not supported": RESULT_ERR_NOT_SUPPORTED,
+    "br-connection-bad socket": RESULT_ERR_SOCKET_ERROR,
+    "br-connection-lmp protocol error": RESULT_ERR_PROTOCOL_ERROR,
+    "br-connection-busy": RESULT_ERR_ACTION_IN_PROGRESS,
+    # LE connection errors (from workDir/BlueZDocs/errors.txt)
+    "le-connection-already connected": RESULT_ERR_ALREADY_CONNECTED,
+    "le-connection-concurrent connection limit": RESULT_ERR_CONNECTION_LIMIT,
+    "le-connection-refused": RESULT_ERR_CONNECTION_REFUSED,
+    "le-connection-timeout": RESULT_ERR_TIMEOUT,
+    "le-connection-abort by remote": RESULT_ERR_CONNECTION_ABORTED_REMOTE,
+    "le-connection-abort by local": RESULT_ERR_CONNECTION_ABORTED_LOCAL,
+    "le-connection-create socket": RESULT_ERR_SOCKET_ERROR,
+    "le-connection-not powered": RESULT_ERR_NOT_POWERED,
+    "le-connection-not supported": RESULT_ERR_NOT_SUPPORTED,
+    "le-connection-bad socket": RESULT_ERR_SOCKET_ERROR,
+    "le-connection-link layer protocol error": RESULT_ERR_PROTOCOL_ERROR,
+    "le-connection-busy": RESULT_ERR_ACTION_IN_PROGRESS,
+    # Generic connection / authentication substrings
     "Not Connected": RESULT_ERR_NOT_CONNECTED,
     "Connection Attempt Failed": RESULT_ERR_UNKNOWN_CONNECT_FAILURE,
     "Operation already in progress": RESULT_ERR_ACTION_IN_PROGRESS,
     "Authentication Failed": RESULT_ERR_ACCESS_DENIED,
     "Timeout": RESULT_ERR_NO_REPLY,
-    # Heuristics for granular permissions (BlueZ error messages often include
-    # the operation verb preceding "not permitted")
+    # Granular GATT permissions
     "read not permitted": RESULT_ERR_READ_NOT_PERMITTED,
     "write not permitted": RESULT_ERR_WRITE_NOT_PERMITTED,
     "notify not permitted": RESULT_ERR_NOTIFY_NOT_PERMITTED,
     "indicate not permitted": RESULT_ERR_INDICATE_NOT_PERMITTED,
-    "not permitted": RESULT_ERR_NOT_PERMITTED,  # fallback generic
+    "not permitted": RESULT_ERR_NOT_PERMITTED,
+}
+
+# BlueZ Disconnected signal reason strings (from org.bluez.Device.rst).
+# Not used for error mapping — provided for M9 (Custom Callbacks) integration.
+DISCONNECT_REASON_MAP = {
+    "org.bluez.Reason.Unknown": "Unknown disconnect reason",
+    "org.bluez.Reason.Timeout": "Link supervision timeout expired",
+    "org.bluez.Reason.Local": "Connection terminated by local host",
+    "org.bluez.Reason.Remote": "Connection terminated by remote device",
+    "org.bluez.Reason.Authentication": "Connection terminated due to authentication failure",
+    "org.bluez.Reason.Suspend": "Connection terminated by local host for suspend",
 }
 
 
@@ -156,6 +200,20 @@ class system_dbus__error_handling_service:
             RESULT_ERR_REMOTE_DISCONNECT: "Remote device disconnected",
             RESULT_ERR_UNKNOWN_CONNECT_FAILURE: "Unknown connection failure",
             RESULT_ERR_METHOD_CALL_FAIL: "Method call failed",
+            RESULT_ERR_TIMEOUT: "Operation timed out",
+            RESULT_ERR_PROFILE_UNAVAILABLE: "BR/EDR: no connectable services or target service found",
+            RESULT_ERR_PAGE_TIMEOUT: "BR/EDR: page timeout (device may be out of range or powered off)",
+            RESULT_ERR_CONNECTION_REFUSED: "Connection refused by remote device",
+            RESULT_ERR_CONNECTION_LIMIT: "Concurrent connection limit reached for this adapter",
+            RESULT_ERR_ALREADY_CONNECTED: "Device or profile is already connected",
+            RESULT_ERR_AUTH_CANCELED: "Pairing canceled by user or agent",
+            RESULT_ERR_AUTH_REJECTED: "Pairing rejected by remote device",
+            RESULT_ERR_AUTH_TIMEOUT: "Pairing timed out waiting for response",
+            RESULT_ERR_CONNECTION_ABORTED_REMOTE: "Connection terminated by remote device",
+            RESULT_ERR_CONNECTION_ABORTED_LOCAL: "Connection aborted by local host",
+            RESULT_ERR_PROTOCOL_ERROR: "Bluetooth protocol error (LMP/link-layer)",
+            RESULT_ERR_SOCKET_ERROR: "BT IO socket creation or connection failed",
+            RESULT_ERR_NOT_POWERED: "Bluetooth adapter not powered",
         }
 
     def evaluate__error_code(self, error_code: int) -> Tuple[bool, str]:
@@ -168,43 +226,14 @@ class system_dbus__error_handling_service:
         self, error: dbus.exceptions.DBusException
     ) -> Tuple[int, str]:
         """Evaluate a D-Bus error and return appropriate error code and message.
-        
-        **DEPRECATED**: This method duplicates decode_dbus_error() logic. New code
-        should use decode_dbus_error() directly. This method is retained for
-        backward compatibility with system_dbus__error_handling_service callers.
-        
-        TODO (B5 consolidation): Refactor callers to use decode_dbus_error() and
-        remove this method.
-        """
-        error_name = error.get_dbus_name()
-        error_message = error.get_dbus_message() or ""
-        error_message_lower = error_message.lower()
-        
-        # First check for operation-specific permissions in the message
-        if "write not permitted" in error_message_lower:
-            return RESULT_ERR_WRITE_NOT_PERMITTED, "Write operation not permitted"
-        elif "notify not permitted" in error_message_lower:
-            return RESULT_ERR_NOTIFY_NOT_PERMITTED, "Notify operation not permitted"
-        elif "indicate not permitted" in error_message_lower:
-            return RESULT_ERR_INDICATE_NOT_PERMITTED, "Indicate operation not permitted"
-        elif "read not permitted" in error_message_lower:
-            return RESULT_ERR_READ_NOT_PERMITTED, "Read operation not permitted"
-        
-        # Then check for standard error names
-        if error_name == "org.freedesktop.DBus.Error.InvalidArgs":
-            return RESULT_ERR_BAD_ARGS, "Invalid arguments provided"
-        elif error_name == "org.bluez.Error.NotSupported":
-            return RESULT_ERR_NOT_SUPPORTED, "Operation not supported"
-        elif error_name == "org.bluez.Error.NotPermitted":
-            return RESULT_ERR_NOT_PERMITTED, "Operation not permitted"
-        elif error_name == "org.bluez.Error.NotAuthorized":
-            return RESULT_ERR_NOT_AUTHORIZED, "Not authorized"
-        elif error_name == "org.bluez.Error.InvalidValueLength":
-            return RESULT_ERR_BAD_ARGS, "Invalid value length"
-        elif error_name == "org.bluez.Error.Failed":
-            return RESULT_ERR, "Operation failed"
 
-        return RESULT_EXCEPTION, f"Unhandled D-Bus error: {error_name}"
+        Delegates to :func:`decode_dbus_error` for the error code and uses
+        :attr:`error_mapping` for human-readable messages, ensuring consistent
+        results with the canonical decoder.
+        """
+        code = decode_dbus_error(error)
+        message = self.error_mapping.get(code, f"D-Bus error: {error.get_dbus_name()}")
+        return code, message
 
     def add_to__error_buffer(self, error_code: int, error_message: str) -> None:
         """Add error to the error buffer."""

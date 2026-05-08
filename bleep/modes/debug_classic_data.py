@@ -4,7 +4,7 @@ This module originally contained all Classic debug commands. They have been
 split into focused sub-modules for maintainability:
 
     debug_classic_rfcomm.py   – copen, csend, crecv, craw  (RFCOMM sockets)
-    debug_classic_obex.py     – copp, cmap, cftp, csync, cbip  (OBEX profiles)
+    debug_classic_obex.py     – copp, cmapinfo, cmap, cftp, csync, cbip  (OBEX profiles)
     debug_classic_profiles.py – cpan, cspp  (PAN networking, SPP registration)
 
 All public ``cmd_*`` symbols are re-exported here so that existing imports
@@ -17,11 +17,13 @@ from bleep.modes.debug_classic_rfcomm import (  # noqa: F401
     cmd_csend,
     cmd_crecv,
     cmd_craw,
+    cmd_crfcomm,
 )
 
 # OBEX profile commands
 from bleep.modes.debug_classic_obex import (  # noqa: F401
     cmd_copp,
+    cmd_cmapinfo,
     cmd_cmap,
     cmd_cftp,
     cmd_csync,
@@ -39,7 +41,9 @@ __all__ = [
     "cmd_csend",
     "cmd_crecv",
     "cmd_craw",
+    "cmd_crfcomm",
     "cmd_copp",
+    "cmd_cmapinfo",
     "cmd_cmap",
     "cmd_cftp",
     "cmd_csync",

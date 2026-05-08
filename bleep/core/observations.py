@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -52,7 +53,7 @@ _DB_CONN: sqlite3.Connection | None = None
 
 _DB_PATH = Path(os.getenv("BLEEP_DB_PATH", Path.home() / ".bleep" / "observations.db"))
 
-_SCHEMA_VERSION = 7  # Added sdp_records table for full SDP record snapshots
+_SCHEMA_VERSION = 11  # v11: AoI augmentation — pairing_profile, sdp_summary, post_pair_delta on aoi_analysis
 
 _SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -73,8 +74,12 @@ CREATE TABLE IF NOT EXISTS devices (
     first_seen DATETIME,
     last_seen  DATETIME,
     notes TEXT,
-    device_type TEXT   -- Added in schema v3: 'unknown', 'classic', 'le', or 'dual'
-    -- Schema v7: Added sdp_records table for full SDP record snapshots
+    device_type TEXT,  -- 'unknown', 'classic', 'le', or 'dual'
+    tx_power INT,             -- Added in schema v10
+    modalias TEXT,            -- Added in schema v10
+    icon TEXT,                -- Added in schema v10
+    service_data JSON,        -- Added in schema v10
+    advertising_data JSON     -- Added in schema v10
 );
 
 CREATE TABLE IF NOT EXISTS adv_reports (
@@ -95,6 +100,8 @@ CREATE TABLE IF NOT EXISTS services (
     name TEXT,
     first_seen DATETIME,
     last_seen DATETIME,
+    is_primary BOOLEAN DEFAULT 1,  -- Added in schema v10
+    includes TEXT,                  -- Added in schema v10 (JSON array of included service UUIDs)
     UNIQUE(mac,uuid)
  );
 
@@ -115,8 +122,22 @@ CREATE TABLE IF NOT EXISTS characteristics (
     value BLOB,
     last_read DATETIME,
     permission_map TEXT,
+    mtu INT,
     UNIQUE(service_id,uuid)
  );
+
+CREATE TABLE IF NOT EXISTS descriptors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    characteristic_id INT REFERENCES characteristics(id) ON DELETE CASCADE,
+    uuid TEXT,
+    handle INT,
+    flags TEXT,
+    value BLOB,
+    last_read DATETIME,
+    UNIQUE(characteristic_id,uuid)
+);
+
+CREATE INDEX IF NOT EXISTS idx_descriptors_char_id ON descriptors(characteristic_id);
 
 CREATE TABLE IF NOT EXISTS media_players (
     path TEXT PRIMARY KEY,
@@ -201,6 +222,9 @@ CREATE TABLE IF NOT EXISTS aoi_analysis (
     unusual_characteristics JSON,
     notable_services JSON,
     recommendations JSON,
+    pairing_profile JSON,
+    sdp_summary JSON,
+    post_pair_delta JSON,
     PRIMARY KEY (mac)
 );
 
@@ -219,26 +243,6 @@ CREATE TABLE IF NOT EXISTS device_type_evidence (
 CREATE INDEX IF NOT EXISTS idx_device_type_evidence_mac ON device_type_evidence(mac);
 CREATE INDEX IF NOT EXISTS idx_device_type_evidence_type ON device_type_evidence(evidence_type);
 CREATE INDEX IF NOT EXISTS idx_device_type_evidence_ts ON device_type_evidence(ts);
-
-CREATE TABLE IF NOT EXISTS sdp_records (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    mac TEXT REFERENCES devices(mac) ON DELETE CASCADE,
-    service_record_handle INT,
-    uuid TEXT,
-    channel INT,
-    name TEXT,
-    profile_descriptors JSON,
-    service_version INT,
-    service_description TEXT,
-    protocol_descriptors JSON,
-    raw_record TEXT,
-    ts DATETIME,
-    UNIQUE(mac, service_record_handle)
-);
-
-CREATE INDEX IF NOT EXISTS idx_sdp_records_mac ON sdp_records(mac);
-CREATE INDEX IF NOT EXISTS idx_sdp_records_uuid ON sdp_records(uuid);
-CREATE INDEX IF NOT EXISTS idx_sdp_records_ts ON sdp_records(ts);
 """
 
 
@@ -258,7 +262,8 @@ def _init_db() -> None:
 
         # Check schema version and migrate if needed
         ver_row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
-        current_version = ver_row["version"] if ver_row else 0
+        stored_version = ver_row["version"] if ver_row else 0
+        current_version = stored_version
         
         # Migration from v2 to v3 - Add device_type column
         if current_version == 2:
@@ -381,11 +386,125 @@ def _init_db() -> None:
                 current_version = 7
             except Exception as e:
                 print(f"Migration v6 to v7 failed: {e}")
-        
-        # Update schema version
+
+        # Migration from v7 to v8 — Normalize all MAC addresses to uppercase
+        if current_version == 7:
+            try:
+                _mac_tables = [
+                    ("devices", "mac"),
+                    ("adv_reports", "mac"),
+                    ("services", "mac"),
+                    ("classic_services", "mac"),
+                    ("pbap_metadata", "mac"),
+                    ("char_history", "mac"),
+                    ("sdp_records", "mac"),
+                    ("media_players", "mac"),
+                    ("media_transports", "mac"),
+                    ("aoi_analysis", "mac"),
+                    ("device_type_evidence", "mac"),
+                ]
+                for tbl, col in _mac_tables:
+                    conn.execute(f"UPDATE {tbl} SET {col} = UPPER({col}) WHERE {col} IS NOT NULL AND {col} != UPPER({col})")
+                print("[+] Database schema v8: MAC addresses normalised to uppercase")
+                current_version = 8
+            except Exception as e:
+                print(f"Migration v7 to v8 failed: {e}")
+
+        # Migration from v8 to v9 — Normalize all UUIDs to uppercase
+        if current_version == 8:
+            try:
+                _uuid_tables = [
+                    ("services", "uuid"),
+                    ("characteristics", "uuid"),
+                    ("classic_services", "uuid"),
+                    ("sdp_records", "uuid"),
+                    ("char_history", "service_uuid"),
+                    ("char_history", "char_uuid"),
+                ]
+                for tbl, col in _uuid_tables:
+                    conn.execute(
+                        f"UPDATE {tbl} SET {col} = UPPER({col}) "
+                        f"WHERE {col} IS NOT NULL AND {col} != UPPER({col})"
+                    )
+                print("[+] Database schema v9: UUIDs normalised to uppercase")
+                current_version = 9
+            except Exception as e:
+                print(f"Migration v8 to v9 failed: {e}")
+
+        # Migration from v9 to v10 — Add descriptors table, device enrichment columns,
+        # service metadata, and characteristic MTU column.
+        if current_version == 9:
+            try:
+                # New columns on devices table
+                for col_def in [
+                    "tx_power INT",
+                    "modalias TEXT",
+                    "icon TEXT",
+                    "service_data JSON",
+                    "advertising_data JSON",
+                ]:
+                    try:
+                        conn.execute(f"ALTER TABLE devices ADD COLUMN {col_def}")
+                    except Exception:
+                        pass  # column may already exist
+
+                # New columns on services table
+                for col_def in [
+                    "is_primary BOOLEAN DEFAULT 1",
+                    "includes TEXT",
+                ]:
+                    try:
+                        conn.execute(f"ALTER TABLE services ADD COLUMN {col_def}")
+                    except Exception:
+                        pass
+
+                # New column on characteristics table
+                try:
+                    conn.execute("ALTER TABLE characteristics ADD COLUMN mtu INT")
+                except Exception:
+                    pass
+
+                # Descriptors table
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS descriptors (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        characteristic_id INT REFERENCES characteristics(id) ON DELETE CASCADE,
+                        uuid TEXT,
+                        handle INT,
+                        flags TEXT,
+                        value BLOB,
+                        last_read DATETIME,
+                        UNIQUE(characteristic_id,uuid)
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_descriptors_char_id ON descriptors(characteristic_id)")
+
+                print("[+] Database schema v10: descriptors table, device/service/char enrichment columns")
+                current_version = 10
+            except Exception as e:
+                print(f"Migration v9 to v10 failed: {e}")
+
+        # Migration from v10 to v11 — AoI augmentation columns
+        if current_version == 10:
+            try:
+                for col_def in [
+                    "pairing_profile JSON",
+                    "sdp_summary JSON",
+                    "post_pair_delta JSON",
+                ]:
+                    try:
+                        conn.execute(f"ALTER TABLE aoi_analysis ADD COLUMN {col_def}")
+                    except Exception:
+                        pass
+                print("[+] Database schema v11: AoI pairing_profile, sdp_summary, post_pair_delta columns")
+                current_version = 11
+            except Exception as e:
+                print(f"Migration v10 to v11 failed: {e}")
+
+        # Persist schema version
         if not ver_row:
             conn.execute("INSERT INTO schema_version(version) VALUES (?)", (_SCHEMA_VERSION,))
-        elif current_version != _SCHEMA_VERSION:
+        elif stored_version != _SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
     
     _DB_CONN = conn
@@ -401,11 +520,9 @@ def _db_cursor():
         yield cursor
         _DB_CONN.commit()  # type: ignore[union-attr]
     except Exception as e:
-        # Log the exception but don't swallow it - we need to know about failures
-        print(f"DB Error: {e}")
-        import traceback
-        print(traceback.format_exc())
-        # Reraise to prevent silent failures
+        if _DB_CONN is not None:
+            _DB_CONN.rollback()
+        print_and_log(f"DB Error: {e}", LOG__DEBUG)
         raise
 
 
@@ -413,17 +530,92 @@ def _db_cursor():
 # Public helper functions ----------------------------------------------------
 # ---------------------------------------------------------------------------
 
-def _normalize_mac(mac: str) -> str:
+_MAC_FMT_RE = re.compile(r'^[0-9A-Fa-f]{2}([:\-])[0-9A-Fa-f]{2}(?:\1[0-9A-Fa-f]{2}){4}$')
+_DBUS_PATH_MAC_RE = re.compile(
+    r'dev_([0-9A-Fa-f]{2}_[0-9A-Fa-f]{2}_[0-9A-Fa-f]{2}'
+    r'_[0-9A-Fa-f]{2}_[0-9A-Fa-f]{2}_[0-9A-Fa-f]{2})$',
+    re.IGNORECASE,
+)
+
+
+def _normalize_mac(mac: str) -> Optional[str]:
     """
-    Normalize MAC address to lowercase for consistent database operations.
+    Normalize MAC address to uppercase colon-separated format.
+    
+    Handles standard ``AA:BB:CC:DD:EE:FF``, dash-separated, and accidental
+    D-Bus object paths (``/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF``).
+    
+    Returns ``None`` for empty, incomplete, or unparseable input rather than
+    storing potentially erroneous data.  Short octets (e.g. ``4:A2:…``) are
+    rejected — zero-padding would be a guess.
     
     Args:
-        mac: MAC address in any format
+        mac: MAC address string (or D-Bus device path)
         
     Returns:
-        Lowercase MAC address
+        Uppercase colon-separated MAC (e.g. ``"AA:BB:CC:DD:EE:FF"``),
+        or ``None`` if the input cannot be unambiguously resolved.
     """
-    return mac.lower() if mac else mac
+    if not mac or not isinstance(mac, str):
+        return None
+    mac = mac.strip()
+    if not mac:
+        return None
+    if _MAC_FMT_RE.match(mac):
+        return mac.replace('-', ':').upper()
+    m = _DBUS_PATH_MAC_RE.search(mac)
+    if m:
+        return m.group(1).replace('_', ':').upper()
+    return None
+
+
+def _normalize_uuid(uuid_str: str) -> str:
+    """Normalize a UUID string to uppercase for consistent DB storage."""
+    return uuid_str.strip().upper() if uuid_str else uuid_str
+
+
+def _ensure_device_exists(cur, mac: str) -> Optional[str]:
+    """Defensively create a stub device row if none exists.
+
+    Uses INSERT OR IGNORE so that an existing row is never overwritten.
+    Called before any child-table insert to guarantee FK integrity.
+    
+    Returns the normalized MAC, or ``None`` if the MAC is invalid
+    (in which case no row is created).
+    """
+    mac = _normalize_mac(mac)
+    if mac is None:
+        return None
+    now = datetime.utcnow().isoformat()
+    cur.execute(
+        "INSERT OR IGNORE INTO devices(mac, first_seen, last_seen) VALUES (?, ?, ?)",
+        (mac, now, now),
+    )
+    return mac
+
+
+def _ensure_service_exists(cur, mac: str, service_uuid: str) -> Optional[int]:
+    """Defensively create a stub service row if none exists.
+
+    Uses INSERT OR IGNORE so that an existing row is never overwritten.
+    Called before characteristics inserts to guarantee FK integrity.
+    Returns the service_id (existing or newly created), or ``None`` when
+    the MAC is invalid.
+    """
+    mac = _normalize_mac(mac)
+    if mac is None:
+        return None
+    service_uuid = _normalize_uuid(service_uuid)
+    now = datetime.utcnow().isoformat()
+    cur.execute(
+        "INSERT OR IGNORE INTO services(mac, uuid, first_seen, last_seen) VALUES (?, ?, ?, ?)",
+        (mac, service_uuid, now, now),
+    )
+    row = cur.execute(
+        "SELECT id FROM services WHERE mac=? AND uuid=?",
+        (mac, service_uuid),
+    ).fetchone()
+    return row["id"]
 
 
 def upsert_device(mac: str, **cols):
@@ -440,8 +632,10 @@ def upsert_device(mac: str, **cols):
     - 'le': Device has LE identifiers (addr_type) but no Classic identifiers
     - 'dual': Device has conclusive evidence of both Classic and LE capabilities
     """
-    # Normalize MAC address to lowercase
     mac = _normalize_mac(mac)
+    if mac is None:
+        print_and_log(f"upsert_device: rejected invalid MAC", LOG__DEBUG)
+        return
     now = datetime.utcnow().isoformat()
     
     # Always update last_seen timestamp
@@ -505,16 +699,38 @@ def upsert_device(mac: str, **cols):
                 # Not enough information to determine type
                 cols["device_type"] = "unknown"
         
+        _DEVICE_COLS = frozenset({
+            "addr_type", "name", "appearance", "device_class",
+            "manufacturer_id", "manufacturer_data", "rssi_last", "rssi_min",
+            "rssi_max", "first_seen", "last_seen", "notes", "device_type",
+            "tx_power", "modalias", "icon", "service_data", "advertising_data",
+        })
+        cols = {k: v for k, v in cols.items() if k in _DEVICE_COLS}
+
         # Prepare SQL statement
         cols_keys = ",".join(cols.keys())
         placeholders = ",".join("?" for _ in cols)
         
-        # For existing devices, don't update first_seen (keep the original value)
-        updates = ",".join(f"{k}=excluded.{k}" for k in cols.keys() if k != "first_seen")
-        if updates:
-            update_clause = f"ON CONFLICT(mac) DO UPDATE SET {updates}"
+        # Build per-column SET expressions for the ON CONFLICT clause.
+        # - first_seen is never overwritten (preserve original observation time).
+        # - rssi_min/rssi_max use SQL MIN/MAX to track the observed range.
+        _RSSI_RANGE_COLS = {
+            "rssi_min": "MIN(COALESCE(devices.rssi_min, excluded.rssi_min), excluded.rssi_min)",
+            "rssi_max": "MAX(COALESCE(devices.rssi_max, excluded.rssi_max), excluded.rssi_max)",
+        }
+        update_parts = []
+        for k in cols.keys():
+            if k == "first_seen":
+                continue
+            if k in _RSSI_RANGE_COLS:
+                update_parts.append(f"{k}={_RSSI_RANGE_COLS[k]}")
+            else:
+                update_parts.append(f"{k}=excluded.{k}")
+
+        if update_parts:
+            update_clause = f"ON CONFLICT(mac) DO UPDATE SET {','.join(update_parts)}"
         else:
-            update_clause = "ON CONFLICT(mac) DO NOTHING"  # Unlikely case with no fields to update
+            update_clause = "ON CONFLICT(mac) DO NOTHING"
         
         # Execute upsert
         cur.execute(
@@ -524,9 +740,11 @@ def upsert_device(mac: str, **cols):
 
 
 def insert_adv(mac: str, rssi: int, data: bytes, decoded: Dict[str, Any]):
-    # Normalize MAC address to lowercase
     mac = _normalize_mac(mac)
+    if mac is None:
+        return
     with _DB_LOCK, _db_cursor() as cur:
+        _ensure_device_exists(cur, mac)
         cur.execute(
             "INSERT INTO adv_reports(mac,ts,rssi,data,decoded) VALUES (?,?,?,?,?)",
             (
@@ -540,89 +758,216 @@ def insert_adv(mac: str, rssi: int, data: bytes, decoded: Dict[str, Any]):
 
 
 def upsert_services(mac: str, svc_list: List[Dict[str, Any]]) -> Dict[str, int]:
-    """Insert/UPSERT services and return a mapping uuid → row id."""
-    # Normalize MAC address to lowercase
+    """Insert/UPSERT services and return a mapping uuid → row id.
+
+    UUIDs are stored uppercase in the database, but the returned dict is keyed
+    by the *original* (caller-supplied) UUID to preserve backward compatibility.
+    """
     mac = _normalize_mac(mac)
+    if mac is None:
+        return {}
     ids: Dict[str, int] = {}
     with _DB_LOCK, _db_cursor() as cur:
+        _ensure_device_exists(cur, mac)
         for svc in svc_list:
+            original_uuid = svc["uuid"]
+            norm_uuid = _normalize_uuid(original_uuid)
+            is_primary = svc.get("is_primary")
+            if is_primary is not None:
+                is_primary = 1 if is_primary else 0
+
+            includes_raw = svc.get("includes")
+            if isinstance(includes_raw, (list, tuple)):
+                includes_raw = json_dumps(includes_raw)
+
             cur.execute(
                 """
-                INSERT INTO services(mac,uuid,handle_start,handle_end,name,first_seen,last_seen)
-                VALUES (?,?,?,?,?,?,?)
-                ON CONFLICT(mac,uuid) DO UPDATE SET last_seen=excluded.last_seen
+                INSERT INTO services(mac,uuid,handle_start,handle_end,name,first_seen,last_seen,is_primary,includes)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(mac,uuid) DO UPDATE SET
+                    last_seen=excluded.last_seen,
+                    handle_start=COALESCE(excluded.handle_start, services.handle_start),
+                    handle_end=COALESCE(excluded.handle_end, services.handle_end),
+                    name=COALESCE(excluded.name, services.name),
+                    is_primary=COALESCE(excluded.is_primary, services.is_primary),
+                    includes=COALESCE(excluded.includes, services.includes)
                 """,
                 (
                     mac,
-                    svc["uuid"],
+                    norm_uuid,
                     svc.get("handle_start"),
                     svc.get("handle_end"),
                     svc.get("name"),
                     datetime.utcnow().isoformat(),
                     datetime.utcnow().isoformat(),
+                    is_primary,
+                    includes_raw,
                 ),
             )
-            # Retrieve id (whether newly inserted or existing)
             sid = cur.lastrowid
             if not sid:
                 row = cur.execute(
                     "SELECT id FROM services WHERE mac=? AND uuid=?",
-                    (mac, svc["uuid"]),
+                    (mac, norm_uuid),
                 ).fetchone()
                 if row:
                     sid = row["id"]  # type: ignore[index]
             if sid:
-                ids[svc["uuid"]] = sid
+                ids[original_uuid] = sid
     return ids
 
 
-def upsert_characteristics(service_id: int, char_list: List[Dict[str, Any]]):
+def upsert_characteristics(
+    service_id: int,
+    char_list: List[Dict[str, Any]],
+    *,
+    mac: str | None = None,
+    service_uuid: str | None = None,
+):
+    """Insert/UPSERT characteristics for a service.
+
+    When *mac* and *service_uuid* are supplied the function defensively
+    guarantees the parent device and service rows exist before inserting,
+    preventing FOREIGN KEY failures even when the caller's ``service_id``
+    is stale or the service was never explicitly created.
+    """
     with _DB_LOCK, _db_cursor() as cur:
+        if mac and service_uuid:
+            _ensure_device_exists(cur, mac)
+            service_id = _ensure_service_exists(cur, mac, service_uuid)
+
         for ch in char_list:
             try:
-                # Format properties as a comma-separated string
                 props = ch.get("properties", [])
                 if isinstance(props, list):
                     props_str = ",".join(props)
                 else:
                     props_str = str(props)
-                
-                # Execute the insert with proper error handling
+
+                raw_val = ch.get("value")
+                if raw_val is None:
+                    blob_val = None
+                elif isinstance(raw_val, bytes):
+                    blob_val = raw_val
+                elif isinstance(raw_val, (list, tuple)):
+                    blob_val = bytes(raw_val)
+                elif isinstance(raw_val, str):
+                    blob_val = raw_val.encode("utf-8", errors="replace")
+                else:
+                    blob_val = bytes(raw_val)
+
+                perm_map = ch.get("permission_map")
+                if isinstance(perm_map, dict):
+                    perm_map = json_dumps(perm_map)
+
+                mtu_val = ch.get("mtu") or ch.get("MTU")
+
+                norm_uuid = _normalize_uuid(ch["uuid"])
                 cur.execute(
                     """
-                    INSERT INTO characteristics(service_id,uuid,handle,properties,value,last_read)
-                    VALUES (?,?,?,?,?,?)
-                    ON CONFLICT(service_id,uuid) DO UPDATE SET value=excluded.value,last_read=excluded.last_read
+                    INSERT INTO characteristics(service_id,uuid,handle,properties,value,last_read,permission_map,mtu)
+                    VALUES (?,?,?,?,?,?,?,?)
+                    ON CONFLICT(service_id,uuid) DO UPDATE SET
+                        value=excluded.value,
+                        last_read=excluded.last_read,
+                        permission_map=COALESCE(excluded.permission_map, characteristics.permission_map),
+                        mtu=COALESCE(excluded.mtu, characteristics.mtu)
                     """,
                     (
                         service_id,
-                        ch["uuid"],
+                        norm_uuid,
                         ch.get("handle"),
                         props_str,
-                        ch.get("value"),
+                        blob_val,
+                        datetime.utcnow().isoformat(),
+                        perm_map,
+                        mtu_val,
+                    ),
+                )
+            except Exception as e:
+                print_and_log(f"[-] Error inserting characteristic {ch.get('uuid')}: {e}", LOG__DEBUG)
+
+
+def get_characteristic_id(service_id: int, char_uuid: str) -> int | None:
+    """Return the DB row id for a characteristic, or None if not found."""
+    norm_uuid = _normalize_uuid(char_uuid)
+    with _DB_LOCK, _db_cursor() as cur:
+        row = cur.execute(
+            "SELECT id FROM characteristics WHERE service_id=? AND uuid=?",
+            (service_id, norm_uuid),
+        ).fetchone()
+        return row["id"] if row else None
+
+
+def upsert_descriptors(
+    characteristic_id: int,
+    desc_list: List[Dict[str, Any]],
+) -> None:
+    """Insert/UPSERT descriptors for a characteristic."""
+    with _DB_LOCK, _db_cursor() as cur:
+        for desc in desc_list:
+            try:
+                raw_val = desc.get("value")
+                if raw_val is None:
+                    blob_val = None
+                elif isinstance(raw_val, bytes):
+                    blob_val = raw_val
+                elif isinstance(raw_val, (list, tuple)):
+                    blob_val = bytes(raw_val)
+                elif isinstance(raw_val, str):
+                    blob_val = raw_val.encode("utf-8", errors="replace")
+                else:
+                    blob_val = bytes(raw_val)
+
+                flags = desc.get("flags")
+                if isinstance(flags, list):
+                    flags = ",".join(flags)
+
+                norm_uuid = _normalize_uuid(desc["uuid"])
+                cur.execute(
+                    """
+                    INSERT INTO descriptors(characteristic_id,uuid,handle,flags,value,last_read)
+                    VALUES (?,?,?,?,?,?)
+                    ON CONFLICT(characteristic_id,uuid) DO UPDATE SET
+                        value=excluded.value,
+                        last_read=excluded.last_read,
+                        flags=COALESCE(excluded.flags, descriptors.flags),
+                        handle=COALESCE(excluded.handle, descriptors.handle)
+                    """,
+                    (
+                        characteristic_id,
+                        norm_uuid,
+                        desc.get("handle"),
+                        flags,
+                        blob_val,
                         datetime.utcnow().isoformat(),
                     ),
                 )
             except Exception as e:
-                print_and_log(f"[-] Error inserting characteristic {ch.get('uuid')}: {str(e)}", LOG__DEBUG)
-                # Continue with next characteristic instead of aborting the whole batch
+                print_and_log(f"[-] Error inserting descriptor {desc.get('uuid')}: {e}", LOG__DEBUG)
 
 
 def snapshot_media_player(player):  # type: ignore[valid-type]
     try:
+        props = player.get_properties()
+        raw_mac = props.get("Device") or player.get_device() or "UNKNOWN"
+        norm_mac = _normalize_mac(raw_mac)
+        if norm_mac is None:
+            return
         row = {
             "path": player.player_path,
-            "mac": player.get_device() or "UNKNOWN",
-            "name": player.get_name(),
-            "subtype": player.get_subtype() if hasattr(player, "get_subtype") else None,
-            "status": player.get_status(),
-            "position": player.get_position(),
-            "metadata": json_dumps(player.get_track()),
+            "mac": norm_mac,
+            "name": props.get("Name"),
+            "subtype": props.get("Subtype"),
+            "status": props.get("Status"),
+            "position": props.get("Position"),
+            "metadata": json_dumps(props.get("Track", {})),
             "ts": datetime.utcnow().isoformat(),
         }
     except Exception:
         return
     with _DB_LOCK, _db_cursor() as cur:
+        _ensure_device_exists(cur, row["mac"])
         cols = ",".join(row.keys())
         ph = ",".join("?" for _ in row)
         updates = ",".join(f"{k}=excluded.{k}" for k in row.keys())
@@ -640,10 +985,14 @@ def snapshot_media_transport(transport):  # type: ignore[valid-type]
         transport: Media transport object
     """
     try:
+        raw_mac = transport.get_device() or "UNKNOWN"
+        norm_mac = _normalize_mac(raw_mac)
+        if norm_mac is None:
+            return
         row = {
             "path": transport.transport_path,
-            "mac": transport.get_device() or "UNKNOWN",
-            "transport_state": transport.get_state(),  # Updated column name
+            "mac": norm_mac,
+            "transport_state": transport.get_state(),
             "volume": transport.get_volume(),
             "codec": transport.get_codec(),
             "ts": datetime.utcnow().isoformat(),
@@ -652,6 +1001,7 @@ def snapshot_media_transport(transport):  # type: ignore[valid-type]
         return
 
     with _DB_LOCK, _db_cursor() as cur:
+        _ensure_device_exists(cur, row["mac"])
         cols = ",".join(row.keys())
         ph = ",".join("?" for _ in row)
         updates = ",".join(f"{k}=excluded.{k}" for k in row.keys())
@@ -662,7 +1012,11 @@ def snapshot_media_transport(transport):  # type: ignore[valid-type]
 
 
 def upsert_classic_services(mac: str, services: List[Dict[str, Any]]):
+    mac = _normalize_mac(mac)
+    if mac is None:
+        return
     with _DB_LOCK, _db_cursor() as cur:
+        _ensure_device_exists(cur, mac)
         for svc in services:
             cur.execute(
                 """
@@ -671,7 +1025,7 @@ def upsert_classic_services(mac: str, services: List[Dict[str, Any]]):
                 """,
                 (
                     mac,
-                    svc["uuid"],
+                    _normalize_uuid(svc["uuid"]),
                     svc["channel"],
                     svc.get("name"),
                     datetime.utcnow().isoformat(),
@@ -693,10 +1047,14 @@ def insert_char_history(mac: str, service_uuid: str, char_uuid: str, value: byte
         value: Characteristic value
         source: Source of the value (read, write, notification)
     """
-    # Normalize MAC address to lowercase
     mac = _normalize_mac(mac)
+    if mac is None:
+        return
+    service_uuid = _normalize_uuid(service_uuid)
+    char_uuid = _normalize_uuid(char_uuid)
     
     with _DB_LOCK, _db_cursor() as cur:
+        _ensure_device_exists(cur, mac)
         cur.execute(
             "INSERT INTO char_history(mac,service_uuid,char_uuid,ts,value,source) VALUES (?,?,?,?,?,?)",
             (
@@ -739,10 +1097,12 @@ def upsert_sdp_record(mac: str, record: Dict[str, Any]):
     table for backward compatibility.
     """
     mac = _normalize_mac(mac)
+    if mac is None:
+        return
     
     # Extract fields from record
     handle = record.get("handle")
-    uuid = record.get("uuid")
+    uuid = _normalize_uuid(record.get("uuid")) if record.get("uuid") else None
     channel = record.get("channel")
     name = record.get("name")
     profile_descriptors = record.get("profile_descriptors")
@@ -751,19 +1111,13 @@ def upsert_sdp_record(mac: str, record: Dict[str, Any]):
     raw_record = record.get("raw")
     
     # Convert profile_descriptors to JSON if present
-    profile_descriptors_json = None
-    if profile_descriptors:
-        try:
-            profile_descriptors_json = _json.dumps(profile_descriptors)
-        except (TypeError, ValueError):
-            pass
+    profile_descriptors_json = json_dumps(profile_descriptors) if profile_descriptors else None
     
-    # Extract protocol descriptors from raw record if available
-    # This is a simplified extraction - full protocol parsing would require more complex logic
-    protocol_descriptors_json = None
-    # For now, we'll store None and let future enhancements parse protocol descriptors
+    protocol_descriptors = record.get("protocol_descriptors")
+    protocol_descriptors_json = json_dumps(protocol_descriptors) if protocol_descriptors else None
     
     with _DB_LOCK, _db_cursor() as cur:
+        _ensure_device_exists(cur, mac)
         cur.execute(
             """
             INSERT INTO sdp_records(
@@ -802,8 +1156,34 @@ def upsert_sdp_record(mac: str, record: Dict[str, Any]):
         _DB_CONN.commit()
 
 
-def upsert_pbap_metadata(mac: str, repo: str, entries: int, vcf_hash: str):
+def upsert_pan_access(
+    mac: str,
+    role: str,
+    action: str,
+    interface: str | None = None,
+) -> None:
+    """Record a PAN connect/disconnect event on a device.
+
+    Updates ``last_seen`` and appends a timestamped note.
+    """
+    mac = _normalize_mac(mac)
+    if mac is None:
+        return
+    now = datetime.utcnow().isoformat()
+    detail = f"PAN {action} role={role}"
+    if interface:
+        detail += f" iface={interface}"
     with _DB_LOCK, _db_cursor() as cur:
+        _ensure_device_exists(cur, mac)
+        cur.execute("UPDATE devices SET last_seen=? WHERE mac=?", (now, mac))
+
+
+def upsert_pbap_metadata(mac: str, repo: str, entries: int, vcf_hash: str):
+    mac = _normalize_mac(mac)
+    if mac is None:
+        return
+    with _DB_LOCK, _db_cursor() as cur:
+        _ensure_device_exists(cur, mac)
         cur.execute(
             """
             INSERT INTO pbap_metadata(mac,repo,entries,hash,ts)
@@ -837,32 +1217,24 @@ def store_signal_capture(signal_data: dict) -> None:
     Args:
         signal_data: Dictionary containing signal information
     """
-    # Add direct logging for debugging
-    import sys
-    print(f"[DEBUG] store_signal_capture called with: {signal_data}", file=sys.stderr)
-    
-    # Extract data from the signal
     signal_type = signal_data.get('signal_type', '')
     path = signal_data.get('path', '')
     value = signal_data.get('value')
     
-    print(f"[DEBUG] Extracted signal type: {signal_type}, path: {path}, value type: {type(value)}", file=sys.stderr)
+    print_and_log(f"store_signal_capture: type={signal_type}, path={path}, value_type={type(value).__name__}", LOG__DEBUG)
     
-    # Only process if we have a value
     if value is None:
-        print(f"[DEBUG] Skipping - value is None", file=sys.stderr)
+        print_and_log("store_signal_capture: skipping — value is None", LOG__DEBUG)
         return
     
     # Handle hardcoded test case for specific characteristic in CTF module
     if 'char003d' in str(path) or 'char003d' in str(signal_data):
-        print(f"[DEBUG] Found char003d in signal data or path", file=sys.stderr)
-        # This is the "Read me 1000 times" characteristic
-        mac = 'cc:50:e3:b6:bc:a6'
+        print_and_log("store_signal_capture: matched char003d (BLECTF)", LOG__DEBUG)
+        mac = 'CC:50:E3:B6:BC:A6'
         service_uuid = '000000ff-0000-1000-8000-00805f9b34fb'
         char_uuid = '0000ff0b-0000-1000-8000-00805f9b34fb'
         source = 'read'
         
-        # Ensure value is bytes
         if not isinstance(value, bytes):
             try:
                 if isinstance(value, str):
@@ -872,18 +1244,17 @@ def store_signal_capture(signal_data: dict) -> None:
                 else:
                     value = str(value).encode('utf-8')
             except Exception as e:
-                print(f"[DEBUG] Failed to convert value to bytes: {e}", file=sys.stderr)
+                print_and_log(f"store_signal_capture: failed to convert value to bytes: {e}", LOG__DEBUG)
                 return
         
         try:
             insert_char_history(mac, service_uuid, char_uuid, value, source)
-            print(f"[DEBUG] Successfully inserted hardcoded char003d value into database", file=sys.stderr)
-            # Ensure changes are committed
+            print_and_log("store_signal_capture: inserted char003d value", LOG__DEBUG)
             if _DB_CONN is not None:
                 _DB_CONN.commit()
             return
         except Exception as e:
-            print(f"[DEBUG] Error inserting hardcoded char003d value: {e}", file=sys.stderr)
+            print_and_log(f"store_signal_capture: error inserting char003d: {e}", LOG__DEBUG)
     
     # Convert value to bytes if needed
     if not isinstance(value, bytes):
@@ -895,10 +1266,10 @@ def store_signal_capture(signal_data: dict) -> None:
             elif isinstance(value, (list, tuple)) and all(isinstance(x, int) for x in value):
                 value = bytes(value)
             else:
-                print(f"[DEBUG] Cannot convert value type {type(value)} to bytes, skipping", file=sys.stderr)
+                print_and_log(f"store_signal_capture: cannot convert {type(value).__name__} to bytes", LOG__DEBUG)
                 return
         except Exception as e:
-            print(f"[DEBUG] Exception converting value to bytes: {e}", file=sys.stderr)
+            print_and_log(f"store_signal_capture: exception converting to bytes: {e}", LOG__DEBUG)
             return
     
     # Extract device MAC from path or explicit field
@@ -918,18 +1289,18 @@ def store_signal_capture(signal_data: dict) -> None:
                 mac = match.group(1).replace('_', ':')
                 break
     
-    # Check if it's the BLECTF device
     if not mac and ('blectf' in str(path).lower() or 'blectf' in str(signal_data).lower()):
-        mac = 'cc:50:e3:b6:bc:a6'
-        print(f"[DEBUG] Using hardcoded MAC for BLECTF device", file=sys.stderr)
+        mac = 'CC:50:E3:B6:BC:A6'
+        print_and_log("store_signal_capture: using hardcoded MAC for BLECTF device", LOG__DEBUG)
     
-    # Check for required data
     if not mac:
-        print(f"[DEBUG] Skipping - could not determine device MAC", file=sys.stderr)
+        print_and_log("store_signal_capture: skipping — could not determine device MAC", LOG__DEBUG)
         return
     
-    # Normalize MAC address
-    mac = mac.lower()
+    mac = _normalize_mac(mac)
+    if mac is None:
+        print_and_log("store_signal_capture: skipping — invalid MAC format", LOG__DEBUG)
+        return
     
     # Get service and characteristic UUIDs
     service_uuid = signal_data.get('service_uuid')
@@ -974,7 +1345,7 @@ def store_signal_capture(signal_data: dict) -> None:
     elif signal_type == "NOTIFICATION" or signal_type == "notification":
         source = "notification"
     
-    print(f"[DEBUG] Prepared data: mac={mac}, service_uuid={service_uuid}, char_uuid={char_uuid}, source={source}", file=sys.stderr)
+    print_and_log(f"store_signal_capture: mac={mac}, svc={service_uuid}, char={char_uuid}, src={source}", LOG__DEBUG)
     
     # If we still don't have service or characteristic UUIDs, use placeholders
     if not service_uuid:
@@ -982,18 +1353,13 @@ def store_signal_capture(signal_data: dict) -> None:
     if not char_uuid:
         char_uuid = "unknown-characteristic"
     
-    # Insert into database
     try:
         insert_char_history(mac, service_uuid, char_uuid, value, source)
-        print(f"[DEBUG] Successfully inserted into database", file=sys.stderr)
-        
-        # Ensure changes are committed
+        print_and_log("store_signal_capture: inserted into database", LOG__DEBUG)
         if _DB_CONN is not None:
             _DB_CONN.commit()
     except Exception as e:
-        print(f"[DEBUG] Error inserting into database: {e}", file=sys.stderr)
-        import traceback
-        print(traceback.format_exc(), file=sys.stderr)
+        print_and_log(f"store_signal_capture: error inserting: {e}", LOG__DEBUG)
 
 # ---------------------------------------------------------------------------
 # Database Maintenance and Performance Functions ---------------------------
@@ -1045,8 +1411,10 @@ def maintain_database(vacuum: bool = True, analyze: bool = True) -> Dict[str, An
         with _db_cursor() as cur:
             # Get total row counts
             counts = {}
-            for table in ["devices", "services", "characteristics", "char_history", "adv_reports", 
-                         "classic_services", "media_players", "media_transports", "aoi_analysis"]:
+            for table in ["devices", "services", "characteristics", "descriptors",
+                         "char_history", "adv_reports", "classic_services",
+                         "media_players", "media_transports", "aoi_analysis",
+                         "sdp_records", "device_type_evidence", "pbap_metadata"]:
                 try:
                     cur.execute(f"SELECT COUNT(*) FROM {table}")
                     counts[table] = cur.fetchone()[0]
@@ -1081,7 +1449,7 @@ def explain_query(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
     Get the execution plan for a SQL query for performance debugging.
     
     Args:
-        query: SQL query to explain
+        query: SQL query to explain (must be a single SELECT statement)
         params: Query parameters
         
     Returns:
@@ -1089,11 +1457,14 @@ def explain_query(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
     """
     if not _DB_CONN:
         _init_db()
-        
+
+    stripped = query.strip().rstrip(";")
+    if ";" in stripped or not stripped.upper().startswith("SELECT"):
+        raise ValueError("explain_query only accepts a single SELECT statement")
+
     try:
         with _DB_LOCK, _db_cursor() as cur:
-            # Execute EXPLAIN QUERY PLAN
-            cur.execute(f"EXPLAIN QUERY PLAN {query}", params)
+            cur.execute(f"EXPLAIN QUERY PLAN {stripped}", params)
             plan = cur.fetchall()
             
             # Format the plan as a list of dictionaries
@@ -1117,34 +1488,48 @@ def explain_query(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
 
 def store_aoi_analysis(mac: str, analysis: Dict[str, Any]) -> None:
     """
-    Store AoI analysis results in the database.
+    Store AoI analysis results in the database (schema v11).
+    
+    Handles both ``analysis["summary"]`` sub-keys **and** top-level v11
+    fields (``pairing_profile``, ``sdp_summary``, ``post_pair_delta``).
     
     Args:
         mac: Device MAC address
         analysis: Analysis dictionary from AOIAnalyser
     """
-    # Normalize MAC address to lowercase
     mac = _normalize_mac(mac)
+    if mac is None:
+        print_and_log(f"store_aoi_analysis: rejected invalid MAC", LOG__DEBUG)
+        return
     
-    # Extract summary sections
-    security_concerns = analysis.get("summary", {}).get("security_concerns", [])
-    unusual_characteristics = analysis.get("summary", {}).get("unusual_characteristics", [])
-    notable_services = analysis.get("summary", {}).get("notable_services", [])
-    recommendations = analysis.get("summary", {}).get("recommendations", [])
+    summary = analysis.get("summary", {})
+    security_concerns = summary.get("security_concerns", [])
+    unusual_characteristics = summary.get("unusual_characteristics", [])
+    notable_services = summary.get("notable_services", [])
+    recommendations = summary.get("recommendations", [])
     
-    # Store in database
+    pairing_profile = analysis.get("pairing_profile")
+    sdp_summary = analysis.get("sdp_summary")
+    post_pair_delta = analysis.get("post_pair_delta")
+    
     with _DB_LOCK, _db_cursor() as cur:
+        _ensure_device_exists(cur, mac)
         cur.execute(
             """
-            INSERT INTO aoi_analysis(mac, analysis_timestamp, security_concerns, 
-                                   unusual_characteristics, notable_services, recommendations)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(mac) DO UPDATE SET 
+            INSERT INTO aoi_analysis(mac, analysis_timestamp, security_concerns,
+                                   unusual_characteristics, notable_services,
+                                   recommendations, pairing_profile,
+                                   sdp_summary, post_pair_delta)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(mac) DO UPDATE SET
                 analysis_timestamp=excluded.analysis_timestamp,
                 security_concerns=excluded.security_concerns,
                 unusual_characteristics=excluded.unusual_characteristics,
                 notable_services=excluded.notable_services,
-                recommendations=excluded.recommendations
+                recommendations=excluded.recommendations,
+                pairing_profile=excluded.pairing_profile,
+                sdp_summary=excluded.sdp_summary,
+                post_pair_delta=excluded.post_pair_delta
             """,
             (
                 mac,
@@ -1152,7 +1537,10 @@ def store_aoi_analysis(mac: str, analysis: Dict[str, Any]) -> None:
                 json_dumps(security_concerns),
                 json_dumps(unusual_characteristics),
                 json_dumps(notable_services),
-                json_dumps(recommendations)
+                json_dumps(recommendations),
+                json_dumps(pairing_profile) if pairing_profile else None,
+                json_dumps(sdp_summary) if sdp_summary else None,
+                json_dumps(post_pair_delta) if post_pair_delta else None,
             )
         )
 
@@ -1166,8 +1554,9 @@ def get_aoi_analysis(mac: str) -> Optional[Dict[str, Any]]:
     Returns:
         Analysis dictionary or None if not found
     """
-    # Normalize MAC address to lowercase
     mac = _normalize_mac(mac)
+    if mac is None:
+        return None
     
     try:
         with _db_cursor() as cur:
@@ -1179,22 +1568,25 @@ def get_aoi_analysis(mac: str) -> Optional[Dict[str, Any]]:
             if not row:
                 return None
                 
-            # Parse JSON fields
             security_concerns = json.loads(row["security_concerns"]) if row["security_concerns"] else []
             unusual_characteristics = json.loads(row["unusual_characteristics"]) if row["unusual_characteristics"] else []
             notable_services = json.loads(row["notable_services"]) if row["notable_services"] else []
             recommendations = json.loads(row["recommendations"]) if row["recommendations"] else []
-                
-            # Return analysis in expected format
-            return {
+
+            result: Dict[str, Any] = {
                 "timestamp": row["analysis_timestamp"],
                 "summary": {
                     "security_concerns": security_concerns,
                     "unusual_characteristics": unusual_characteristics,
                     "notable_services": notable_services,
                     "recommendations": recommendations,
-                }
+                },
             }
+            for v11_col in ("pairing_profile", "sdp_summary", "post_pair_delta"):
+                raw = row[v11_col] if v11_col in row.keys() else None
+                if raw:
+                    result[v11_col] = json.loads(raw)
+            return result
     except Exception as e:
         print_and_log(f"Error retrieving AoI analysis: {e}", LOG__DEBUG)
         return None
@@ -1209,8 +1601,9 @@ def has_aoi_analysis(mac: str) -> bool:
     Returns:
         True if analysis exists, False otherwise
     """
-    # Normalize MAC address to lowercase
     mac = _normalize_mac(mac)
+    if mac is None:
+        return False
     
     with _db_cursor() as cur:
         row = cur.execute(
@@ -1269,6 +1662,8 @@ def store_device_type_evidence(
         metadata: Optional metadata dictionary (will be stored as JSON)
     """
     mac = _normalize_mac(mac)
+    if mac is None:
+        return
     now = datetime.utcnow().isoformat()
     
     # Convert value to string representation
@@ -1283,28 +1678,13 @@ def store_device_type_evidence(
     # Convert metadata to JSON string
     metadata_str = json_dumps(metadata) if metadata else None
     
-    try:
-        with _DB_LOCK, _db_cursor() as cur:
-            # Use INSERT OR REPLACE to handle UNIQUE constraint
-            cur.execute("""
-                INSERT OR REPLACE INTO device_type_evidence 
-                (mac, evidence_type, evidence_weight, source, value, metadata, ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (mac, evidence_type, evidence_weight, source, value_str, metadata_str, now))
-    except sqlite3.IntegrityError as e:
-        # FOREIGN KEY constraint - device doesn't exist yet
-        # This should NOT happen with proper sequencing, but handle defensively
-        print_and_log(
-            f"[WARNING] Device {mac} not in database when storing evidence. "
-            f"This indicates improper call sequencing. Evidence type: {evidence_type}. Error: {e}",
-            LOG__DEBUG
-        )
-        raise  # Re-raise to surface the issue rather than silently failing
-    except Exception as e:
-        print_and_log(
-            f"Error storing device type evidence for {mac}: {e}",
-            LOG__DEBUG
-        )
+    with _DB_LOCK, _db_cursor() as cur:
+        _ensure_device_exists(cur, mac)
+        cur.execute("""
+            INSERT OR REPLACE INTO device_type_evidence 
+            (mac, evidence_type, evidence_weight, source, value, metadata, ts)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (mac, evidence_type, evidence_weight, source, value_str, metadata_str, now))
 
 
 def get_device_type_evidence(mac: str) -> List[Dict[str, Any]]:
@@ -1321,6 +1701,8 @@ def get_device_type_evidence(mac: str) -> List[Dict[str, Any]]:
         List of evidence dictionaries, ordered by timestamp (newest first)
     """
     mac = _normalize_mac(mac)
+    if mac is None:
+        return []
     
     try:
         with _DB_LOCK, _db_cursor() as cur:
@@ -1369,9 +1751,10 @@ def get_device_evidence_signature(mac: str) -> Optional[Dict[str, Any]]:
         or None if no signature exists
     """
     mac = _normalize_mac(mac)
+    if mac is None:
+        return None
     
     try:
-        # Get the most recent evidence entries
         evidence_list = get_device_type_evidence(mac)
         if not evidence_list:
             return None
@@ -1468,9 +1851,8 @@ def get_devices(status: str = None, limit: int = 100, offset: int = 0) -> List[D
                     # Filter for devices with unknown type
                     status_filters.append("device_type = 'unknown' OR device_type IS NULL")
                 elif s == 'media':
-                    # Join with media_players to filter devices with media capabilities
                     query = """
-                    SELECT d.* FROM devices d
+                    SELECT DISTINCT d.* FROM devices d
                     INNER JOIN media_players mp ON d.mac = mp.mac
                     """
                     
@@ -1507,19 +1889,21 @@ def get_device_detail(mac: str) -> Dict[str, Any]:
     Returns:
         Dictionary with device information including services and characteristics
     """
-    # Normalize MAC address to lowercase
     mac = _normalize_mac(mac)
     
-    result = {
+    result: Dict[str, Any] = {
         'device': None,
         'services': [],
         'characteristics': [],
+        'descriptors': [],
         'classic_services': [],
         'sdp_records': [],
         'pbap_metadata': [],
         'media_players': [],
-        'media_transports': []
+        'media_transports': [],
     }
+    if mac is None:
+        return result
     
     with _DB_LOCK, _db_cursor() as cur:
         # Get device info
@@ -1533,14 +1917,21 @@ def get_device_detail(mac: str) -> Dict[str, Any]:
             services = [dict(row) for row in cur.fetchall()]
             result['services'] = services
             
-            # Get characteristics for each service
+            # Get characteristics + descriptors for each service
             for svc in services:
                 cur.execute(
-                    "SELECT * FROM characteristics WHERE service_id=? ORDER BY handle", 
-                    (svc['id'],)
+                    "SELECT * FROM characteristics WHERE service_id=? ORDER BY handle",
+                    (svc['id'],),
                 )
                 chars = [dict(row) for row in cur.fetchall()]
                 result['characteristics'].extend(chars)
+                for ch in chars:
+                    cur.execute(
+                        "SELECT * FROM descriptors WHERE characteristic_id=? ORDER BY handle",
+                        (ch['id'],),
+                    )
+                    descs = [dict(row) for row in cur.fetchall()]
+                    result['descriptors'].extend(descs)
             
             # Get classic services
             cur.execute("SELECT * FROM classic_services WHERE mac=?", (mac,))
@@ -1596,19 +1987,20 @@ def get_characteristic_timeline(mac: str, service_uuid: str = None, char_uuid: s
     Returns:
         List of characteristic value history entries
     """
-    # Normalise MAC to ensure case-insensitive match with stored lowercase values
     mac = _normalize_mac(mac)
+    if mac is None:
+        return []
 
     query = "SELECT * FROM char_history WHERE mac=?"
     params = [mac]
     
     if service_uuid:
         query += " AND service_uuid=?"
-        params.append(service_uuid)
+        params.append(_normalize_uuid(service_uuid))
         
     if char_uuid:
         query += " AND char_uuid=?"
-        params.append(char_uuid)
+        params.append(_normalize_uuid(char_uuid))
     
     query += " ORDER BY ts DESC LIMIT ?"
     params.append(limit)
@@ -1648,8 +2040,9 @@ def export_device_data(mac: str) -> Dict[str, Any]:
     Returns:
         Dictionary with all device data
     """
-    # Normalize MAC address to lowercase for consistent retrieval
     mac = _normalize_mac(mac)
+    if mac is None:
+        return {}
     
     device_detail = get_device_detail(mac)
     

@@ -26,8 +26,8 @@ from typing import Dict, List, Any, Optional, Tuple
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 from bleep.dbuslayer.adapter import system_dbus__bluez_adapter
 from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy
-from bleep.ble_ops.scan import passive_scan
-from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+from bleep.ble_ops.le.scan import passive_scan
+from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
 
 # Default file paths
 DEFAULT_INPUT_FILE = "/tmp/processed_data.txt"
@@ -55,7 +55,7 @@ class DeviceOperation:
         
         try:
             # Connect to device
-            device, mapping, _, _ = _connect_enum(self.device_mac, timeout=timeout)
+            device, mapping, _, _ = _connect_enum(self.device_mac, timeout_connect=timeout)
             
             # Execute operation based on type
             if self.operation_type == "read":
@@ -76,7 +76,7 @@ class DeviceOperation:
             # Disconnect from device
             try:
                 device.disconnect()
-            except:
+            except Exception:
                 pass
             
             self.executed = True

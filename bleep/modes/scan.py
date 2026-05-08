@@ -8,7 +8,7 @@ function so other tools or the CLI can invoke the mode via
 """
 
 import argparse
-from bleep.ble_ops.scan import passive_scan
+from bleep.ble_ops.le.scan import passive_scan
 
 
 def _build_parser():

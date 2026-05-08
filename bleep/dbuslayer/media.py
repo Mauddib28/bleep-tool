@@ -16,8 +16,12 @@ from __future__ import annotations
 import time
 from typing import Dict, Any, Optional, List, Tuple, Callable
 
+import threading
+
 import dbus
+import dbus.service
 from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import GLib
 
 from bleep.bt_ref.constants import (
     BLUEZ_SERVICE_NAME,
@@ -30,6 +34,11 @@ from bleep.bt_ref.constants import (
     MEDIA_INTERFACE,
     MEDIA_FOLDER_INTERFACE,
     MEDIA_ITEM_INTERFACE,
+    A2DP_SOURCE_UUID,
+    A2DP_SINK_UUID,
+    SBC_CODEC_ID,
+    SBC_CAPABILITIES,
+    SBC_DEFAULT_CONFIGURATION,
 )
 from bleep.bt_ref.utils import dbus_to_python
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__USER
@@ -40,8 +49,10 @@ __all__ = [
     "MediaEndpoint",
     "MediaTransport",
     "MediaPlayer",
+    "BleepMediaEndpoint",
     "find_media_devices",
     "find_media_objects",
+    "get_managed_objects",
 ]
 
 
@@ -535,7 +546,10 @@ class MediaTransport:
         """
         try:
             fd, read_mtu, write_mtu = self._interface.Acquire()
-            return int(fd), int(read_mtu), int(write_mtu)
+            # BlueZ returns fd as dbus.UnixFd; .take() extracts the raw int
+            # and transfers ownership so the wrapper won't close it.
+            raw_fd = fd.take() if isinstance(fd, dbus.types.UnixFd) else int(fd)
+            return raw_fd, int(read_mtu), int(write_mtu)
         except dbus.exceptions.DBusException as e:
             print_and_log(
                 f"[-] Failed to acquire transport ({self.transport_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
@@ -607,21 +621,12 @@ class MediaPlayer:
     
     def get_name(self) -> Optional[str]:
         """Get the name of the player.
-        
-        Returns
-        -------
-        Optional[str]
-            Name of the player or None if not available
+
+        Note: ``Name`` is optional per org.bluez.MediaPlayer.rst — many
+        devices do not expose it.
         """
-        try:
-            name = self._properties.Get(MEDIA_PLAYER_INTERFACE, "Name")
-            return str(name) if name else None
-        except dbus.exceptions.DBusException as e:
-            print_and_log(
-                f"[-] Failed to get MediaPlayer.Name ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
-                LOG__DEBUG,
-            )
-            return None
+        val = self._get_property("Name")
+        return str(val) if val else None
     
     def get_status(self) -> Optional[str]:
         """Get the playback status of the player.
@@ -872,16 +877,30 @@ class MediaPlayer:
     # Generic helpers (internal) ----------------------------------------
     # ------------------------------------------------------------------
 
+    # Properties that are documented as optional in org.bluez.MediaPlayer.rst
+    _OPTIONAL_PROPS = frozenset({
+        "Name", "Type", "Subtype", "Browsable", "Searchable",
+        "Playlist", "Equalizer", "Repeat", "Shuffle", "Scan",
+        "ObexPort",
+    })
+
     def _get_property(self, name: str):
         """Return *name* property converted to native Python or None on error."""
         try:
             value = self._properties.Get(MEDIA_PLAYER_INTERFACE, name)
             return dbus_to_python(value)
         except dbus.exceptions.DBusException as e:
-            print_and_log(
-                f"[-] Failed to get MediaPlayer.{name} ({self.player_path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
-                LOG__DEBUG,
-            )
+            if name in self._OPTIONAL_PROPS:
+                print_and_log(
+                    f"[*] MediaPlayer.{name} not available on {self.player_path}",
+                    LOG__DEBUG,
+                )
+            else:
+                print_and_log(
+                    f"[-] Failed to get MediaPlayer.{name} ({self.player_path}): "
+                    f"{e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                    LOG__DEBUG,
+                )
             return None
 
     def _set_property(self, name: str, value) -> bool:
@@ -982,6 +1001,222 @@ class MediaPlayer:
     def release_key(self) -> bool:
         """Release previously held key."""
         return self._call("Release")
+
+
+# ---------------------------------------------------------------------------
+# BLEEP-owned MediaEndpoint (server role) ------------------------------------
+# ---------------------------------------------------------------------------
+
+
+class BleepMediaEndpoint(dbus.service.Object):
+    """D-Bus service implementing ``org.bluez.MediaEndpoint1`` (server role).
+
+    When registered with BlueZ via ``Media1.RegisterEndpoint()``, this
+    object participates in A2DP stream negotiation.  Registration alone
+    only creates a local SEP — BlueZ selects it during the next A2DP
+    profile connection (``ConnectProfile``).  Therefore the caller must
+    cycle the A2DP profile after registration to trigger negotiation.
+
+    Expected usage::
+
+        ep = BleepMediaEndpoint(profile_uuid=A2DP_SOURCE_UUID)
+        ep.register()                       # creates local SEP + starts GLib loop
+        # … caller disconnects + reconnects the A2DP profile …
+        transport_path = ep.wait_for_transport()  # blocks until SetConfiguration
+        # … caller Acquire()s the transport …
+        ep.unregister()                     # cleanup + stops GLib loop
+
+    Callback flow (driven by BlueZ during ``ConnectProfile``):
+
+    1. ``SelectConfiguration(caps)`` → return preferred SBC config.
+    2. ``SetConfiguration(transport, properties)`` → store transport path,
+       signal ``_ready_event``.
+
+    Uses a **private** D-Bus system bus with explicit ``DBusGMainLoop``
+    integration so that callbacks are dispatched regardless of the shared
+    bus singleton state.
+
+    Parameters
+    ----------
+    profile_uuid : str
+        UUID of the profile to register (e.g., ``A2DP_SOURCE_UUID``).
+    codec_id : int
+        Codec identifier (default: ``SBC_CODEC_ID``).
+    capabilities : bytes
+        Codec capabilities blob (default: ``SBC_CAPABILITIES``).
+    configuration : bytes
+        Default codec configuration (default: ``SBC_DEFAULT_CONFIGURATION``).
+    adapter_path : str
+        BlueZ adapter path (default: ``/org/bluez/hci0``).
+    """
+
+    _OBJECT_PATH = "/bleep/media/endpoint"
+    _IFACE = "org.bluez.MediaEndpoint1"
+
+    def __init__(
+        self,
+        profile_uuid: str = A2DP_SOURCE_UUID,
+        codec_id: int = SBC_CODEC_ID,
+        capabilities: bytes = SBC_CAPABILITIES,
+        configuration: bytes = SBC_DEFAULT_CONFIGURATION,
+        adapter_path: str = "/org/bluez/hci0",
+    ):
+        self._glib_mainloop = DBusGMainLoop()
+        self._bus = dbus.SystemBus(
+            private=True, mainloop=self._glib_mainloop,
+        )
+        self._adapter_path = adapter_path
+        self._profile_uuid = profile_uuid
+        self._codec_id = codec_id
+        self._capabilities = capabilities
+        self._configuration = configuration
+
+        self._transport_path: Optional[str] = None
+        self._transport_props: Optional[dict] = None
+        self._registered = False
+        self._ready_event = threading.Event()
+        self._loop: Optional[GLib.MainLoop] = None
+        self._loop_thread: Optional[threading.Thread] = None
+
+        super().__init__(self._bus, self._OBJECT_PATH)
+
+    # -- GLib main loop (needed for D-Bus callback dispatch) -----------------
+
+    def _start_mainloop(self) -> None:
+        if self._loop is not None:
+            return
+        self._loop = GLib.MainLoop()
+        self._loop_thread = threading.Thread(
+            target=self._loop.run, daemon=True,
+        )
+        self._loop_thread.start()
+
+    def _stop_mainloop(self) -> None:
+        if self._loop and self._loop.is_running():
+            self._loop.quit()
+        self._loop = None
+        self._loop_thread = None
+
+    # -- D-Bus methods (called *by* BlueZ) ----------------------------------
+
+    @dbus.service.method(_IFACE, in_signature="", out_signature="")
+    def Release(self) -> None:
+        print_and_log("[*] BleepMediaEndpoint: Released by BlueZ", LOG__DEBUG)
+        self._registered = False
+
+    @dbus.service.method(_IFACE, in_signature="o", out_signature="")
+    def ClearConfiguration(self, transport: str) -> None:
+        print_and_log(
+            f"[*] BleepMediaEndpoint: ClearConfiguration({transport})",
+            LOG__DEBUG,
+        )
+        if self._transport_path == transport:
+            self._transport_path = None
+            self._transport_props = None
+            self._ready_event.clear()
+
+    @dbus.service.method(
+        _IFACE, in_signature="oa{sv}", out_signature="",
+    )
+    def SetConfiguration(self, transport: str, properties: dict) -> None:
+        print_and_log(
+            f"[+] BleepMediaEndpoint: SetConfiguration "
+            f"transport={transport}",
+            LOG__GENERAL,
+        )
+        self._transport_path = str(transport)
+        self._transport_props = dict(properties) if properties else {}
+        self._ready_event.set()
+
+    @dbus.service.method(_IFACE, in_signature="ay", out_signature="ay")
+    def SelectConfiguration(self, caps: list) -> list:
+        print_and_log(
+            f"[*] BleepMediaEndpoint: SelectConfiguration "
+            f"caps={list(caps)}",
+            LOG__DEBUG,
+        )
+        return dbus.Array(
+            [dbus.Byte(b) for b in self._configuration], signature="y",
+        )
+
+    # -- Public API ----------------------------------------------------------
+
+    def register(self) -> None:
+        """Register this endpoint with BlueZ and start the GLib main loop.
+
+        The main loop runs on a daemon thread so that D-Bus callbacks
+        (``SelectConfiguration``, ``SetConfiguration``) can be dispatched
+        while the caller's thread blocks on ``wait_for_transport()``.
+        """
+        self._start_mainloop()
+
+        media = dbus.Interface(
+            self._bus.get_object(BLUEZ_SERVICE_NAME, self._adapter_path),
+            MEDIA_INTERFACE,
+        )
+        properties = dbus.Dictionary(
+            {
+                "UUID": self._profile_uuid,
+                "Codec": dbus.Byte(self._codec_id),
+                "Capabilities": dbus.Array(
+                    [dbus.Byte(b) for b in self._capabilities],
+                    signature="y",
+                ),
+            },
+            signature="sv",
+        )
+        media.RegisterEndpoint(self._OBJECT_PATH, properties)
+        self._registered = True
+        print_and_log(
+            f"[+] Registered BLEEP endpoint at {self._OBJECT_PATH} "
+            f"(UUID={self._profile_uuid})",
+            LOG__GENERAL,
+        )
+
+    def unregister(self) -> None:
+        """Unregister this endpoint from BlueZ and stop the main loop."""
+        if not self._registered:
+            self._stop_mainloop()
+            return
+        try:
+            media = dbus.Interface(
+                self._bus.get_object(BLUEZ_SERVICE_NAME, self._adapter_path),
+                MEDIA_INTERFACE,
+            )
+            media.UnregisterEndpoint(self._OBJECT_PATH)
+        except dbus.exceptions.DBusException as e:
+            print_and_log(
+                f"[-] Failed to unregister endpoint: {e.get_dbus_name()}",
+                LOG__DEBUG,
+            )
+        finally:
+            self._registered = False
+            self._stop_mainloop()
+
+    def wait_for_transport(self, timeout: float = 15.0) -> Optional[str]:
+        """Block until BlueZ calls ``SetConfiguration`` with a transport path.
+
+        Parameters
+        ----------
+        timeout : float
+            Maximum seconds to wait.
+
+        Returns
+        -------
+        Optional[str]
+            The transport D-Bus path, or ``None`` on timeout.
+        """
+        if self._ready_event.wait(timeout):
+            return self._transport_path
+        return None
+
+    @property
+    def transport_path(self) -> Optional[str]:
+        return self._transport_path
+
+    @property
+    def registered(self) -> bool:
+        return self._registered
 
 
 def get_managed_objects() -> Dict[str, Any]:

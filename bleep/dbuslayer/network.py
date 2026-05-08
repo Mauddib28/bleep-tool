@@ -14,6 +14,7 @@ Reference docs
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, Optional
 
 import dbus
@@ -74,10 +75,16 @@ class NetworkClient:
 
     # -- methods ---
 
-    def connect(self, role: str = "nap") -> str:
+    def connect(self, role: str = "nap", *, verify: bool = True) -> str:
         """Connect as *role* (``panu``, ``nap``, or ``gn``).
 
         Returns the local network interface name (e.g. ``bnep0``).
+
+        When *verify* is True (default), a brief post-connect check confirms
+        that the BNEP session actually stabilised.  BlueZ may return an
+        interface name optimistically before the BNEP handshake completes;
+        if the connection drops immediately the ``Connected`` property will
+        already be False by the time the verification runs.
         """
         role = role.lower()
         if role not in _VALID_ROLES:
@@ -90,6 +97,18 @@ class NetworkClient:
                 f"PAN Connect failed: {exc.get_dbus_name()}: "
                 f"{exc.get_dbus_message() or ''}"
             ) from exc
+
+        if verify:
+            time.sleep(0.5)
+            if not self.connected:
+                raise RuntimeError(
+                    f"PAN Connect to {self.mac} returned interface "
+                    f"'{iface_name}' but the BNEP session did not persist "
+                    f"(Connected=False after 500 ms).  The remote device "
+                    f"may have refused the {role.upper()} role or dropped "
+                    f"the L2CAP/BNEP connection."
+                )
+
         print_and_log(f"[PAN] Connected – interface {iface_name}", LOG__DEBUG)
         return iface_name
 
@@ -128,12 +147,24 @@ class NetworkClient:
         return str(val) if val else None
 
     def status(self) -> Dict[str, Any]:
-        """Return a snapshot of all Network1 properties."""
-        return {
-            "connected": self.connected,
-            "interface": self.interface,
-            "uuid": self.uuid,
-        }
+        """Return an atomic snapshot of all Network1 properties.
+
+        Uses a single ``GetAll`` D-Bus call to avoid race conditions between
+        individual property reads.
+        """
+        try:
+            raw = dict(self._props.GetAll(_NET_IFACE))
+            return {
+                "connected": bool(raw.get("Connected", False)),
+                "interface": str(raw["Interface"]) if raw.get("Interface") else None,
+                "uuid": str(raw["UUID"]) if raw.get("UUID") else None,
+            }
+        except dbus.exceptions.DBusException:
+            return {
+                "connected": self.connected,
+                "interface": self.interface,
+                "uuid": self.uuid,
+            }
 
 
 # ---------------------------------------------------------------------------

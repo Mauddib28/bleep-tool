@@ -53,7 +53,7 @@ def cmd_multiread(args: List[str], state: DebugState) -> None:
         else:
             uuid = char_id
 
-        from bleep.ble_ops.enum_helpers import multi_read_characteristic
+        from bleep.ble_ops.le.enum_helpers import multi_read_characteristic
 
         print(f"[*] Reading {uuid} {rounds} times...")
         values = multi_read_characteristic(state.current_device, uuid, repeats=rounds)
@@ -380,7 +380,7 @@ def cmd_brutewrite(args: List[str], state: DebugState) -> None:
         else:
             uuid = char_id
 
-        from bleep.ble_ops.enum_helpers import build_payload_iterator, brute_write_range
+        from bleep.ble_ops.le.enum_helpers import build_payload_iterator, brute_write_range
 
         patterns = [pattern]
         payloads = build_payload_iterator(value_range=value_range, patterns=patterns)

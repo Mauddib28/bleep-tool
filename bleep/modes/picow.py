@@ -27,8 +27,8 @@ from typing import Dict, List, Any, Optional, Tuple
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 from bleep.dbuslayer.adapter import system_dbus__bluez_adapter
 from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy
-from bleep.ble_ops.scan import passive_scan
-from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+from bleep.ble_ops.le.scan import passive_scan
+from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
 
 # Pico W specific constants
 PICOW_NAME_PATTERN = re.compile(r'(?i)pico|raspberry')
@@ -169,13 +169,13 @@ class PicoWDevice:
         for char_uuid in list(self._notification_callbacks.keys()):
             try:
                 self.unregister_notification(char_uuid)
-            except:
+            except Exception:
                 pass
         
         # Disconnect from device
         try:
             self.device.disconnect()
-        except:
+        except Exception:
             pass
 
 def scan_for_picow_devices(timeout: int = 10) -> List[Dict[str, Any]]:
@@ -498,7 +498,7 @@ def main(args=None) -> int:
             for uuid in notify_chars:
                 try:
                     picow.unregister_notification(uuid)
-                except:
+                except Exception:
                     pass
         
         else:

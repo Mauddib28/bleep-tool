@@ -7,6 +7,12 @@ Audio recon enumerates Bluetooth audio cards, profiles, and per-profile sources/
 - **Backend**: PulseAudio, PipeWire (PA-compat or native), or BlueALSA. At least one must be running.
 - **Tools**: `pactl`, `pacmd`, `paplay`, `parecord` (PulseAudio/PipeWire PA-compat), `pw-dump`, `pw-play`, `pw-record`, `wpctl` (PipeWire native), `bluealsa-cli` (BlueALSA), `aplay`/`arecord` (ALSA), `sox` (analysis). Run `bleep --check-env` to verify.
 
+> **Dual-mode device connectivity:** If `gatt-enum` or `media-enum` fails with
+> `br-connection-profile-unavailable` on audio-capable devices, the host likely
+> lacks Bluetooth profile handlers.  Installing `bluez-alsa-utils` or running
+> PulseAudio/PipeWire with Bluetooth support resolves this — see
+> [GATT Enumeration Troubleshooting](gatt_enumeration.md#troubleshooting-br-connection-profile-unavailable-on-dual-mode-devices).
+
 ## Commands
 
 ```bash
@@ -92,12 +98,83 @@ Ensure `pw-dump`, `pw-play`, `pw-record`, and `wpctl` are on `$PATH`. On most Pi
 
 If PulseAudio compatibility is available (`pactl info` works), BLEEP uses the PA-compat path by default. The native path is only engaged when PA compat is absent.
 
+## Troubleshooting: `MediaEndpoint1` contention ("transport timeout" on `audioplay` / `audiorec`)
+
+When BLEEP streams to a Bluetooth sink via `audioplay` / `audio-play`
+(and equivalently for `audiorec` / `audio-record`), it registers its own
+`org.bluez.MediaEndpoint1` object and waits for BlueZ to assign a
+`MediaTransport1`.  On hosts where **BlueALSA**, **PipeWire's bluez5
+plugin**, or **PulseAudio's module-bluez5-device** already owns the
+matching endpoint, BlueZ's `a2dp_select_eps` picks the pre-existing
+endpoint over BLEEP's and `SetConfiguration` is never called against
+BLEEP's object — the acquire path then hits the 15 s transport timeout
+with no structured hint as to *why*.
+
+BLEEP now pre-flights this contention before cycling the device:
+
+* **Primary (default, zero cost) probe** — infers competitors from the
+  structured audio-stack snapshot (`_check_bluetooth_audio_stack_detailed()`)
+  plus the live BlueALSA PCM enumeration (`list_bluealsa_pcms`).
+  Sufficient for every failure report on record.
+* **Deep (authoritative) probe** — walks the D-Bus session
+  (`org.freedesktop.DBus.ListNames` → per-name `Introspect` for
+  `org.bluez.MediaEndpoint1` → `GetConnectionUnixProcessID` →
+  `/proc/<pid>/comm`) to surface the exact bus name, object path, PID
+  and backend that owns each competing endpoint.  All D-Bus calls run
+  through `bleep.dbus.timeout_manager.call_method_with_timeout` (default
+  3 s) so a stuck bus cannot hang the scan.
+
+### Severity semantics
+
+| Severity | Meaning                                                                 | BLEEP behaviour                                                                                 |
+|----------|-------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------|
+| `none`   | No competitors detected.                                                | Acquire proceeds normally.                                                                      |
+| `info`   | PipeWire / PulseAudio present but usually yield to BLEEP.               | Logged; acquire proceeds.                                                                       |
+| `warn`   | PipeWire / PulseAudio active with likely endpoint ownership.            | Logged; acquire proceeds.  If the transport timeout fires, a deep-probe report is re-injected. |
+| `block`  | BlueALSA active (primary A2DP Source/Sink owner — observed failure).    | `_acquire_via_endpoint` raises a `BLEEPError` with the full report **before** cycling the device, unless `--force-endpoint` is set. |
+
+### Diagnosis and override
+
+```bash
+# Structured view (primary probe) — same output inside the debug shell:
+bleep debug     # → audiocfg
+
+# Authoritative D-Bus view (deep probe), plus annotated MediaEndpoint1 list:
+# (debug shell) audiocfg --endpoints
+# (debug shell) mediaenum --endpoints
+
+# One-line summary during recon:
+bleep audio-recon       # → "[!] Endpoint contention: severity=warn competitors=2 (pipewire, bluealsa)"
+
+# Force BLEEP's endpoint registration anyway (use when the competing daemon
+# is known to release the endpoint during the device-cycle, or for
+# diagnostic purposes):
+bleep audio-play <MAC> <file.wav> --force-endpoint
+bleep audio-record <MAC> <out.wav> --force-endpoint
+# (debug shell) audioplay --force-endpoint <file>
+# (debug shell) audiorec --force-endpoint <file>
+```
+
+### Remediation
+
+* **BlueALSA-first host** (block-severity case):
+  `systemctl stop bluealsa` before streaming via BLEEP, or use
+  `--direct` paths that talk to BlueALSA PCMs instead of registering a
+  custom endpoint.  See the "BlueALSA prerequisites" section above for
+  the supported direct-PCM flow.
+* **PipeWire / PulseAudio host** (warn/info case): acquire typically
+  succeeds; if it does not, stop the server's bluez5 module
+  (`pactl unload-module module-bluez5-device` /
+  `pw-metadata -n settings 0 bluez5.autoswitch-profile false`) for the
+  duration of the capture.
+
 ## Implementation notes
 
 - **audio_tools.py**: `AudioToolsHelper` provides backend detection (including `pipewire_native` and `bluealsa` differentiation), BlueZ card listing (PA), PipeWire node enumeration (`_get_pipewire_bluez_nodes`), BlueALSA PCM listing (`list_bluealsa_pcms`), profile listing and switching (PA via `pactl`, PipeWire via `wpctl`), pacmd- and pw-dump-based parsing of sources/sinks with roles, and `play_to_sink` / `record_from_source` with automatic tool selection. Sox-based "has audio" check is in `check_audio_file_has_content()`.
 - **audio_recon.py**: `run_audio_recon()` dispatches to backend-specific helpers (`_recon_pulseaudio`, `_recon_pipewire_native`, `_recon_bluealsa`). BlueALSA is also enumerated as a supplement when PA/PW is the primary backend.
 - **Preflight**: All audio tools are checked: `sox`, `paplay`, `pacmd`, `pw-dump`, `pw-play`, `pw-record`, `wpctl`, `bluealsa-aplay`, `bluealsa-cli`, `bluealsa-rfcomm`.
-- **Amusica integration**: Audio recon is used as a component of the Amusica workflow (`bleep amusica scan --connect`). Amusica calls `run_audio_recon()` with the target MAC filter after a successful JustWorks connection. See `bleep/ble_ops/amusica.py` and the Amusica section in `bleep/docs/todo_tracker.md` for the full workflow and future work items that build on these bonus objectives.
+- **Amusica integration**: Audio recon is used as a component of the Amusica workflow (`bleep amusica auto`). Amusica calls `run_audio_recon()` with the target MAC filter after a successful JustWorks connection. See `bleep/ble_ops/audio/amusica.py` and the Amusica section in `bleep/docs/todo_tracker.md` for the full workflow and future work items that build on these bonus objectives.
+- **audio_transcribe.py** (v2.8.0): `run_audio_intercept()` implements a 7-step pipeline (validate → configure ALSA → capture via `arecord` → verify content → optional transcription via `whisper`/`vosk` → emit signal → return `AudioInterceptResult`). CLI: `bleep audio-intercept <MAC> [--duration N] [--no-transcribe] [--engine whisper|vosk]`.
 
 ---
 

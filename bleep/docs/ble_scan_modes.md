@@ -18,7 +18,7 @@ BlueZ only delivers discovery results after `StopDiscovery()`. A single long sca
 
 ---
 
-Run `python -m bleep.modes.debug` and use commands:
+Run `bleep debug` (or the equivalent `python -m bleep.modes.debug`) and use commands:
 * `scan`   → passive
 * `scann`  → naggy
 * `scanp <MAC>` → pokey
@@ -26,11 +26,15 @@ Run `python -m bleep.modes.debug` and use commands:
 
 for interactive tests.
 
-*Last updated: 2025-07-21* 
-
 ---
 
 ## Enumeration variants (_enum / enumn / enump / enumb_)
+
+> **CLI commands:** The debug-shell shortcuts below correspond to the top-level
+> CLI commands `gatt-enum` and `enum-scan`.  See
+> [GATT Enumeration Commands](gatt_enumeration.md) for full documentation of
+> CLI flags, output formats, deep vs standard mode, and the brute-force
+> payload system.
 
 Discovery finds devices; **enumeration** digs into a single target’s GATT
 database. Four presets mirror the discovery spectrum:
@@ -52,7 +56,7 @@ database. Four presets mirror the discovery spectrum:
 
 ```bash
 # Passive enumeration (read-only)
-python -m bleep.modes.debug -d    # detailed mode
+bleep debug -d                    # detailed mode (or 'python -m bleep.modes.debug -d')
 BLEEP-DEBUG> enum AA:BB:CC:DD:EE:FF
 
 # Naggy enumeration with mapping diff
@@ -79,4 +83,4 @@ Allowed pattern keywords now include:
 
 Logs are written to `LOG__ENUM` for post-analysis (diffs, errors, landmine hits).
 
-*Last updated: 2025-07-24* 
+*Last updated: 2026-03-19*

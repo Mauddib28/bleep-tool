@@ -25,8 +25,8 @@ from typing import Dict, List, Any, Optional, Tuple
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 from bleep.dbuslayer.adapter import system_dbus__bluez_adapter
 from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy
-from bleep.ble_ops.scan import passive_scan
-from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+from bleep.ble_ops.le.scan import passive_scan
+from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
 
 # Test result constants
 TEST_PASS = "PASS"
@@ -74,7 +74,7 @@ class TestSuite:
         if self.device and hasattr(self.device, "disconnect"):
             try:
                 self.device.disconnect()
-            except:
+            except Exception:
                 pass
     
     def run_test(self, test_name: str) -> TestResult:
@@ -475,7 +475,7 @@ class AdapterTestSuite(TestSuite):
             # Check basic properties
             address = self.adapter.get_address()
             name = self.adapter.get_name()
-            powered = self.adapter.is_powered()
+            powered = self.adapter.get_powered()
             
             # Basic validation
             if not isinstance(address, str):
@@ -496,7 +496,7 @@ class AdapterTestSuite(TestSuite):
         
         try:
             # Check if adapter is powered
-            if not self.adapter.is_powered():
+            if not self.adapter.get_powered():
                 return TEST_SKIP, "Adapter is not powered on"
             
             # Start discovery
@@ -506,7 +506,7 @@ class AdapterTestSuite(TestSuite):
             time.sleep(2)
             
             # Check if discovery is active
-            discovering = self.adapter.is_discovering()
+            discovering = self.adapter.get_discovering()
             
             # Stop discovery
             self.adapter.stop_discovery()
@@ -520,7 +520,7 @@ class AdapterTestSuite(TestSuite):
             # Try to stop discovery if it was started
             try:
                 self.adapter.stop_discovery()
-            except:
+            except Exception:
                 pass
             
             return TEST_ERROR, f"Error during discovery test: {exc}"

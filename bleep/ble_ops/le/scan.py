@@ -1,0 +1,812 @@
+"""Passive BLE scan operation – native implementation only.
+
+The function now relies exclusively on the refactored `bleep.dbuslayer` stack
+and requires GI/PyGObject + BlueZ at runtime.  All legacy monolith fallback
+code has been removed.
+
+Scan *variants* implemented here (in increasing chattiness):
+
+* passive_scan – BlueZ default: DuplicateData=True, respects interval hints.
+* naggy_scan   – Same filter but DuplicateData=False so we get **every** adv.
+* pokey_scan   – Repeated 1-second *naggy* scans (stop/start discovery) to
+                  coerce extra advertising.  Optional Address filter hammers a
+                  specific device (fewer HCI events, quicker).  Inspired by
+                  behaviour in the golden-template monolith.
+* brute_scan   – Combination BR/EDR + LE phases – loudest footprint.
+"""
+
+from __future__ import annotations
+
+# Attempt to import the new dbuslayer stack.  If *gi* bindings / BlueZ are not
+# available we abort early – historic monolith fallback has been removed.
+
+try:
+    from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+
+    _HAS_NATIVE_STACK = True
+except Exception:  # noqa: BLE001 – missing GI bindings / BlueZ runtime
+    _HAS_NATIVE_STACK = False
+
+from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
+from bleep.core.constants import (
+    BT_DEVICE_TYPE_UNKNOWN,
+    BT_DEVICE_TYPE_CLASSIC, 
+    BT_DEVICE_TYPE_LE,
+    BT_DEVICE_TYPE_DUAL
+)
+import json as _json
+from typing import Any, Dict
+
+
+def _json_compact(obj: Any) -> str:
+    """JSON-encode for DB storage — compact, no ASCII escapes."""
+    try:
+        return _json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+    except Exception:
+        return "{}"
+
+
+def _native_scan(device: str | None, timeout: int, transport: str = "auto", quiet: bool = False) -> int:
+    """Perform a simple LE discovery using the refactored stack."""
+
+    adapter = _Adapter()
+    
+    # Explicitly set discovery filter transport to avoid stale filter state
+    adapter.set_discovery_filter({"Transport": transport.lower()})
+
+    manager = adapter.create_device_manager()
+
+    # In this first rewrite we ignore *device* filtering; higher-level code
+    # expects a *passive* broadcast scan.
+    manager.start_discovery(timeout=timeout)
+    manager.run()  # blocks until timeout expires
+
+    raw = adapter.get_discovered_devices()
+
+    # Only print output if not in quiet mode
+    if not quiet:
+        if not raw:
+            print_and_log("[*] No BLE devices discovered", LOG__GENERAL)
+        else:
+            print_and_log(f"[*] Discovered {len(raw)} device(s)", LOG__GENERAL)
+
+            for entry in raw:
+                addr = entry.get("address", "??")
+                name = entry.get("name") or entry.get("alias") or "?"
+                rssi_val = entry.get("rssi")
+                rssi_disp = rssi_val if rssi_val is not None else "?"
+                rssi_display = f"{rssi_disp} dBm" if rssi_disp != "?" else "? dBm"
+                print_and_log(f"  {addr} ({name}) - RSSI: {rssi_display}", LOG__GENERAL)
+    
+    # Always update observations if available
+    if raw and _obs:
+        from bleep.analysis.device_type_classifier import DeviceTypeClassifier
+        classifier = DeviceTypeClassifier()  # Create once, reuse for all devices
+        
+        for entry in raw:
+            addr = entry.get("address", "??")
+            if addr == "??":
+                continue
+                
+            name = entry.get("name") or entry.get("alias") or "?"
+            rssi_val = entry.get("rssi")
+            addr_type = entry.get("address_type")
+            device_class = entry.get("device_class")
+            
+            try:
+                device_info = {
+                    'name': name,
+                    'rssi_last': rssi_val,
+                    'addr_type': addr_type,
+                }
+
+                # Seed rssi_min/rssi_max so the DB can track the observed range
+                if rssi_val is not None:
+                    device_info['rssi_min'] = rssi_val
+                    device_info['rssi_max'] = rssi_val
+
+                if device_class is not None:
+                    device_info['device_class'] = device_class
+
+                # v10 enrichment from adapter discovery data
+                if entry.get("tx_power") is not None:
+                    device_info['tx_power'] = int(entry["tx_power"])
+                if entry.get("appearance") is not None:
+                    device_info['appearance'] = int(entry["appearance"])
+                if entry.get("modalias"):
+                    device_info['modalias'] = str(entry["modalias"])
+                if entry.get("icon"):
+                    device_info['icon'] = str(entry["icon"])
+                if entry.get("manufacturer_data"):
+                    # Pick the entry with the longest payload (most informative)
+                    best_key, best_val = None, b''
+                    for mfr_key, mfr_val in entry["manufacturer_data"].items():
+                        val_bytes = bytes(mfr_val)
+                        if len(val_bytes) >= len(best_val):
+                            best_key, best_val = mfr_key, val_bytes
+                    if best_key is not None:
+                        device_info['manufacturer_id'] = int(best_key)
+                        device_info['manufacturer_data'] = best_val
+                if entry.get("service_data"):
+                    device_info['service_data'] = _json_compact(
+                        {k: v.hex() if isinstance(v, bytes) else str(v)
+                         for k, v in entry["service_data"].items()}
+                    )
+                if entry.get("advertising_data"):
+                    device_info['advertising_data'] = _json_compact(
+                        {str(k): v.hex() if isinstance(v, bytes) else str(v)
+                         for k, v in entry["advertising_data"].items()}
+                    )
+
+                _obs.upsert_device(addr, **device_info)
+                
+                # STEP 2: NOW perform classification with database cache enabled
+                # Device exists in DB, so foreign key constraints will be satisfied
+                context = {
+                    "device_class": device_class,
+                    "address_type": addr_type,
+                    "uuids": entry.get("uuids", []),
+                    "connected": entry.get("connected", False),
+                    "service_data": entry.get("service_data", {}),
+                    "advertising_data": entry.get("advertising_data", {}),
+                    "manufacturer_data": entry.get("manufacturer_data", {}),
+                }
+                
+                result = classifier.classify_with_mode(
+                    mac=addr,
+                    context=context,
+                    scan_mode="passive",
+                    use_database_cache=True
+                )
+                
+                # STEP 3: Update device with classified device_type
+                _obs.upsert_device(addr, device_type=result.device_type)
+                
+            except Exception as e:
+                # Preserve behavior (continue scanning) but include structured
+                # D-Bus diagnostics when applicable.
+                if hasattr(e, "get_dbus_name") and hasattr(e, "get_dbus_message"):
+                    print_and_log(
+                        f"[-] Error processing device {addr}: {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                        LOG__DEBUG,
+                    )
+                else:
+                    print_and_log(f"[-] Error processing device {addr}: {e}", LOG__DEBUG)
+
+    # Convert raw device list to dictionary format expected by higher-level code
+    devices = {}
+    for entry in raw:
+        addr = entry.get("address", "??")
+        if addr != "??":
+            devices[addr] = entry
+    
+    print_and_log(f"[DEBUG] _native_scan returning {len(devices)} devices", LOG__DEBUG)
+    
+    return devices
+
+
+# ---------------------------------------------------------------------------
+# Legacy monolith loader *removed* – the following helpers have been deleted:
+#   * _load_monolith()
+#   * _legacy_scan()
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Back-compat helper wrappers – thin shims around *passive_scan*
+# ---------------------------------------------------------------------------
+
+def create_and_return__bluetooth_scan__discovered_devices(
+    *, timeout: int = 10, adapter_name: str | None = None, transport: str = "auto"
+) -> list[dict]:
+    """Return the list of discovered device dictionaries (address, name, rssi,…).
+
+    This preserves the public contract of the legacy helper while relying solely
+    on the refactored *dbuslayer* stack.  **No monolith code is imported.**
+    """
+    from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+
+    adapter = _Adapter(adapter_name) if adapter_name else _Adapter()
+
+    # Apply transport filter if explicitly requested
+    if transport.lower() in {"le", "bredr"}:
+        adapter.set_discovery_filter({"Transport": transport.lower()})
+
+    manager = adapter.create_device_manager()
+    manager.start_discovery(timeout=timeout)
+    manager.run()
+
+    return adapter.get_discovered_devices()
+
+
+def create_and_return__bluetooth_scan__discovered_devices__specific_adapter(
+    bluetooth_adapter: str, *, timeout: int = 10, transport: str = "auto"
+) -> list[dict]:
+    """Explicit adapter variant kept for callers that pass *hciX* manually."""
+    return create_and_return__bluetooth_scan__discovered_devices(
+        timeout=timeout,
+        adapter_name=bluetooth_adapter,
+        transport=transport,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Enumeration wrappers (passive_enum / naggy_enum / pokey_enum / brute_enum)
+# ---------------------------------------------------------------------------
+
+from bleep.ble_ops.le.enum_helpers import multi_read_all, brute_write_range
+from typing import Dict, Any
+
+# Optional import of observation DB helper (may fail on minimal systems)
+try:
+    from bleep.core import observations as _obs
+except Exception:  # noqa: BLE001
+    _obs = None
+
+
+def _enrich_device_info_from_props(device_info: Dict[str, Any], props: dict) -> None:
+    """Merge v10 device columns from a Device1 D-Bus property dict (CamelCase keys)."""
+    if not props:
+        return
+    if "RSSI" in props and "rssi_last" not in device_info:
+        device_info["rssi_last"] = int(props["RSSI"])
+    if "AddressType" in props and "addr_type" not in device_info:
+        device_info["addr_type"] = str(props["AddressType"])
+    if "Class" in props and "device_class" not in device_info:
+        device_info["device_class"] = int(props["Class"])
+    if "Appearance" in props and "appearance" not in device_info:
+        device_info["appearance"] = int(props["Appearance"])
+    if "TxPower" in props:
+        device_info["tx_power"] = int(props["TxPower"])
+    if "Modalias" in props:
+        device_info["modalias"] = str(props["Modalias"])
+    if "Icon" in props:
+        device_info["icon"] = str(props["Icon"])
+    if "ManufacturerData" in props and "manufacturer_id" not in device_info:
+        for mfr_key in props["ManufacturerData"]:
+            device_info["manufacturer_id"] = int(mfr_key)
+            device_info["manufacturer_data"] = bytes(props["ManufacturerData"][mfr_key])
+            break
+    if "ServiceData" in props:
+        device_info["service_data"] = _json_compact(
+            {str(k): bytes(v).hex() for k, v in props["ServiceData"].items()}
+        )
+    if "AdvertisingData" in props:
+        device_info["advertising_data"] = _json_compact(
+            {str(k): bytes(v).hex() for k, v in props["AdvertisingData"].items()}
+        )
+
+
+def _persist_mapping(mac: str, mapping: Dict[str, Any]):
+    """Persist services & characteristics to observation DB (safe/no-crash)."""
+    if not _obs:
+        return
+    try:
+        svc_list = []
+        
+        # Support different mapping structures (original and gatt-enum format)
+        if "Services" in mapping:  # Handle gatt-enum JSON format
+            mapping = mapping.get("Services", {})
+            
+        # Support format from enum-scan functions where the mapping is inside "mapping" key
+        elif "mapping" in mapping:
+            mapping = mapping.get("mapping", {})
+            
+        for svc_uuid, svc_data in mapping.items():
+            if not isinstance(svc_data, dict):
+                # Log the unexpected service data type for debugging
+                print_and_log(
+                    f"[DEBUG] Non-dictionary service data for {svc_uuid}: {type(svc_data).__name__}={svc_data!r}",
+                    LOG__DEBUG
+                )
+                svc_list.append({
+                    "uuid": svc_uuid,
+                    "name": None,
+                    "handle_start": None,
+                    "handle_end": None,
+                })
+            else:
+                svc_entry = {
+                    "uuid": svc_uuid,
+                    "name": svc_data.get("name"),
+                    "handle_start": svc_data.get("start_handle"),
+                    "handle_end": svc_data.get("end_handle"),
+                }
+                if "Primary" in svc_data:
+                    svc_entry["is_primary"] = svc_data["Primary"]
+                if "Includes" in svc_data:
+                    svc_entry["includes"] = svc_data["Includes"]
+                svc_list.append(svc_entry)
+        
+        uuid_to_id = _obs.upsert_services(mac, svc_list)  # type: ignore[attr-defined]
+        
+        # characteristics
+        characteristic_count = 0
+        for svc_uuid, svc_data in mapping.items():
+            sid = uuid_to_id.get(svc_uuid)
+            if not sid:
+                continue
+            
+            char_list = []
+            
+            # Check if svc_data is a dictionary
+            if not isinstance(svc_data, dict):
+                # Already logged above, skip this service
+                continue
+                
+            # Support multiple formats of characteristic data
+            chars_data = None
+            
+            # Standard format with "chars" key
+            if "chars" in svc_data:
+                chars_data = svc_data.get("chars", {})
+            
+            # gatt-enum format with "Characteristics" key
+            elif "Characteristics" in svc_data:
+                chars_data = svc_data.get("Characteristics", {})
+            
+            # For enum-scan format, the characteristic UUID might be directly stored as the value
+            elif isinstance(svc_data, str):
+                # For this format, we can only store the UUID, not properties or values
+                chars_data = {svc_data: {}}
+            
+            # If no characteristics found in any format
+            if not chars_data:
+                continue
+                
+            for char_uuid, char_data in chars_data.items():
+                # Add type checking before accessing dictionary methods
+                if not isinstance(char_data, dict):
+                    # Log the unexpected characteristic data type for debugging
+                    char_list.append({
+                        "uuid": char_uuid,
+                        "handle": None,
+                        "properties": [],
+                        "value": None,
+                    })
+                else:
+                    # Support both property formats (legacy and gatt-enum)
+                    props = []
+                    if "properties" in char_data:
+                        props = list(char_data.get("properties", {}).keys())
+                    elif "Flags" in char_data:
+                        props = char_data.get("Flags", [])
+                        
+                    # Support both handle formats
+                    handle = None
+                    if "handle" in char_data:
+                        handle = char_data.get("handle")
+                    elif "Handle" in char_data:
+                        # Handle format conversion from hex string to integer if needed
+                        handle_val = char_data.get("Handle")
+                        if isinstance(handle_val, str) and handle_val.startswith("0x"):
+                            try:
+                                handle = int(handle_val, 16)
+                            except ValueError:
+                                handle = None
+                        else:
+                            handle = handle_val
+                        
+                    # Support both value formats
+                    value = None
+                    if "value" in char_data:
+                        value = char_data.get("value")
+                    elif "Value" in char_data:
+                        value = char_data.get("Value")
+                        # If value is a string but Raw data is available, use Raw instead
+                        if isinstance(value, str) and "Raw" in char_data:
+                            raw_val = char_data.get("Raw")
+                            # Try to convert Raw from string representation of a list to bytes
+                            if isinstance(raw_val, str) and raw_val.startswith("[") and raw_val.endswith("]"):
+                                try:
+                                    # Parse the string representation of a list into actual bytes
+                                    raw_list = eval(raw_val)
+                                    if isinstance(raw_list, list):
+                                        value = bytes(raw_list)
+                                except Exception:
+                                    # If parsing fails, keep the original Value
+                                    pass
+                    
+                    char_entry = {
+                        "uuid": char_uuid,
+                        "handle": handle,
+                        "properties": props,
+                        "value": value,
+                    }
+                    mtu = char_data.get("MTU") or char_data.get("mtu") if isinstance(char_data, dict) else None
+                    if mtu is not None:
+                        char_entry["mtu"] = mtu
+                    char_list.append(char_entry)
+                    characteristic_count += 1
+
+            if char_list:
+                _obs.upsert_characteristics(sid, char_list, mac=mac, service_uuid=svc_uuid)  # type: ignore[attr-defined]
+
+                # Persist descriptors for each characteristic if present
+                for char_uuid_d, char_data_d in chars_data.items():
+                    if not isinstance(char_data_d, dict):
+                        continue
+                    desc_data = char_data_d.get("Descriptors") or char_data_d.get("descriptors")
+                    if not desc_data or not isinstance(desc_data, dict):
+                        continue
+                    char_id = _obs.get_characteristic_id(sid, char_uuid_d)
+                    if not char_id:
+                        continue
+                    desc_list = []
+                    for desc_uuid, desc_entry in desc_data.items():
+                        d_info = {"uuid": desc_uuid}
+                        if isinstance(desc_entry, dict):
+                            d_info["value"] = desc_entry.get("Value") or desc_entry.get("value")
+                            d_info["handle"] = desc_entry.get("Handle") or desc_entry.get("handle")
+                            d_info["flags"] = desc_entry.get("Flags") or desc_entry.get("flags")
+                        desc_list.append(d_info)
+                    if desc_list:
+                        _obs.upsert_descriptors(char_id, desc_list)
+                
+        # Ensure changes are committed to database
+        if hasattr(_obs, "_DB_CONN") and _obs._DB_CONN is not None:
+            _obs._DB_CONN.commit()
+            
+    except Exception as e:
+        if hasattr(e, "get_dbus_name") and hasattr(e, "get_dbus_message"):
+            print_and_log(
+                f"[-] Error saving to database: {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                LOG__DEBUG,
+            )
+        else:
+            print_and_log(f"[-] Error saving to database: {e}", LOG__DEBUG)
+        import traceback
+        print_and_log(f"[-] Traceback: {traceback.format_exc()}", LOG__DEBUG)
+
+
+def _collect_device_props(device) -> dict:
+    """Collect org.bluez.Device1 + auxiliary interface properties from D-Bus.
+
+    Fetches Device1 props and also probes for Battery1 and Input1 interfaces
+    on the same object path, merging them under reserved keys so downstream
+    formatters can display battery level, reconnect mode, etc.
+    """
+    try:
+        import dbus as _dbus
+        bus = _dbus.SystemBus()
+        obj = bus.get_object("org.bluez", device._device_path)
+        pi = _dbus.Interface(obj, "org.freedesktop.DBus.Properties")
+        props = dict(pi.GetAll("org.bluez.Device1"))
+    except Exception:
+        return {}
+
+    _AUX_INTERFACES = {
+        "org.bluez.Battery1": "_Battery1",
+        "org.bluez.Input1": "_Input1",
+    }
+    for iface, key in _AUX_INTERFACES.items():
+        try:
+            aux = dict(pi.GetAll(iface))
+            if aux:
+                props[key] = aux
+        except Exception:
+            pass
+
+    return props
+
+
+def _base_enum(target_bt_addr: str, *, deep: bool = False):
+    """Connect & enumerate, return (device, mapping, mine_map, perm_map, device_props)."""
+    from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+    
+    device, mapping, mine_map, perm_map = _connect_enum(target_bt_addr, deep_enumeration=deep)
+    
+    device_props = _collect_device_props(device)
+    
+    # Persist to observation DB if available
+    if _obs:
+        try:
+            from bleep.analysis.device_type_classifier import DeviceTypeClassifier
+            
+            # Get device properties
+            addr = device.get_address()
+            name = device.get_name()
+            addr_type = device.get_address_type() if hasattr(device, 'get_address_type') else None
+            device_class = device.get_device_class() if hasattr(device, 'get_device_class') else None
+            
+            device_info: Dict[str, Any] = {
+                'name': name,
+                'addr_type': addr_type,
+            }
+
+            if device_class is not None:
+                device_info['device_class'] = device_class
+
+            # v10 enrichment from Device1 D-Bus properties
+            _enrich_device_info_from_props(device_info, device_props)
+
+            _obs.upsert_device(addr, **device_info)
+            
+            # STEP 2: Save services and characteristics (creates more classification evidence)
+            _persist_mapping(addr, mapping)
+            
+            # STEP 3: Perform classification with full context (including services)
+            # Use 'naggy' mode since we just connected and enumerated
+            classifier = DeviceTypeClassifier()
+            
+            # Get UUIDs from device if available
+            uuids = []
+            if hasattr(device, 'get_uuids'):
+                try:
+                    uuids = device.get_uuids() or []
+                except Exception:
+                    pass
+            
+            context = {
+                "device_class": device_class,
+                "address_type": addr_type,
+                "uuids": uuids,
+                "connected": True,
+                "device": device,
+                "gatt_services": list(mapping.keys()) if mapping else [],
+                "service_data": device_props.get("ServiceData", {}),
+                "advertising_data": device_props.get("AdvertisingData", {}),
+                "manufacturer_data": device_props.get("ManufacturerData", {}),
+            }
+            
+            result = classifier.classify_with_mode(
+                mac=addr,
+                context=context,
+                scan_mode="naggy",  # More aggressive mode for connected devices
+                use_database_cache=True
+            )
+            
+            # STEP 4: Update with classified type
+            _obs.upsert_device(addr, device_type=result.device_type)
+            
+        except Exception as e:
+            if hasattr(e, "get_dbus_name") and hasattr(e, "get_dbus_message"):
+                print_and_log(
+                    f"[-] Error saving to database: {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
+                    LOG__DEBUG,
+                )
+            else:
+                print_and_log(f"[-] Error saving to database: {e}", LOG__DEBUG)
+    
+    return device, mapping, mine_map, perm_map, device_props
+
+
+def passive_enum(target_bt_addr: str, *, deep: bool = False):
+    _, mapping, mine_map, perm_map, device_props = _base_enum(target_bt_addr, deep=deep)
+    return {"mapping": mapping, "mine_map": mine_map, "perm_map": perm_map,
+            "device_props": device_props}
+
+
+def naggy_enum(target_bt_addr: str, *, deep: bool = False):
+    device, mapping, mine_map, perm_map, device_props = _base_enum(target_bt_addr, deep=deep)
+    multi = multi_read_all(device, mapping=mapping, rounds=3)
+
+    # Update mapping with the most recent value from multi-read and detect changes
+    changed_chars: set[str] = set()
+    last_round = max(multi.keys()) if multi else 0
+    if last_round:
+        latest = multi[last_round]
+        for svc_uuid, svc_data in mapping.items():
+            chars = svc_data.get("chars", {})
+            for char_uuid, char_data in chars.items():
+                label = char_data.get("label", char_uuid)
+                val = latest.get(label)
+                if isinstance(val, (bytes, bytearray)):
+                    from bleep.ble_ops.common.conversion import convert__hex_to_ascii
+                    ascii_val = convert__hex_to_ascii(val)
+                    if not ascii_val.strip() or "\ufffd" in ascii_val:
+                        ascii_val = None
+                    char_data["value"] = ascii_val
+                    char_data["raw"] = list(val)
+
+        # Detect changes across rounds
+        for label in latest:
+            values_across_rounds = []
+            for r in sorted(multi.keys()):
+                v = multi[r].get(label)
+                if isinstance(v, (bytes, bytearray)):
+                    values_across_rounds.append(v)
+            if len(set(values_across_rounds)) > 1:
+                changed_chars.add(label)
+
+    return {
+        "mapping": mapping,
+        "multi_read": multi,
+        "mine_map": mine_map,
+        "perm_map": perm_map,
+        "changed_chars": changed_chars,
+        "device_props": device_props,
+    }
+
+
+def pokey_enum(
+    target_bt_addr: str,
+    *,
+    rounds: int = 3,
+    verify: bool = False,
+):
+    """Enumerate with light write-probes (0/1) after each round."""
+    results = {}
+    device_obj: Any | None = None
+    mine_map: Any | None = None
+    perm_map: Any | None = None
+    device_props: dict = {}
+    for r in range(rounds):
+        print_and_log(f"[*] Pokey enum round {r+1}/{rounds}", LOG__GENERAL)
+        device, mapping, mine_map, perm_map, device_props = _base_enum(target_bt_addr, deep=False)
+        device_obj = device
+        from bleep.ble_ops.le.enum_helpers import small_write_probe
+        small_write_probe(device, mapping, verify=verify)
+        results[r + 1] = mapping
+    return {
+        "device": device_obj,
+        "mapping": results[max(results.keys())] if results else {},
+        "rounds": results,
+        "mine_map": mine_map,
+        "perm_map": perm_map,
+        "device_props": device_props,
+    }
+
+
+def brute_enum(
+    target_bt_addr: str,
+    *,
+    write_char: str,
+    value_range: tuple[int, int] | None = (0x00, 0xFF),
+    patterns: list[str] | None = None,
+    payload_file: bytes | None = None,
+    force: bool = False,
+    verify: bool = False,
+    deep: bool = False,
+):
+    device, mapping, mine_map, perm_map, device_props = _base_enum(target_bt_addr, deep=deep)
+
+    from typing import Any
+    from bleep.ble_ops.le.enum_helpers import build_payload_iterator
+
+    payloads = build_payload_iterator(value_range=value_range, patterns=patterns, file_bytes=payload_file)
+    from bleep.ble_ops.le.enum_helpers import multi_write_all
+
+    if write_char.lower() == "all":
+        write_result = multi_write_all(
+            device,
+            mapping,
+            payloads=payloads,
+            verify=verify,
+            respect_roeng=not force,
+            landmine_map=mine_map,
+        )
+    else:
+        write_result = brute_write_range(
+            device,
+            write_char,
+            payloads=payloads,
+            verify=verify,
+            respect_roeng=not force,
+            landmine_map=mine_map,
+        )
+
+    return {
+        "device": device,
+        "mapping": mapping,
+        "mine_map": mine_map,
+        "perm_map": perm_map,
+        "device_props": device_props,
+    }
+
+# Public export list -----------------------------------------------------------------------------
+__all__ = [
+    "passive_scan",
+    "naggy_scan",
+    "pokey_scan",
+    "brute_scan",
+    "create_and_return__bluetooth_scan__discovered_devices",
+    "create_and_return__bluetooth_scan__discovered_devices__specific_adapter",
+]
+__all__ += [
+    "passive_enum",
+    "naggy_enum",
+    "pokey_enum",
+    "brute_enum",
+]
+
+
+# ---------------------------------------------------------------------------
+# public API
+# ---------------------------------------------------------------------------
+
+
+def passive_scan(device: str | None = None, timeout: int = 60, transport: str = "auto", quiet: bool = False):  # noqa: D401
+    """Execute a passive BLE scan.
+
+    Parameters
+    ----------
+    device
+        Optional MAC address to target (ignored in native scan for now).
+    timeout
+        Duration in seconds for the discovery main-loop.
+    transport
+        Bluetooth transport filter: "auto" (default), "le" (Low Energy), or "bredr" (Classic).
+    quiet
+        If True, suppress console output during scanning.
+    """
+
+    if not _HAS_NATIVE_STACK:
+        raise RuntimeError(
+            "PyGObject/BlueZ bindings not available – passive_scan now requires "
+            "a native environment after monolith fallback removal."
+        )
+
+    return _native_scan(device, timeout, transport, quiet)
+
+
+# ---------------------------------------------------------------------------
+# Extended scan modes (naggy / pokey / brute)
+# ---------------------------------------------------------------------------
+
+
+def naggy_scan(device: str | None = None, timeout: int = 60, transport: str = "auto"):
+    """Active scan with *DuplicateData=False* (slightly more chatty)."""
+    if not _HAS_NATIVE_STACK:
+        raise RuntimeError("GI/BlueZ runtime missing – naggy_scan unavailable")
+
+    # Set discovery filter once via adapter then delegate to native scan
+    from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+
+    _adapter = _Adapter()
+    _adapter.set_discovery_filter({"DuplicateData": False})
+
+    return _native_scan(device, timeout, transport)
+
+
+def pokey_scan(
+    target_mac: str | None = None,
+    *,
+    timeout: int = 30,
+):
+    """Rapid-fire active scan loop ("pokey mode").
+
+    Rationale
+    ---------
+    • BlueZ emits *InterfacesAdded* only when discovery *stops*.
+    • A long 30-s scan therefore gives you **one** event per device.
+    • Restarting discovery every second forces BlueZ to flush its cache →
+      many events per interval → *pokes* devices into revealing transient
+      adverts (e.g. privacy-rotating MACs, button-triggered beacons).
+
+    target_mac (optional)
+    ---------------------
+    When supplied we set `Address=<MAC>` filter once so only that device’s
+    adverts are processed – reduces controller load & log spam when you’re
+    investigating a single beacon.
+    """
+    if not _HAS_NATIVE_STACK:
+        raise RuntimeError("GI/BlueZ runtime missing – pokey_scan unavailable")
+
+    import time as _time
+    end_time = _time.monotonic() + timeout
+    rounds = 0
+
+    # One-time filter setup when target specified
+    if target_mac:
+        from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+        _Adapter().set_discovery_filter({"Address": target_mac.upper()})
+
+    while _time.monotonic() < end_time:
+        rounds += 1
+        print_and_log(f"[*] Pokey round {rounds}", LOG__DEBUG)
+        naggy_scan(target_mac if target_mac else None, timeout=1)
+    return 0
+
+
+def brute_scan(timeout: int = 30):
+    """Full BR/EDR + LE sweep (loudest)."""
+    if not _HAS_NATIVE_STACK:
+        raise RuntimeError("GI/BlueZ runtime missing – brute_scan unavailable")
+
+    half = max(1, timeout // 2)
+    print_and_log("[*] Brute scan – BR/EDR phase", LOG__GENERAL)
+    _native_scan(None, half, transport="bredr")
+    print_and_log("[*] Brute scan – LE active phase", LOG__GENERAL)
+    naggy_scan(None, half, transport="le")
+    return 0

@@ -1,14 +1,18 @@
-"""Simple abstraction of a GATT Characteristic as exposed by BlueZ.
+"""Abstraction of a GATT Characteristic as exposed by BlueZ.
 
-This is *not* a full-featured implementation; it only provides the subset of
-operations currently required by `device_le` and higher-level helper modules.
-Additional flags (acquire-notify / acquire-write) will be added in later
-phases.
+Covers the full ``GattCharacteristic1`` client-side surface:
+
+- **ReadValue** / **WriteValue** (with write-without-response via ``type=command``)
+- **StartNotify** / **StopNotify** (PropertiesChanged subscription)
+- **AcquireWrite** / **AcquireNotify** — fd-based streaming that bypasses
+  per-packet D-Bus overhead (BZ-1).  Falls back to the standard paths when
+  the remote characteristic does not support the acquire methods.
 """
 
 from __future__ import annotations
 
-from typing import Optional, Dict, Any
+import os
+from typing import Optional, Dict, Any, Tuple
 
 import dbus
 import re
@@ -60,6 +64,38 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
         # "Handle" property is optional.  Default to -1 when absent.
         self.handle: int = self.get_handle()
 
+        # MTU — available after connection, optional.
+        try:
+            self.mtu: int | None = int(
+                self._props_iface.Get(GATT_CHARACTERISTIC_INTERFACE, "MTU")
+            )
+        except dbus.exceptions.DBusException:
+            self.mtu = None
+
+        # Notifying — True when notifications/indications are active.
+        try:
+            self.notifying: bool = bool(
+                self._props_iface.Get(GATT_CHARACTERISTIC_INTERFACE, "Notifying")
+            )
+        except dbus.exceptions.DBusException:
+            self.notifying = False
+
+        # WriteAcquired — True when an fd-based write session is active.
+        try:
+            self.write_acquired: bool = bool(
+                self._props_iface.Get(GATT_CHARACTERISTIC_INTERFACE, "WriteAcquired")
+            )
+        except dbus.exceptions.DBusException:
+            self.write_acquired = False
+
+        # NotifyAcquired — True when an fd-based notify session is active.
+        try:
+            self.notify_acquired: bool = bool(
+                self._props_iface.Get(GATT_CHARACTERISTIC_INTERFACE, "NotifyAcquired")
+            )
+        except dbus.exceptions.DBusException:
+            self.notify_acquired = False
+
         # Container for descriptor objects filled by Service.discover_characteristics
         self.descriptors: list[Descriptor] = []  # type: ignore[name-defined]
 
@@ -72,6 +108,12 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
         self._notification_max_history = 10  # Store last 10 notifications by default
         self._read_triggers_notification = False
         self._write_triggers_notification = False
+
+        # fd-based acquire session state (BZ-1)
+        self._acquired_write_fd: Optional[int] = None
+        self._acquired_write_mtu: Optional[int] = None
+        self._acquired_notify_fd: Optional[int] = None
+        self._acquired_notify_mtu: Optional[int] = None
 
     # ------------------------------------------------------------------
     # Read / Write helpers
@@ -92,10 +134,69 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
             self._record_notification(result, "read")
             try:
                 self._notify_cb(result)
-            except Exception:
-                pass
+            except Exception as _e:
+                print_and_log(f"[DEBUG] Notification callback error on read: {_e}", LOG__DEBUG)
                 
         return result
+
+    def read_value_with_fallback(self, offset: int = 0) -> bytes:
+        """Three-tier read that tries progressively simpler D-Bus calls.
+
+        1. ReadValue({"offset": <offset>})
+        2. ReadValue({})                     — only if (1) returned None/b""
+        3. Properties.Get("Value")           — only if (2) returned None/b""
+
+        b"\\x00" and other zero-byte arrays are treated as valid data and do
+        NOT trigger fallbacks.  Re-raises the original D-Bus exception when
+        all three tiers fail.
+        """
+        first_exc = None
+
+        # Tier 1 — with offset
+        try:
+            raw = self._char_iface.ReadValue({"offset": dbus.UInt16(offset)})
+            result = bytes(raw)
+            if result:
+                return result
+        except dbus.exceptions.DBusException as exc:
+            first_exc = exc
+            print_and_log(
+                f"Characteristic fallback tier-1 failed ({self.uuid}): {exc.get_dbus_name()}",
+                LOG__DEBUG,
+            )
+
+        # Tier 2 — no options
+        try:
+            raw = self._char_iface.ReadValue({})
+            result = bytes(raw)
+            if result:
+                return result
+        except dbus.exceptions.DBusException as exc:
+            if first_exc is None:
+                first_exc = exc
+            print_and_log(
+                f"Characteristic fallback tier-2 failed ({self.uuid}): {exc.get_dbus_name()}",
+                LOG__DEBUG,
+            )
+
+        # Tier 3 — cached property
+        try:
+            prop_val = self._props_iface.Get(GATT_CHARACTERISTIC_INTERFACE, "Value")
+            result = bytes(prop_val)
+            if result:
+                return result
+        except dbus.exceptions.DBusException as exc:
+            if first_exc is None:
+                first_exc = exc
+            print_and_log(
+                f"Characteristic fallback tier-3 failed ({self.uuid}): {exc.get_dbus_name()}",
+                LOG__DEBUG,
+            )
+
+        # All tiers exhausted
+        if first_exc is not None:
+            raise first_exc
+        return b""
 
     def write_value(
         self, value: bytes | bytearray | list[int], without_response: bool = False
@@ -116,8 +217,129 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
             self._record_notification(value_bytes, "write")
             try:
                 self._notify_cb(value_bytes)
-            except Exception:
+            except Exception as _e:
+                print_and_log(f"[DEBUG] Notification callback error on write: {_e}", LOG__DEBUG)
+
+    # ------------------------------------------------------------------
+    # fd-based Acquire (BZ-1)
+    # ------------------------------------------------------------------
+    def acquire_write(self, **options) -> Tuple[int, int]:
+        """Acquire an fd for streaming writes, bypassing D-Bus per-packet overhead.
+
+        Returns ``(fd, mtu)`` where *fd* is a Unix file descriptor suitable for
+        ``os.write()`` and *mtu* is the negotiated ATT MTU minus 3 (max payload
+        per write).
+
+        Raises ``dbus.exceptions.DBusException`` if the characteristic does not
+        support ``AcquireWrite`` (check for ``"write-without-response"`` in
+        ``self.flags``).  Callers should fall back to :meth:`write_value` in
+        that case.
+        """
+        if self._acquired_write_fd is not None:
+            return self._acquired_write_fd, self._acquired_write_mtu  # type: ignore[return-value]
+
+        dbus_opts: Dict[str, Any] = {}
+        for k, v in options.items():
+            dbus_opts[k] = v
+
+        fd, mtu = self._char_iface.AcquireWrite(dbus_opts)
+        # BlueZ returns a dbus.UnixFd; extract the raw int via take()
+        raw_fd = fd.take() if hasattr(fd, "take") else int(fd)
+        mtu_int = int(mtu)
+        self._acquired_write_fd = raw_fd
+        self._acquired_write_mtu = mtu_int
+        self.write_acquired = True
+        print_and_log(
+            f"[DEBUG] AcquireWrite fd={raw_fd} mtu={mtu_int} for {self.uuid}",
+            LOG__DEBUG,
+        )
+        return raw_fd, mtu_int
+
+    def acquire_notify(self, **options) -> Tuple[int, int]:
+        """Acquire an fd for streaming notification reception.
+
+        Returns ``(fd, mtu)`` where *fd* is a Unix file descriptor readable via
+        ``os.read()`` and *mtu* is the negotiated ATT MTU minus 3.
+
+        Raises ``dbus.exceptions.DBusException`` if the characteristic does not
+        support ``AcquireNotify``.  Callers should fall back to
+        :meth:`start_notify` in that case.
+        """
+        if self._acquired_notify_fd is not None:
+            return self._acquired_notify_fd, self._acquired_notify_mtu  # type: ignore[return-value]
+
+        dbus_opts: Dict[str, Any] = {}
+        for k, v in options.items():
+            dbus_opts[k] = v
+
+        fd, mtu = self._char_iface.AcquireNotify(dbus_opts)
+        raw_fd = fd.take() if hasattr(fd, "take") else int(fd)
+        mtu_int = int(mtu)
+        self._acquired_notify_fd = raw_fd
+        self._acquired_notify_mtu = mtu_int
+        self.notify_acquired = True
+        print_and_log(
+            f"[DEBUG] AcquireNotify fd={raw_fd} mtu={mtu_int} for {self.uuid}",
+            LOG__DEBUG,
+        )
+        return raw_fd, mtu_int
+
+    def write_value_fd(self, value: bytes | bytearray) -> int:
+        """Write *value* through the acquired fd, returning bytes written.
+
+        Automatically calls :meth:`acquire_write` on first use.  Falls back to
+        :meth:`write_value` if the acquire path is not supported.
+        """
+        if self._acquired_write_fd is None:
+            try:
+                self.acquire_write()
+            except dbus.exceptions.DBusException:
+                self.write_value(value, without_response=True)
+                return len(value)
+
+        return os.write(self._acquired_write_fd, bytes(value))  # type: ignore[arg-type]
+
+    def read_notify_fd(self, size: int = 0) -> bytes:
+        """Read notification data from the acquired fd.
+
+        *size* defaults to the negotiated MTU when zero.  Automatically calls
+        :meth:`acquire_notify` on first use.  Falls back to an empty read if
+        the acquire path is not supported (caller should use
+        :meth:`start_notify` instead).
+        """
+        if self._acquired_notify_fd is None:
+            try:
+                self.acquire_notify()
+            except dbus.exceptions.DBusException:
+                return b""
+
+        read_size = size or self._acquired_notify_mtu or 512
+        return os.read(self._acquired_notify_fd, read_size)  # type: ignore[arg-type]
+
+    def release_acquired(self) -> None:
+        """Close any acquired file descriptors."""
+        if self._acquired_write_fd is not None:
+            try:
+                os.close(self._acquired_write_fd)
+            except OSError:
                 pass
+            self._acquired_write_fd = None
+            self._acquired_write_mtu = None
+            self.write_acquired = False
+            print_and_log(
+                f"[DEBUG] Released AcquireWrite fd for {self.uuid}", LOG__DEBUG
+            )
+        if self._acquired_notify_fd is not None:
+            try:
+                os.close(self._acquired_notify_fd)
+            except OSError:
+                pass
+            self._acquired_notify_fd = None
+            self._acquired_notify_mtu = None
+            self.notify_acquired = False
+            print_and_log(
+                f"[DEBUG] Released AcquireNotify fd for {self.uuid}", LOG__DEBUG
+            )
 
     # ------------------------------------------------------------------
     # Notifications
@@ -159,16 +381,14 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
                 return  # nothing to forward
 
             try:
-                # Record notification in history
                 self._record_notification(bytes(val), "property_change")
                 callback(bytes(val))
             except Exception:
-                # If conversion to bytes() fails (already bytes, etc.) use raw
                 try:
                     self._record_notification(val, "property_change")
                     callback(val)  # type: ignore[arg-type]
-                except Exception:
-                    pass
+                except Exception as _e:
+                    print_and_log(f"[DEBUG] Notification dispatch failed: {_e}", LOG__DEBUG)
 
         self._notify_signal = self._props_iface.connect_to_signal(
             "PropertiesChanged", _prop_changed
@@ -340,8 +560,7 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
         last_err: int | None = None
         while attempt < retries:
             try:
-                data = self.read_value()
-                # Some stacks return b"\x00" for empty value. Accept as success.
+                data = self.read_value_with_fallback()
                 return data, None
             except dbus.exceptions.DBusException as exc:  # type: ignore[attr-defined]
                 error_name = exc.get_dbus_name()

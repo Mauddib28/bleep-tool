@@ -3,6 +3,8 @@ Command-line interface for BLEEP.
 """
 
 import argparse
+import signal
+import shutil
 import sys
 import os
 
@@ -19,6 +21,8 @@ def parse_args(args=None):
     parser.add_argument("--version", action="version", version=f"BLEEP {__version__}")
     parser.add_argument("--check-env", action="store_true", 
                        help="Check environment capabilities (tools, configs, dependencies)")
+    parser.add_argument("--diagnose-audio", action="store_true",
+                       help="Run detailed audio stack diagnostic and show install guidance")
 
     # Add subparsers for different modes
     subparsers = parser.add_subparsers(dest="mode", help="Operation mode")
@@ -26,22 +30,58 @@ def parse_args(args=None):
     # Interactive mode (default)
     subparsers.add_parser("interactive", help="Interactive REPL console")
 
+    # Debug mode (interactive low-level shell)
+    debug_parser = subparsers.add_parser(
+        "debug",
+        help="Interactive debug shell (low-level D-Bus, GATT, media, classic)",
+    )
+    debug_parser.add_argument(
+        "device", nargs="?", help="MAC address of device to connect to"
+    )
+    debug_parser.add_argument(
+        "-m", "--monitor", action="store_true",
+        help="Monitor device properties in real-time",
+    )
+    debug_parser.add_argument(
+        "-n", "--no-connect", action="store_true",
+        help="Don't connect to device (just open the shell)",
+    )
+    debug_parser.add_argument(
+        "-d", "--detailed", action="store_true",
+        help="Show detailed information including decoded UUIDs and handle information",
+    )
+
     # Scan mode
     scan_parser = subparsers.add_parser("scan", help="Passive BLE scan")
     scan_parser.add_argument("-d", "--device", help="Target MAC address to filter")
     scan_parser.add_argument("--timeout", type=int, default=10, help="Scan duration (s)")
     scan_parser.add_argument("--variant", choices=["passive", "naggy", "pokey", "brute"], default="passive", help="Scan variant")
+    scan_parser.add_argument("--transport", choices=["auto", "le", "bredr"], default="auto",
+                             help="Transport type: auto (LE+BR/EDR), le, bredr (default: auto)")
     scan_parser.add_argument("--target", help="Target MAC for pokey mode", default=None)
+    scan_parser.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
 
     # Connect mode
     connect_parser = subparsers.add_parser("connect", help="Connect + GATT enumerate")
     connect_parser.add_argument("address", help="Target MAC address")
+    connect_parser.add_argument("--ble-only", action="store_true",
+                                help="Force BLE (GATT) connection even for Classic/dual devices")
+    connect_parser.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
+    connect_parser.add_argument(
+        "--no-profiles", dest="activate_profiles", action="store_false",
+        default=True,
+        help=(
+            "Classic path only: skip the best-effort BlueZ profile "
+            "activation after RFCOMM bring-up."
+        ),
+    )
 
     # GATT enumeration (quick / deep)
     gatt_parser = subparsers.add_parser("gatt-enum", help="Connect and enumerate GATT database")
     gatt_parser.add_argument("address", help="Target MAC address")
     gatt_parser.add_argument("--deep", action="store_true", help="Perform deep enumeration (retry reads, descriptor probing)")
     gatt_parser.add_argument("--report", action="store_true", help="Print landmine & security reports instead of raw maps")
+    gatt_parser.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
 
     # Enumeration scan variants
     enum_scan = subparsers.add_parser("enum-scan", help="Run enumeration helpers with variant")
@@ -55,11 +95,21 @@ def parse_args(args=None):
     enum_scan.add_argument("--force", action="store_true", help="Ignore landmine/permission map for brute writes")
     enum_scan.add_argument("--verify", action="store_true", help="Read back after each brute write")
     enum_scan.add_argument("--controlled", action="store_true", help="Use EnumerationController for structured multi-attempt enumeration with error annotations")
+    enum_scan.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
 
     # Media device enumeration
     media_parser = subparsers.add_parser("media-enum", help="Connect and enumerate media device capabilities")
     media_parser.add_argument("address", help="Target MAC address")
+    media_parser.add_argument("--connect-via", choices=["auto", "ble", "classic"], default="auto",
+                              help="Connection strategy: 'auto' selects based on device type, "
+                                   "'ble' forces the GATT-oriented path (works for Classic devices "
+                                   "when host audio stack is present), 'classic' forces a BR/EDR "
+                                   "Device1.Connect() path (default: auto)")
     media_parser.add_argument("--verbose", action="store_true", help="Include detailed track and transport information")
+    media_parser.add_argument("--browse", action="store_true", help="List top-level folder contents if player is browsable")
+    media_parser.add_argument("--passive", action="store_true",
+                              help="Passive recon only: assess media capabilities from "
+                                   "cached Device1 properties without connecting")
     media_parser.add_argument("--monitor", action="store_true", help="Monitor media status changes")
     media_parser.add_argument("--duration", type=int, default=30, help="Duration to monitor in seconds (with --monitor)")
     media_parser.add_argument("--interval", type=int, default=2, help="Polling interval in seconds (with --monitor)")
@@ -80,12 +130,18 @@ def parse_args(args=None):
     audio_play.add_argument("file", help="Audio file path")
     audio_play.add_argument("--volume", type=int, help="Volume (0-127)")
     audio_play.add_argument("--codec", choices=["SBC", "MP3", "AAC"], help="Codec preference (if supported)")
+    audio_play.add_argument("--direct", action="store_true", help="Acquire an existing transport directly instead of registering a BLEEP-owned endpoint (requires audio daemon stopped)")
+    audio_play.add_argument("--system", action="store_true", help="Play via system audio tools (paplay/pw-play/aplay) through the host audio daemon — no D-Bus transport acquisition needed")
+    audio_play.add_argument("--force-endpoint", action="store_true", help="Bypass the MediaEndpoint1 contention pre-flight (use when a competing daemon is known to release the endpoint during the cycle)")
 
     # Audio recording
     audio_record = subparsers.add_parser("audio-record", help="Record audio from Bluetooth device")
     audio_record.add_argument("device", help="Source device MAC address")
     audio_record.add_argument("output", help="Output file path")
     audio_record.add_argument("--duration", type=int, help="Duration in seconds")
+    audio_record.add_argument("--direct", action="store_true", help="Acquire an existing transport directly instead of registering a BLEEP-owned endpoint (requires audio daemon stopped)")
+    audio_record.add_argument("--system", action="store_true", help="Record via system audio tools (parecord/pw-record/arecord) through the host audio daemon — no D-Bus transport acquisition needed")
+    audio_record.add_argument("--force-endpoint", action="store_true", help="Bypass the MediaEndpoint1 contention pre-flight (use when a competing daemon is known to release the endpoint during the cycle)")
 
     # Audio recon (enumerate cards/profiles, play/record, sox analysis)
     audio_recon = subparsers.add_parser("audio-recon", help="Audio recon: enumerate BlueZ cards/profiles, play test file, record, analyse with sox")
@@ -134,6 +190,51 @@ def parse_args(args=None):
                              help="Timeout for pairing operations (seconds)")
     agent_parser.add_argument("--status", action="store_true",
                              help="Check BLEEP agent registration status")
+    agent_parser.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
+
+    # Pair mode
+    pair_parser = subparsers.add_parser("pair", help="Pair with a Bluetooth device")
+    pair_parser.add_argument("address", help="Target Bluetooth MAC address")
+    pair_parser.add_argument("--pin", default=None,
+                             help="PIN code for legacy pairing (default: 0000)")
+    pair_parser.add_argument("--passkey", type=int, default=None,
+                             help="Numeric passkey for SSP pairing (0–999999)")
+    pair_parser.add_argument("--interactive", action="store_true",
+                             help="Prompt for PIN / passkey / confirmation at runtime")
+    pair_parser.add_argument("--check", action="store_true",
+                             help="Check pairing state only – do not pair")
+    pair_parser.add_argument("--reset", action="store_true",
+                             help="Force-remove existing bond before pairing")
+    pair_parser.add_argument("--no-connect", action="store_true",
+                             help="Pair only – do not attempt a post-pair connection")
+    pair_parser.add_argument("--no-trust", action="store_true",
+                             help="Do not set the device as trusted after pairing")
+    pair_parser.add_argument("--brute", action="store_true",
+                             help="Brute-force PIN codes")
+    pair_parser.add_argument("--passkey-brute", action="store_true",
+                             help="Brute-force numeric passkeys")
+    pair_parser.add_argument("--range", default=None, dest="pin_range",
+                             help="PIN/passkey range, e.g. 0000-9999 or 0-999999")
+    pair_parser.add_argument("--pin-list", default=None,
+                             help="File containing one PIN per line")
+    pair_parser.add_argument("--delay", type=float, default=0.5,
+                             help="Delay between brute-force attempts (s)")
+    pair_parser.add_argument("--max-attempts", type=int, default=0,
+                             help="Maximum brute-force attempts (0 = unlimited)")
+    pair_parser.add_argument("--lockout-cooldown", type=float, default=60.0,
+                             help="Cooldown after lockout detection (s)")
+    pair_parser.add_argument("--max-lockout-retries", type=int, default=3,
+                             help="Maximum retries after lockout")
+    pair_parser.add_argument("--probe", action="store_true",
+                             help="Discover auth method by cycling IO capabilities")
+    pair_parser.add_argument("--cap", default="KeyboardDisplay",
+                             choices=["NoInputNoOutput", "DisplayOnly", "DisplayYesNo",
+                                      "KeyboardOnly", "KeyboardDisplay"],
+                             help="BlueZ IO capability for the pairing agent")
+    pair_parser.add_argument("--timeout", type=int, default=60,
+                             help="Pairing timeout in seconds")
+    pair_parser.add_argument("--adapter", default="hci0",
+                             help="Adapter name (default: hci0)")
 
     # Explore mode
     explore_parser = subparsers.add_parser("explore", help="Scan & dump GATT database to JSON for offline analysis")
@@ -144,6 +245,7 @@ def parse_args(args=None):
                              help="Connection mode: 'passive' (single attempt, default) or 'naggy' (with retries)")
     explore_parser.add_argument("--timeout", type=int, default=10, help="Scan timeout in seconds (default: 10)")
     explore_parser.add_argument("--retries", type=int, default=3, help="Number of connection retries in naggy mode (default: 3)")
+    explore_parser.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
 
     # DB (observation) commands
     db_parser = subparsers.add_parser("db", help="Query local observation database")
@@ -179,6 +281,7 @@ def parse_args(args=None):
     sig_parser.add_argument("mac", help="Target MAC address")
     sig_parser.add_argument("char", help="Characteristic UUID or char handle")
     sig_parser.add_argument("--time", type=int, default=30, help="Listen duration seconds")
+    sig_parser.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
     
     # User mode
     user_parser = subparsers.add_parser("user", help="User-friendly interface for Bluetooth exploration")
@@ -208,6 +311,7 @@ def parse_args(args=None):
     cscan_parser.add_argument("--rssi", type=int, help="RSSI threshold: ignore devices weaker than this (dBm)")
     cscan_parser.add_argument("--pathloss", type=int, help="Path-loss threshold in dB (BlueZ >=5.59)")
     cscan_parser.add_argument("--debug", "-d", action="store_true", help="Enable verbose debug output")
+    cscan_parser.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
 
     # Classic enumerate
     cen_parser = subparsers.add_parser("classic-enum", help="Enumerate Classic RFCOMM services")
@@ -216,6 +320,25 @@ def parse_args(args=None):
     cen_parser.add_argument("--connectionless", action="store_true", help="Verify device reachability via l2ping before SDP query (faster failure detection)")
     cen_parser.add_argument("--version-info", action="store_true", help="Display Bluetooth version information (HCI/LMP versions, vendor/product IDs, profile versions)")
     cen_parser.add_argument("--analyze", action="store_true", help="Perform comprehensive SDP analysis (protocol analysis, version inference, anomaly detection)")
+    cen_parser.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
+
+    # Classic connect (SDP + RFCOMM — bypasses Device1.Connect profile requirement)
+    ccon_parser = subparsers.add_parser("classic-connect", help="Connect to a Classic device via SDP + RFCOMM")
+    ccon_parser.add_argument("address", help="Target Bluetooth MAC address")
+    ccon_parser.add_argument("--check", action="store_true", help="Check pair/connection status only")
+    ccon_parser.add_argument("--no-pair", action="store_true", help="Skip auto-pair — fail if not paired")
+    ccon_parser.add_argument("--channel", type=int, default=None, help="Specific RFCOMM channel (default: first from SDP)")
+    ccon_parser.add_argument("--keep", action="store_true", help="Hold RFCOMM socket open (blocks until Ctrl+C)")
+    ccon_parser.add_argument("--timeout", type=int, default=60, help="Pairing timeout in seconds")
+    ccon_parser.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
+    ccon_parser.add_argument(
+        "--no-profiles", dest="activate_profiles", action="store_false",
+        default=True,
+        help=(
+            "Skip the best-effort BlueZ Device1.Connect() that attaches "
+            "profile handlers after RFCOMM bring-up."
+        ),
+    )
     # Phonebook dump
     pbap_parser = subparsers.add_parser(
         "classic-pbap",
@@ -226,7 +349,7 @@ def parse_args(args=None):
     pbap_parser.add_argument("--repos", help="Comma-separated repo list (PB,ICH,…) or ALL", default="PB")
     pbap_parser.add_argument("--format", choices=["vcard21", "vcard30"], default="vcard21", help="vCard format")
     pbap_parser.add_argument("--auto-auth", action="store_true", help="Register temporary OBEX agent that auto-accepts authentication/prompts")
-    pbap_parser.add_argument("--watchdog", type=int, default=8, help="Watchdog seconds before aborting stalled transfer (0 to disable)")
+    pbap_parser.add_argument("--watchdog", type=int, default=30, help="Watchdog seconds before aborting stalled transfer (0 to disable)")
 
     # OPP CLI
     opp_parser = subparsers.add_parser(
@@ -234,6 +357,7 @@ def parse_args(args=None):
         help="Send a file or pull a business card via Object Push Profile",
     )
     opp_parser.add_argument("address", help="Target MAC address")
+    opp_parser.add_argument("--save-dir", default=None, help="Override default receive directory for downloaded files")
     opp_sub = opp_parser.add_subparsers(dest="action", help="OPP action")
     opp_send = opp_sub.add_parser("send", help="Send a file to the remote device")
     opp_send.add_argument("file", help="Local file path to send")
@@ -241,6 +365,10 @@ def parse_args(args=None):
     opp_pull = opp_sub.add_parser("pull", help="Pull the default business card")
     opp_pull.add_argument("--out", default=None, help="Destination VCF path")
     opp_pull.add_argument("--timeout", type=int, default=60, help="Transfer timeout in seconds")
+    opp_exchange = opp_sub.add_parser("exchange", help="Push local vCard, pull remote card")
+    opp_exchange.add_argument("file", help="Local vCard file to push")
+    opp_exchange.add_argument("--out", default=None, help="Destination path for remote card")
+    opp_exchange.add_argument("--timeout", type=int, default=120, help="Transfer timeout in seconds")
 
     # MAP CLI
     map_parser = subparsers.add_parser(
@@ -248,6 +376,7 @@ def parse_args(args=None):
         help="Browse and manage SMS/MMS via Message Access Profile",
     )
     map_parser.add_argument("address", help="Target MAC address")
+    map_parser.add_argument("--save-dir", default=None, help="Override default receive directory for downloaded files")
     map_parser.add_argument(
         "--instance", type=int, default=None,
         help="RFCOMM channel of a specific MAS instance (use 'instances' to discover)",
@@ -257,6 +386,8 @@ def parse_args(args=None):
     map_list = map_sub.add_parser("list", help="List messages in a folder")
     map_list.add_argument("folder", nargs="?", default="inbox", help="Folder name (default: inbox)")
     map_list.add_argument("--type", dest="msg_type", default=None, help="Filter by type (e.g. SMS, MMS)")
+    map_list.add_argument("-v", "--verbose", dest="map_verbose", action="store_true",
+                          help="Show additional message fields (Sender, DateTime, Type)")
     map_get = map_sub.add_parser("get", help="Download a message by handle")
     map_get.add_argument("handle", help="Message handle")
     map_get.add_argument("--out", default=None, help="Destination file path")
@@ -276,6 +407,7 @@ def parse_args(args=None):
         help="Browse and transfer files via OBEX File Transfer Profile",
     )
     ftp_parser.add_argument("address", help="Target MAC address")
+    ftp_parser.add_argument("--save-dir", default=None, help="Override default receive directory for downloaded files")
     ftp_sub = ftp_parser.add_subparsers(dest="action", help="FTP action")
     ftp_ls = ftp_sub.add_parser("ls", help="List remote folder contents")
     ftp_ls.add_argument("path", nargs="?", default="", help="Remote folder path")
@@ -331,8 +463,23 @@ def parse_args(args=None):
     spp_register.add_argument("--name", default="BLEEP SPP", help="Profile name")
     spp_register.add_argument("--role", default="server", choices=["server", "client"],
                               help="Profile role (default: server)")
+    spp_register.add_argument("--auth", action="store_true", default=True,
+                              help="Require authentication (default)")
+    spp_register.add_argument("--no-auth", action="store_true", default=False,
+                              help="Do not require authentication")
     spp_sub.add_parser("unregister", help="Unregister SPP profile")
     spp_sub.add_parser("status", help="Show SPP profile status")
+
+    # Connect/Disconnect a specific profile by UUID
+    prof_parser = subparsers.add_parser(
+        "connect-profile",
+        help="Connect or disconnect a specific Bluetooth profile by UUID",
+    )
+    prof_parser.add_argument("address", help="Target MAC address")
+    prof_parser.add_argument("uuid", help="Profile UUID to connect/disconnect")
+    prof_parser.add_argument("--disconnect", action="store_true",
+                             help="Disconnect the profile instead of connecting")
+    prof_parser.add_argument("--adapter", default=None, help="Bluetooth adapter (e.g. hci0)")
 
     # IrMC Synchronization CLI
     sync_parser = subparsers.add_parser(
@@ -340,6 +487,7 @@ def parse_args(args=None):
         help="IrMC Synchronization – download or upload phonebook (OBEX Sync)",
     )
     sync_parser.add_argument("address", help="Target MAC address")
+    sync_parser.add_argument("--save-dir", default=None, help="Override default receive directory for downloaded files")
     sync_sub = sync_parser.add_subparsers(dest="action", help="Sync action")
     sync_get = sync_sub.add_parser("get", help="Download phonebook from device")
     sync_get.add_argument("--output", default="", help="Local file path (default: auto)")
@@ -358,7 +506,9 @@ def parse_args(args=None):
         help="Basic Imaging Profile – image properties / download / thumbnail [experimental]",
     )
     bip_parser.add_argument("address", help="Target MAC address")
+    bip_parser.add_argument("--save-dir", default=None, help="Override default receive directory for downloaded files")
     bip_sub = bip_parser.add_subparsers(dest="action", help="BIP action")
+    bip_sub.add_parser("list", help="How to discover image handles (informational)")
     bip_props = bip_sub.add_parser("props", help="Get image properties for a handle")
     bip_props.add_argument("handle", help="Image handle (e.g. '1000001')")
     bip_props.add_argument("--timeout", type=int, default=30, help="Timeout in seconds")
@@ -376,6 +526,16 @@ def parse_args(args=None):
     cping_parser.add_argument("address", help="Target MAC address")
     cping_parser.add_argument("--count", type=int, default=3, help="Echo count")
     cping_parser.add_argument("--timeout", type=int, default=13, help="Seconds before aborting l2ping command")
+    cping_parser.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
+
+    # Classic RFCOMM enumeration & probing
+    crfcomm_parser = subparsers.add_parser("classic-rfcomm", help="Enumerate and optionally probe RFCOMM channels via SDP")
+    crfcomm_parser.add_argument("address", help="Target MAC address")
+    crfcomm_parser.add_argument("--probe", action="store_true", help="Probe each RFCOMM channel for terminal/serial/SSH endpoints")
+    crfcomm_parser.add_argument("--bind", type=int, metavar="CHANNEL", default=None, help="Bind /dev/rfcomm0 to the specified RFCOMM channel")
+    crfcomm_parser.add_argument("--device-id", type=int, default=0, help="Device index N for /dev/rfcommN (default: 0)")
+    crfcomm_parser.add_argument("--timeout", type=float, default=4.0, help="Per-channel probe timeout (seconds, default: 4.0)")
+    crfcomm_parser.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
     
     # Adapter configuration
     aconf_parser = subparsers.add_parser("adapter-config", help="View or modify local Bluetooth adapter configuration")
@@ -395,6 +555,85 @@ def parse_args(args=None):
     aconf_set.add_argument("values", nargs="+", help="Value(s) to set")
     aconf_set.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
 
+    # Advertisement Monitor (BZ-11/12)
+    mon_parser = subparsers.add_parser("monitor", help="Advertisement Monitor: kernel-offloaded pattern scanning")
+    mon_sub = mon_parser.add_subparsers(dest="monitor_action", help="Monitor action")
+
+    mon_caps = mon_sub.add_parser("caps", help="Show AdvertisementMonitorManager1 capabilities")
+    mon_caps.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
+
+    mon_start = mon_sub.add_parser("start", help="Register monitors and stream DeviceFound/Lost events")
+    mon_start.add_argument("-p", "--pattern", dest="patterns", action="append", metavar="OFF:AD:HEX",
+                           help="Pattern in offset:ad_type:hex_content format (repeatable)")
+    mon_start.add_argument("--rssi-high", type=int, default=None, help="RSSI high threshold dBm (-127..20)")
+    mon_start.add_argument("--rssi-high-timeout", type=int, default=0, help="Seconds device must exceed high threshold (1-300)")
+    mon_start.add_argument("--rssi-low", type=int, default=None, help="RSSI low threshold dBm (-127..20)")
+    mon_start.add_argument("--rssi-low-timeout", type=int, default=0, help="Seconds device must stay below low threshold (1-300)")
+    mon_start.add_argument("--sampling-period", type=int, default=0, help="RSSI sampling period (0=report all)")
+    mon_start.add_argument("--duration", type=int, default=None, help="Auto-stop after N seconds (default: run until Ctrl-C)")
+    mon_start.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
+
+    # LE Advertising (BZ-6/7)
+    adv_parser = subparsers.add_parser("advertise", help="LE Advertising: broadcast custom BLE advertisements")
+    adv_sub = adv_parser.add_subparsers(dest="adv_action", help="Advertise action")
+
+    adv_caps = adv_sub.add_parser("caps", help="Show LEAdvertisingManager1 capabilities")
+    adv_caps.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
+
+    adv_start = adv_sub.add_parser("start", help="Register an advertisement and broadcast")
+    adv_start.add_argument("--type", choices=["peripheral", "broadcast"], default="peripheral",
+                           help="Advertisement type (default: peripheral)")
+    adv_start.add_argument("-u", "--uuid", action="append", metavar="UUID",
+                           help="Service UUID to advertise (repeatable)")
+    adv_start.add_argument("-m", "--manufacturer-data", action="append", metavar="CID:HEX",
+                           help="Manufacturer data as COMPANY_ID:HEX_DATA (repeatable)")
+    adv_start.add_argument("-s", "--service-data", action="append", metavar="UUID:HEX",
+                           help="Service data as UUID:HEX_DATA (repeatable)")
+    adv_start.add_argument("-n", "--name", default=None, help="Local name to advertise")
+    adv_start.add_argument("--appearance", type=int, default=None, help="GAP Appearance value (uint16)")
+    adv_start.add_argument("--discoverable", type=lambda v: v.lower() in ("true", "1", "yes"),
+                           default=None, help="Advertise as general discoverable (true/false)")
+    adv_start.add_argument("--tx-power", type=int, default=None, help="Requested TX power in dBm (-127..20)")
+    adv_start.add_argument("--min-interval", type=int, default=None, help="Min advertising interval in ms (20-10485000)")
+    adv_start.add_argument("--max-interval", type=int, default=None, help="Max advertising interval in ms (20-10485000)")
+    adv_start.add_argument("--secondary-channel", choices=["1M", "2M", "Coded"], default=None,
+                           help="Secondary advertising channel PHY")
+    adv_start.add_argument("--include-tx-power", action="store_true", help="Include tx-power in advertisement")
+    adv_start.add_argument("--include-appearance", action="store_true", help="Include appearance in advertisement")
+    adv_start.add_argument("--include-name", action="store_true", help="Include local-name in advertisement")
+    adv_start.add_argument("--duration", type=int, default=None,
+                           help="BlueZ-level advertisement timeout in seconds (auto-removes)")
+    adv_start.add_argument("--local-duration", type=int, default=None,
+                           help="Local stop timer in seconds (default: run until Ctrl-C)")
+    adv_start.add_argument("--adapter", default="hci0", help="Adapter name (default: hci0)")
+
+    # Audio ALSA configuration
+    audo_conf = subparsers.add_parser("audio-config", help="Manage ALSA/BlueALSA configuration for Bluetooth audio")
+    audo_sub = audo_conf.add_subparsers(dest="action", help="Configuration action")
+
+    audo_show = audo_sub.add_parser("show", help="Show current ALSA config entries")
+    audo_show.add_argument("--path", default=None, help="Override config file path")
+
+    audo_add = audo_sub.add_parser("add", help="Add a BlueALSA PCM device entry")
+    audo_add.add_argument("address", help="Bluetooth MAC (00:00:00:00:00:00 for most-recent)")
+    audo_add.add_argument("--type", dest="device_type", default="sink", choices=["sink", "source"], help="Device type (default: sink)")
+    audo_add.add_argument("--path", default=None, help="Override config file path")
+
+    audo_rm = audo_sub.add_parser("remove", help="Remove BlueALSA entries for a MAC")
+    audo_rm.add_argument("address", help="Bluetooth MAC to remove")
+    audo_rm.add_argument("--path", default=None, help="Override config file path")
+
+    audo_tunnel = audo_sub.add_parser("tunnel", help="Create audio tunnel between two BT devices")
+    audo_tunnel.add_argument("source", help="Source device MAC")
+    audo_tunnel.add_argument("sink", help="Sink device MAC")
+    audo_tunnel.add_argument("--path", default=None, help="Override config file path")
+
+    audo_backup = audo_sub.add_parser("backup", help="Backup current ALSA config")
+    audo_backup.add_argument("--path", default=None, help="Override config file path")
+
+    audo_restore = audo_sub.add_parser("restore", help="Restore ALSA config from latest backup")
+    audo_restore.add_argument("--path", default=None, help="Override config file path")
+
     # BLE CTF mode
     ctf_parser = subparsers.add_parser("ctf", help="BLE CTF challenge solver and analyzer")
     ctf_parser.add_argument("--device", type=str, default="CC:50:E3:B6:BC:A6", 
@@ -408,18 +647,86 @@ def parse_args(args=None):
     ctf_parser.add_argument("--interactive", action="store_true", 
                            help="Start interactive CTF shell")
 
-    return parser.parse_args(args)
+    _subparser_map = {
+        "classic-opp": opp_parser,
+        "classic-map": map_parser,
+        "classic-ftp": ftp_parser,
+        "classic-pan": pan_parser,
+        "classic-spp": spp_parser,
+        "classic-sync": sync_parser,
+        "classic-bip": bip_parser,
+        "connect-profile": prof_parser,
+    }
+
+    # HID Info CLI
+    hid_parser = subparsers.add_parser(
+        "hid-info",
+        help="Classify a device as a Human Interface Device (keyboard, mouse, etc.)",
+    )
+    hid_parser.add_argument("address", help="Target MAC address")
+    hid_parser.add_argument("--adapter", default=None, help="Bluetooth adapter (e.g. hci0)")
+    _subparser_map["hid-info"] = hid_parser
+
+    # Audio Intercept CLI
+    aint_parser = subparsers.add_parser(
+        "audio-intercept",
+        help="Capture and optionally transcribe audio from a Bluetooth device",
+    )
+    aint_parser.add_argument("address", help="Source device MAC address")
+    aint_parser.add_argument("--duration", type=int, default=10, help="Capture duration in seconds (default: 10)")
+    aint_parser.add_argument("--output-dir", default="/tmp", help="Directory for captured WAV (default: /tmp)")
+    aint_parser.add_argument("--pcm", default=None, help="ALSA PCM device (auto-derived if omitted)")
+    aint_parser.add_argument("--no-transcribe", action="store_true", help="Skip transcription step")
+    aint_parser.add_argument("--engine", choices=["whisper", "vosk"], default=None,
+                             help="Force transcription engine")
+    _subparser_map["audio-intercept"] = aint_parser
+
+    return parser.parse_args(args), _subparser_map
+
+
+def _rebuild_debug_argv(args) -> list:
+    """Translate the parsed 'debug' subcommand namespace back into the argv
+    form that ``bleep.modes.debug.parse_args()`` expects, so that module
+    keeps a single source of truth for its CLI surface."""
+    argv: list = []
+    if getattr(args, "monitor", False):
+        argv.append("--monitor")
+    if getattr(args, "no_connect", False):
+        argv.append("--no-connect")
+    if getattr(args, "detailed", False):
+        argv.append("--detailed")
+    device = getattr(args, "device", None)
+    if device:
+        argv.append(device)
+    return argv
 
 
 def main(args=None):
     """Main entry point for BLEEP."""
-    args = parse_args(args)
-    
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+    args, _subparsers = parse_args(args)
+
+    # Normalize MAC address arguments to uppercase for DB/D-Bus consistency
+    for _mac_attr in ("address", "target", "device", "mac",
+                       "pair", "trust", "untrust", "remove_bond",
+                       "source", "sink"):
+        _val = getattr(args, _mac_attr, None)
+        if isinstance(_val, str) and ":" in _val:
+            setattr(args, _mac_attr, _val.upper())
+
     # Handle --check-env flag
     if args.check_env:
         from bleep.core.preflight import run_preflight_checks, print_preflight_summary
         report = run_preflight_checks(use_cache=False)
         print_preflight_summary(report)
+        return 0
+
+    # Handle --diagnose-audio flag
+    if getattr(args, "diagnose_audio", False):
+        from bleep.core.preflight import diagnose_audio
+        diagnose_audio()
         return 0
     
     # Optional: honour BLEEP_LOG_LEVEL env var so users can tweak verbosity
@@ -429,9 +736,19 @@ def main(args=None):
     if _lvl:
         _logging.getLogger("bleep").setLevel(_lvl.upper())
 
+    # Adapter guard for all Bluetooth-dependent modes
+    _non_bt_modes = {"db", None}
+    if args.mode not in _non_bt_modes:
+        from bleep.core.preflight import require_adapter
+        if not require_adapter():
+            return 1
+
+    from bleep.banner import print_banner
+    print_banner(args.mode)
+
     try:
         if args.mode == "scan":
-            from bleep.ble_ops import scan as _scan_mod
+            from bleep.ble_ops.le import scan as _scan_mod
 
             variant = args.variant.lower()
             timeout = args.timeout
@@ -441,9 +758,11 @@ def main(args=None):
                 print("[ERROR] --target <MAC> required for pokey scan variant", file=sys.stderr)
                 return 1
 
+            transport = args.transport
+
             dispatch = {
-                "passive": lambda: _scan_mod.passive_scan(target, timeout),
-                "naggy": lambda: _scan_mod.naggy_scan(target, timeout),
+                "passive": lambda: _scan_mod.passive_scan(target, timeout, transport=transport),
+                "naggy": lambda: _scan_mod.naggy_scan(target, timeout, transport=transport),
                 "pokey": lambda: _scan_mod.pokey_scan(target, timeout=timeout),
                 "brute": lambda: _scan_mod.brute_scan(timeout),
             }
@@ -452,11 +771,11 @@ def main(args=None):
             return 0
 
         elif args.mode == "enum-scan":
-            from bleep.ble_ops import scan as _scan_mod
+            from bleep.ble_ops.le import scan as _scan_mod
             
             # Use EnumerationController if --controlled flag is set
             if args.controlled:
-                from bleep.ble_ops.enum_controller import EnumerationController
+                from bleep.ble_ops.le.enum_controller import EnumerationController
                 controller = EnumerationController(args.address)
                 result = controller.enumerate(mode=args.variant.lower())
                 
@@ -515,52 +834,47 @@ def main(args=None):
                     verify=args.verify,
                 )
             
-            # For gatt-enum command, extract the UUIDs directly from the result 
-            # and build a format that is guaranteed to be compatible with _persist_mapping
-            if var == "passive":
-                # Process services from result["mapping"] for direct persistence
-                if _obs := getattr(_scan_mod, "_obs", None):
-                    try:
-                        # Get UUIDs from result["mapping"] values
-                        service_uuids = {
-                            handle: uuid 
-                            for handle, uuid in res.get("mapping", {}).items()
-                        }
-                        
-                        # Create services list in the format _obs.upsert_services expects
-                        services = [{"uuid": uuid} for _, uuid in service_uuids.items()]
-                        
-                        # Insert services directly and get mapping
-                        uuid_to_id = _obs.upsert_services(args.address, services)
-                        
-                        # For each service, create an empty characteristics entry
-                        for uuid, service_id in uuid_to_id.items():
-                            char_uuid = res.get("mapping", {}).get(uuid, None)
-                            if char_uuid:
-                                _obs.upsert_characteristics(service_id, [{"uuid": char_uuid, "handle": None, "properties": [], "value": None}])
-                        
-                        # Ensure explicit commit
-                        if hasattr(_obs, "_DB_CONN") and _obs._DB_CONN is not None:
-                            _obs._DB_CONN.commit()
-                            
-                    except Exception as e:
-                        print(f"[*] Note: Database persistence completed with warning: {e}", file=sys.stderr)
-                
-            # For all other variants, use the standard persistence method
-            elif _obs := getattr(_scan_mod, "_obs", None):
+            if _obs := getattr(_scan_mod, "_obs", None):
                 try:
-                    # Specifically call _persist_mapping on the result to ensure characteristics are saved
                     _scan_mod._persist_mapping(args.address, res)
                 except Exception as e:
-                    print(f"[*] Note: Database persistence completed with warning: {e}", file=sys.stderr)
-                    
-            print(res)
+                    from bleep.core.log import print_and_log as _pal, LOG__DEBUG as _LD
+                    _pal(f"Database persistence warning: {e}", _LD)
+
+            # Tree-formatted output for enum-scan results
+            res_mapping = res.get("mapping") if isinstance(res, dict) else None
+            if res_mapping:
+                from bleep.ble_ops.common.conversion import format_gatt_tree
+                print(format_gatt_tree(
+                    res_mapping,
+                    res.get("mine_map"),
+                    res.get("perm_map"),
+                    mac=args.address,
+                    changed_chars=res.get("changed_chars"),
+                    device_props=res.get("device_props"),
+                ))
+            else:
+                print(res)
             return 0
 
         elif args.mode == "connect":
-            # Native connection path using refactored dbuslayer stack
+            # Auto-route Classic/dual devices unless --ble-only
+            if not getattr(args, "ble_only", False):
+                from bleep.pairing import find_device_path
+                _conn_dev_path = find_device_path(args.address.strip().upper())
+                if _conn_dev_path is not None:
+                    from bleep.modes.debug_connect import get_device_transport
+                    _conn_transport = get_device_transport(_conn_dev_path)
+                    if _conn_transport in ("br-edr", "dual"):
+                        from bleep.modes.classic_connect import main as _cc_main
+                        cc_argv = [args.address]
+                        if not getattr(args, "activate_profiles", True):
+                            cc_argv.append("--no-profiles")
+                        return _cc_main(cc_argv) or 0
+
+            # BLE connection path
             try:
-                from bleep.ble_ops.connect import (
+                from bleep.ble_ops.le.connect import (
                     connect_and_enumerate__bluetooth__low_energy as _connect_enum,
                 )
                 from bleep.core.errors import (
@@ -571,8 +885,35 @@ def main(args=None):
                     ServicesNotResolvedError,
                 )
 
-                _connect_enum(args.address)
+                device, mapping, mine_map, perm_map = _connect_enum(args.address)
                 print(f"[+] Successfully connected to {args.address}", file=sys.stdout)
+
+                # Persist enumeration data to observation DB
+                try:
+                    from bleep.ble_ops.le.scan import _collect_device_props, _persist_mapping, _enrich_device_info_from_props
+                    from bleep.core import observations as _obs_connect
+                    addr = device.get_address() if hasattr(device, 'get_address') else args.address.upper()
+                    name = device.get_name() if hasattr(device, 'get_name') else None
+                    device_props = _collect_device_props(device)
+                    device_info = {'name': name}
+                    _enrich_device_info_from_props(device_info, device_props)
+                    _obs_connect.upsert_device(addr, **device_info)
+                    _persist_mapping(addr, mapping)
+                    from bleep.analysis.device_type_classifier import DeviceTypeClassifier
+                    classifier = DeviceTypeClassifier()
+                    ctx = {
+                        "device_class": device_info.get("device_class"),
+                        "address_type": device_info.get("addr_type"),
+                        "uuids": [str(u) for u in device_props.get("UUIDs", [])],
+                        "connected": True,
+                    }
+                    cls_result = classifier.classify_with_mode(
+                        mac=addr, context=ctx, scan_mode="naggy", use_database_cache=True,
+                    )
+                    _obs_connect.upsert_device(addr, device_type=cls_result.device_type)
+                except Exception:
+                    pass  # DB persistence is best-effort; connection itself succeeded
+
                 return 0
             except DeviceNotFoundError as exc:
                 print(
@@ -634,16 +975,13 @@ def main(args=None):
                     file=sys.stderr,
                 )
                 import traceback
-                print(
-                    f"[DEBUG] Traceback:\n{traceback.format_exc()}",
-                    file=sys.stderr,
-                )
-                # TODO: Update to give the above [DEBUG] to the LOG_DEBUG output using the print_and_log() function
+                from bleep.core.log import print_and_log, LOG__DEBUG
+                print_and_log(f"Traceback:\n{traceback.format_exc()}", LOG__DEBUG)
                 return 1
 
         elif args.mode == "gatt-enum":
-            from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
-            from bleep.ble_ops import scan as _scan_mod
+            from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+            from bleep.ble_ops.le import scan as _scan_mod
 
             device, mapping, mine_map, perm_map = _connect_enum(
                 args.address,
@@ -667,84 +1005,21 @@ def main(args=None):
                 compact_obj = _compact(obj)
                 return json.dumps(compact_obj, indent=2, ensure_ascii=False, sort_keys=False)
 
-            # For gatt-enum command, explicitly save characteristics to database
+            # Persist device + services/chars/descriptors to observation DB
             if not args.report and _scan_mod._obs:
                 try:
-                    # Prepare database connection for direct access
-                    conn = None
-                    if hasattr(_scan_mod._obs, "_DB_CONN"):
-                        conn = _scan_mod._obs._DB_CONN
-                        
-                    # First update services and get their IDs
-                    service_list = []
-                    services_to_chars = {}
-                    
-                    for svc_uuid in mapping.keys():
-                        service_list.append({"uuid": svc_uuid})
-                    
-                    # Get UUIDs to IDs mapping for services
-                    uuid_to_id = _scan_mod._obs.upsert_services(args.address.lower(), service_list)
-                    
-                    # Now iterate through the services and prepare the characteristics
-                    for svc_uuid, svc_data in mapping.items():
-                        service_id = uuid_to_id.get(svc_uuid)
-                        if not service_id:
-                            print(f"[DEBUG] No service ID found for UUID {svc_uuid}", file=sys.stderr)
-                            continue
-                            
-                        if not isinstance(svc_data, dict):
-                            continue
-                            
-                        # Get characteristics from the data
-                        if "chars" in svc_data:
-                            chars_dict = svc_data["chars"]
-                            # Process the characteristics for this service
-                            char_list = []
-                            for char_uuid, char_data in chars_dict.items():
-                                # Add type checking for char_data
-                                if not isinstance(char_data, dict):
-                                    # Handle non-dict char_data
-                                    char_list.append({
-                                        "uuid": char_uuid,
-                                        "handle": None,
-                                        "properties": [],
-                                        "value": None,
-                                    })
-                                else:
-                                    # Extract properties as list
-                                    props = []
-                                    if "properties" in char_data:
-                                        props = list(char_data.get("properties", {}).keys())
-                                    
-                                    # Handle conversion for handle and value
-                                    handle = char_data.get("handle")
-                                    value = char_data.get("value")
-                                    
-                                    char_list.append({
-                                        "uuid": char_uuid,
-                                        "handle": handle,
-                                        "properties": props,
-                                        "value": value,
-                                    })
-                                
-                            # Insert the characteristics if we have any
-                            if char_list:
-                                # Directly insert into the characteristics table to avoid issues
-                                try:
-                                    _scan_mod._obs.upsert_characteristics(service_id, char_list)
-                                    print(f"[DEBUG] Inserted {len(char_list)} characteristics for service {svc_uuid} (ID: {service_id})", file=sys.stderr)
-                                except Exception as e:
-                                    print(f"[DEBUG] Error inserting characteristics: {e}", file=sys.stderr)
-                        
-                    # Ensure database changes are committed
-                    if conn:
-                        conn.commit()
-                        print(f"[DEBUG] Database changes committed successfully", file=sys.stderr)
+                    # Persist device metadata
+                    _ge_props = _scan_mod._collect_device_props(device)
+                    _ge_dev_info = {"name": device.get_name() if hasattr(device, "get_name") else None}
+                    _scan_mod._enrich_device_info_from_props(_ge_dev_info, _ge_props)
+                    _scan_mod._obs.upsert_device(args.address.upper(), **_ge_dev_info)
+
+                    # Persist GATT mapping (services, characteristics, descriptors)
+                    _scan_mod._persist_mapping(args.address.upper(), mapping)
                     
                 except Exception as e:
-                    print(f"[*] Note: Database persistence error: {e}", file=sys.stderr)
-                    import traceback
-                    print(f"[DEBUG] {traceback.format_exc()}", file=sys.stderr)
+                    from bleep.core.log import print_and_log as _pal, LOG__DEBUG as _LD
+                    _pal(f"Database persistence error: {e}", _LD)
 
             if args.report:
                 print(
@@ -756,31 +1031,76 @@ def main(args=None):
                     )
                 )
             else:
-                print(
-                    _dump(
-                        {
-                            "mapping": mapping,
-                            "mine_map": mine_map,
-                            "permission_map": perm_map,
-                        }
-                    )
-                )
+                from bleep.ble_ops.common.conversion import format_gatt_tree
+                from bleep.ble_ops.le.scan import _collect_device_props
+                dev_name = device.get_name() if hasattr(device, 'get_name') else getattr(device, 'name', None)
+                device_props = _collect_device_props(device)
+                print(format_gatt_tree(
+                    mapping, mine_map, perm_map,
+                    device_name=dev_name,
+                    mac=args.address,
+                    device_props=device_props,
+                ))
             return 0
             
         elif args.mode == "media-enum":
-            from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
-            from bleep.dbuslayer.media import get_player_properties_verbose, pretty_print_track_info
             import json
             import time
-            
-            # Connect to the device
-            print(f"[*] Attempting connection to {args.address}")
-            device, _, _, _ = _connect_enum(args.address)
-            print(f"[+] Connected to {args.address}")
-            
-            # Check if it's a media device
+
+            # Passive recon — no connection, cache-only assessment
+            if getattr(args, "passive", False):
+                from bleep.modes.media import enumerate_media_passive
+                report = enumerate_media_passive(args.address, verbose=getattr(args, "verbose", False))
+                if report:
+                    print(json.dumps(report, indent=2, ensure_ascii=False, sort_keys=False))
+                return 0 if report else 1
+
+            from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy as _LEDeviceCls
+            from bleep.dbuslayer.media import get_player_properties_verbose, pretty_print_track_info
+
+            connect_via = getattr(args, "connect_via", "auto")
+
+            def _media_enum_connect_error(exc, device):
+                """Print contextual error for media-enum connection failures."""
+                err = str(exc).lower()
+                if "br-connection-profile-unavailable" in err:
+                    print(f"[-] Connection failed: br-connection-profile-unavailable")
+                    print("    No host audio daemon is handling A2DP/HFP/HSP profiles.")
+                    print("    Install bluez-alsa-utils, or enable PulseAudio/PipeWire")
+                    print("    Bluetooth support, then retry.")
+                    if device.has_media_uuids():
+                        print(f"    Device advertises: {', '.join(device.get_media_uuid_names())}")
+                else:
+                    print(f"[-] Connection failed: {exc}")
+
+            if connect_via == "ble":
+                from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+                print(f"[*] BLE-connect to {args.address} (GATT-oriented path)")
+                device, _, _, _ = _connect_enum(args.address)
+                print(f"[+] Connected to {args.address}")
+            else:
+                label = "Classic-connect" if connect_via == "classic" else "Attempting connection"
+                print(f"[*] {label} to {args.address} (Device1.Connect)")
+                device = _LEDeviceCls(args.address)
+                if not device.is_connected():
+                    try:
+                        device.connect()
+                    except Exception as exc:
+                        _media_enum_connect_error(exc, device)
+                        return 1
+                print(f"[+] Connected to {args.address}")
+
             if not device.is_media_device():
-                print(f"[!] {args.address} is not a media device")
+                if device.has_media_uuids():
+                    names = device.get_media_uuid_names()
+                    print(f"[!] {args.address} advertises media UUIDs ({', '.join(names)})")
+                    print("    but no D-Bus media objects are present.")
+                    print("    This usually means no host audio daemon is running.")
+                    if connect_via == "auto":
+                        print("    Try: bleep media-enum --connect-via classic " + args.address)
+                        print("    Or install an audio daemon (bluez-alsa-utils / PulseAudio / PipeWire)")
+                else:
+                    print(f"[!] {args.address} is not a media device")
                 return 1
                 
             def _dump(obj):
@@ -818,50 +1138,126 @@ def main(args=None):
             player = device.get_media_player()
             if player:
                 if args.verbose:
-                    # Get detailed player properties including track info
                     media_info["player"] = get_player_properties_verbose(player)
                 else:
-                    # Get basic player properties; TODO: Expand TO ALL 
                     media_info["player"] = {
                         "name": player.get_name(),
                         "status": player.get_status(),
-                        "track": player.get_track()
+                        "type": player.get_type(),
+                        "subtype": player.get_subtype(),
+                        "position": player.get_position(),
+                        "repeat": player.get_repeat(),
+                        "shuffle": player.get_shuffle(),
+                        "browsable": player.is_browsable(),
+                        "searchable": player.is_searchable(),
+                        "track": player.get_track(),
                     }
             
             # Get media transport details if available
+            from bleep.bt_ref.constants import (
+                get_profile_name as _get_profile_name,
+                get_codec_name as _get_codec_name,
+                PROFILE_UUID_COMPLEMENTS,
+            )
+
             transports = device.get_media_transports()
             if transports:
                 media_info["transports"] = []
                 for transport in transports:
-                    transport_info = {          # TODO: Expand TO ALL
+                    tp_uuid = transport.get_uuid()
+                    tp_codec = transport.get_codec()
+                    tp_cfg = transport.get_configuration()
+                    transport_info = {
                         "path": transport.transport_path,
+                        "uuid": tp_uuid,
+                        "uuid_name": _get_profile_name(tp_uuid) if tp_uuid else None,
+                        "role": "local",
+                        "codec": tp_codec,
+                        "codec_name": _get_codec_name(tp_codec) if tp_codec is not None else None,
                         "state": transport.get_state(),
-                        "volume": transport.get_volume()
+                        "volume": transport.get_volume(),
+                        "configuration": list(tp_cfg) if tp_cfg else None,
+                        "parent_endpoint": transport.transport_path.rsplit("/", 1)[0]
+                            if "/fd" in transport.transport_path else None,
                     }
-                    
+
                     if args.verbose:
-                        # Add all transport properties
                         transport_info["properties"] = transport.get_properties()
-                        
+
                     media_info["transports"].append(transport_info)
-            
+
             # Get media endpoints if available
             endpoints = device.get_media_endpoints()
             if endpoints:
                 media_info["endpoints"] = []
                 for endpoint in endpoints:
+                    ep_uuid = endpoint.get_uuid()
+                    ep_codec = endpoint.get_codec()
+                    ep_caps = endpoint.get_capabilities()
+                    expected_transport_uuid = (
+                        PROFILE_UUID_COMPLEMENTS.get(ep_uuid) if ep_uuid else None
+                    )
                     endpoint_info = {
                         "path": endpoint.endpoint_path,
-                        "uuid": endpoint.get_uuid(),
-                        "codec": endpoint.get_codec()
+                        "uuid": ep_uuid,
+                        "uuid_name": _get_profile_name(ep_uuid) if ep_uuid else None,
+                        "role": "remote",
+                        "codec": ep_codec,
+                        "codec_name": _get_codec_name(ep_codec) if ep_codec is not None else None,
+                        "capabilities": list(ep_caps) if ep_caps else None,
+                        "delay_reporting": endpoint.supports_delay_reporting(),
+                        "expected_transport_uuid": expected_transport_uuid,
+                        "expected_transport_role": (
+                            _get_profile_name(expected_transport_uuid)
+                            if expected_transport_uuid else None
+                        ),
                     }
-                    
+
                     if args.verbose:
-                        # Add all endpoint properties
                         endpoint_info["properties"] = endpoint.get_properties()
-                        
+
                     media_info["endpoints"].append(endpoint_info)
             
+            # Full D-Bus media object tree (verbose only)
+            if args.verbose:
+                try:
+                    from bleep.dbuslayer.media import find_media_objects
+                    media_info["media_objects"] = find_media_objects()
+                except Exception:
+                    pass
+
+            # Top-level folder listing (--browse)
+            if args.browse and player and player.is_browsable():
+                try:
+                    from bleep.dbuslayer.media_browse import MediaFolder
+                    playlist_path = player.get_playlist()
+                    if playlist_path:
+                        folder = MediaFolder(playlist_path)
+                        items = folder.list_items()
+                        media_info["browse"] = {
+                            "folder_path": playlist_path,
+                            "folder_name": folder.get_name(),
+                            "number_of_items": folder.get_number_of_items(),
+                            "items": [
+                                {"path": p, "properties": props}
+                                for p, props in items
+                            ],
+                        }
+                except Exception:
+                    pass
+
+            # Persist device metadata to observation DB
+            try:
+                from bleep.ble_ops.le.scan import _collect_device_props, _enrich_device_info_from_props
+                from bleep.core import observations as _obs_media
+                _me_addr = device.get_address()
+                _me_props = _collect_device_props(device)
+                _me_dev: Dict[str, Any] = {"name": device.get_name() or device.get_alias()}
+                _enrich_device_info_from_props(_me_dev, _me_props)
+                _obs_media.upsert_device(_me_addr, **_me_dev)
+            except Exception:
+                pass
+
             # Monitor mode - poll for changes in media status
             if args.monitor:
                 print(f"[*] Monitoring media status for {args.duration} seconds (Ctrl+C to stop)...")
@@ -909,7 +1305,7 @@ def main(args=None):
             return 0 if success else 1
 
         elif args.mode == "audio-profiles":
-            from bleep.ble_ops.audio_profile_correlator import AudioProfileCorrelator
+            from bleep.ble_ops.audio.audio_profile_correlator import AudioProfileCorrelator
             import json
             
             correlator = AudioProfileCorrelator()
@@ -920,7 +1316,7 @@ def main(args=None):
                 print(json.dumps(profile_info, indent=2, ensure_ascii=False))
             else:
                 # List all Bluetooth audio devices and their profiles
-                from bleep.ble_ops.audio_tools import AudioToolsHelper
+                from bleep.ble_ops.audio.audio_tools import AudioToolsHelper
                 audio_tools = AudioToolsHelper()
                 all_profiles = audio_tools.identify_bluetooth_profiles_from_alsa()
                 
@@ -951,22 +1347,47 @@ def main(args=None):
             return 0
 
         elif args.mode == "audio-play":
+            if getattr(args, "system", False):
+                from bleep.ble_ops.audio.audio_system import system_play
+                success = system_play(args.device, args.file)
+                return 0 if success else 1
+
             from bleep.dbuslayer.media_stream import MediaStreamManager
-            
-            stream_manager = MediaStreamManager(args.device)
-            success = stream_manager.play_audio_file(args.file, volume=args.volume)
+
+            direct = getattr(args, "direct", False)
+            force_endpoint = getattr(args, "force_endpoint", False)
+            stream_manager = MediaStreamManager(
+                args.device, direct=direct, force_endpoint=force_endpoint,
+            )
+            codec_pref = getattr(args, "codec", None)
+            success = stream_manager.play_audio_file(
+                args.file, volume=args.volume, codec_preference=codec_pref,
+            )
             return 0 if success else 1
 
         elif args.mode == "audio-record":
+            if getattr(args, "system", False):
+                from bleep.ble_ops.audio.audio_system import system_record
+                duration = getattr(args, "duration", None) or 8
+                success = system_record(args.device, args.output, duration)
+                return 0 if success else 1
+
             from bleep.dbuslayer.media_stream import MediaStreamManager
             from bleep.bt_ref.constants import A2DP_SOURCE_UUID
-            
-            stream_manager = MediaStreamManager(args.device, profile_uuid=A2DP_SOURCE_UUID)
+
+            direct = getattr(args, "direct", False)
+            force_endpoint = getattr(args, "force_endpoint", False)
+            stream_manager = MediaStreamManager(
+                args.device,
+                profile_uuid=A2DP_SOURCE_UUID,
+                direct=direct,
+                force_endpoint=force_endpoint,
+            )
             success = stream_manager.record_audio(args.output, duration=args.duration)
             return 0 if success else 1
 
         elif args.mode == "audio-recon":
-            from bleep.ble_ops.audio_recon import run_audio_recon
+            from bleep.ble_ops.audio.audio_recon import run_audio_recon
             run_audio_recon(
                 mac_filter=getattr(args, "device", None),
                 test_file=getattr(args, "test_file", None),
@@ -1005,10 +1426,19 @@ def main(args=None):
 
         elif len(sys.argv) > 1 and sys.argv[1] == "agent":
             from bleep.modes.agent import main as _agent_main
-            # Pass all arguments after 'agent' subcommand
             agent_args = sys.argv[2:] if len(sys.argv) > 2 else []
             return _agent_main(agent_args) or 0
-            
+
+        elif len(sys.argv) > 1 and sys.argv[1] == "pair":
+            from bleep.modes.pair import main as _pair_main
+            pair_args = sys.argv[2:] if len(sys.argv) > 2 else []
+            return _pair_main(pair_args) or 0
+
+        elif len(sys.argv) > 1 and sys.argv[1] == "classic-connect":
+            from bleep.modes.classic_connect import main as _cc_main
+            cc_args = sys.argv[2:] if len(sys.argv) > 2 else []
+            return _cc_main(cc_args) or 0
+
         elif args.mode == "user":
             from bleep.modes.user import main as _user_main
             
@@ -1076,7 +1506,7 @@ def main(args=None):
             #import sys  # Ensure sys is available in this scope
 
             # Check if the first argument is a recognized subcommand
-            known_subcommands = ["scan", "analyze", "list", "report", "export"]
+            known_subcommands = ["scan", "analyze", "list", "report", "export", "db"]
             
             # Initialize opts list for arguments to pass to _aoi_main
             opts = []
@@ -1236,13 +1666,13 @@ def main(args=None):
                     # Print additional details in debug mode
                     if debug_mode:
                         # Print device class if available
-                        if "class" in d:
+                        if d.get("device_class"):
                             try:
-                                from bleep.ble_ops.conversion import format_device_class
-                                class_info = format_device_class(d["class"])
-                                print(f"  Class: 0x{d['class']:06x} ({class_info})")
+                                from bleep.ble_ops.common.conversion import format_device_class
+                                class_info = format_device_class(d["device_class"])
+                                print(f"  Class: 0x{d['device_class']:06x} ({class_info})")
                             except Exception:
-                                print(f"  Class: 0x{d['class']:06x}")
+                                print(f"  Class: 0x{d['device_class']:06x}")
                         
                         # Print UUIDs if available
                         if "uuids" in d and d["uuids"]:
@@ -1253,13 +1683,40 @@ def main(args=None):
                             print(f"  Services: {len(d['services'])}")
                             
                         print()  # Add a blank line between devices for readability
-            
+
+            # Persist discovered Classic devices to observation DB
+            if devices:
+                try:
+                    from bleep.core import observations as _obs_cscan
+                    for d in devices:
+                        addr = d.get("address")
+                        if not addr or addr == "??":
+                            continue
+                        _cscan_info = {
+                            "name": d.get("name") or d.get("alias"),
+                            "rssi_last": d.get("rssi"),
+                            "device_class": d.get("device_class"),
+                            "addr_type": d.get("address_type"),
+                            "device_type": "classic",
+                        }
+                        if d.get("tx_power") is not None:
+                            _cscan_info["tx_power"] = int(d["tx_power"])
+                        if d.get("appearance") is not None:
+                            _cscan_info["appearance"] = int(d["appearance"])
+                        if d.get("modalias"):
+                            _cscan_info["modalias"] = str(d["modalias"])
+                        if d.get("icon"):
+                            _cscan_info["icon"] = str(d["icon"])
+                        _obs_cscan.upsert_device(addr, **_cscan_info)
+                except Exception as db_exc:
+                    print_and_log(f"[classic-scan] DB persistence warning: {db_exc}", LOG__DEBUG)
+
             return 0
 
         elif args.mode == "classic-enum":
             from bleep.ble_ops import connect_and_enumerate__bluetooth__classic as _c_enum
-            from bleep.ble_ops.classic_sdp import discover_services_sdp
-            from bleep.ble_ops.classic_version import (
+            from bleep.ble_ops.classic.sdp import discover_services_sdp
+            from bleep.ble_ops.classic.version import (
                 query_hci_version,
                 map_lmp_version_to_spec,
                 map_profile_version_to_spec,
@@ -1307,6 +1764,43 @@ def main(args=None):
                         print_and_log(f"[classic-enum] Version info collection failed: {ver_exc}", LOG__GENERAL)
                     version_info_data["error"] = str(ver_exc)
             
+            # Display Device Information block (parity with BLE gatt-enum/enum-scan)
+            try:
+                import dbus as _dbus_cenum
+                _bus_cenum = _dbus_cenum.SystemBus()
+                from bleep.bt_ref.utils import device_address_to_path
+                from bleep.bt_ref.constants import BLUEZ_NAMESPACE, ADAPTER_NAME
+                _dev_path = device_address_to_path(args.address.upper(), f"{BLUEZ_NAMESPACE}{ADAPTER_NAME}")
+                _obj_cenum = _bus_cenum.get_object("org.bluez", _dev_path)
+                _pi_cenum = _dbus_cenum.Interface(_obj_cenum, "org.freedesktop.DBus.Properties")
+                _cenum_props = dict(_pi_cenum.GetAll("org.bluez.Device1"))
+                # Merge Battery1 / Input1 if available
+                for _aux_iface, _aux_key in [("org.bluez.Battery1", "_Battery1"), ("org.bluez.Input1", "_Input1")]:
+                    try:
+                        _aux = dict(_pi_cenum.GetAll(_aux_iface))
+                        if _aux:
+                            _cenum_props[_aux_key] = _aux
+                    except Exception:
+                        pass
+                from bleep.ble_ops.common.conversion import format_device_info_block
+                _cenum_name = str(_cenum_props.get("Name", "")) or str(_cenum_props.get("Alias", ""))
+                print(format_device_info_block(_cenum_props, device_name=_cenum_name or None, mac=args.address.upper()))
+                print()
+
+                # Persist full device metadata to observation DB
+                try:
+                    from bleep.ble_ops.le.scan import _enrich_device_info_from_props
+                    from bleep.core import observations as _obs_cenum
+                    _cenum_dev_info: Dict[str, Any] = {"name": _cenum_name or None}
+                    _enrich_device_info_from_props(_cenum_dev_info, _cenum_props)
+                    _obs_cenum.upsert_device(args.address.upper(), **_cenum_dev_info)
+                except Exception as _db_cenum_exc:
+                    if debug_mode:
+                        print_and_log(f"[classic-enum] DB device upsert warning: {_db_cenum_exc}", LOG__DEBUG)
+            except Exception as _props_exc:
+                if debug_mode:
+                    print_and_log(f"[classic-enum] Device info block unavailable: {_props_exc}", LOG__DEBUG)
+
             # Get SDP records with enhanced attributes (connectionless - works without full connection)
             records = []
             connectionless_mode = getattr(args, "connectionless", False)
@@ -1347,7 +1841,7 @@ def main(args=None):
                     print("\n" + "=" * 80)
 
                     # Show service map summary (bc-53 collision-safe)
-                    from bleep.ble_ops.classic_sdp import build_svc_map
+                    from bleep.ble_ops.classic.sdp import build_svc_map
                     svc_map_sdp = build_svc_map(records)
                     rfcomm_n = sum(1 for v in svc_map_sdp.values() if v.get("channel") is not None)
                     if svc_map_sdp:
@@ -1465,7 +1959,7 @@ def main(args=None):
 
         elif args.mode == "classic-pbap":
             repos_arg = (args.repos or "PB").upper()
-            from bleep.ble_ops.classic_pbap import pbap_dump_async, DEFAULT_PBAP_REPOS
+            from bleep.ble_ops.classic.pbap import pbap_dump_async, DEFAULT_PBAP_REPOS
             repos = DEFAULT_PBAP_REPOS if repos_arg == "ALL" else tuple(r.strip().upper() for r in repos_arg.split(",") if r.strip())
 
             try:
@@ -1481,7 +1975,7 @@ def main(args=None):
                 print(f"Error: {exc}", file=_sys_module.stderr)
                 return 1
 
-            base = args.address.replace(":", "").lower()
+            base = args.address.replace(":", "").upper()
             single_custom_out = args.out and len(repos) == 1
 
             for repo, lines in result["data"].items():
@@ -1499,13 +1993,13 @@ def main(args=None):
 
         elif args.mode == "classic-opp":
             if not args.action:
-                opp_parser.print_help()
+                _subparsers["classic-opp"].print_help()
                 return 0
 
             mac = args.address
 
             if args.action == "send":
-                from bleep.ble_ops.classic_opp import send_file
+                from bleep.ble_ops.classic.opp import send_file
                 try:
                     result = send_file(mac, args.file, timeout=args.timeout)
                     transferred = result.get("transferred", "?")
@@ -1519,11 +2013,59 @@ def main(args=None):
                     return 1
 
             elif args.action == "pull":
-                from bleep.ble_ops.classic_opp import pull_business_card
-                dest = args.out or f"/tmp/{mac.replace(':', '').lower()}_card.vcf"
+                from bleep.ble_ops.classic.opp import pull_business_card
+                from bleep.core.config import OBEX_STAGING_DIR, OBEX_RECEIVE_DIR
+                from pathlib import Path
+                if args.out:
+                    dest = args.out
+                    use_staging = False
+                else:
+                    filename = f"{mac.replace(':', '').upper()}_card.vcf"
+                    dest = str(OBEX_STAGING_DIR / filename)
+                    use_staging = True
                 try:
                     result_path = pull_business_card(mac, dest, timeout=args.timeout)
-                    print(f"[+] Business card saved → {result_path}")
+                    size = result_path.stat().st_size if result_path.exists() else 0
+                    if use_staging:
+                        final_dir = Path(args.save_dir) if args.save_dir else OBEX_RECEIVE_DIR
+                        final_dir.mkdir(parents=True, exist_ok=True)
+                        final = str(final_dir / os.path.basename(str(result_path)))
+                        if result_path.exists():
+                            shutil.move(str(result_path), final)
+                        print(f"[+] Business card saved → {final} ({size} bytes)")
+                    else:
+                        print(f"[+] Business card saved → {result_path} ({size} bytes)")
+                except Exception as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
+
+            elif args.action == "exchange":
+                from bleep.ble_ops.classic.opp import exchange_business_cards
+                from bleep.core.config import OBEX_STAGING_DIR, OBEX_RECEIVE_DIR
+                from pathlib import Path
+                if args.out:
+                    dest = args.out
+                    use_staging = False
+                else:
+                    filename = f"{mac.replace(':', '').upper()}_card.vcf"
+                    dest = str(OBEX_STAGING_DIR / filename)
+                    use_staging = True
+                try:
+                    result_path = exchange_business_cards(
+                        mac, args.file, dest, timeout=args.timeout,
+                    )
+                    if use_staging:
+                        final_dir = Path(args.save_dir) if args.save_dir else OBEX_RECEIVE_DIR
+                        final_dir.mkdir(parents=True, exist_ok=True)
+                        final = str(final_dir / os.path.basename(str(result_path)))
+                        if os.path.exists(str(result_path)):
+                            shutil.move(str(result_path), final)
+                        print(f"[+] Exchange complete — remote card saved → {final}")
+                    else:
+                        print(f"[+] Exchange complete — remote card saved → {result_path}")
+                except FileNotFoundError as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    return 1
                 except Exception as exc:
                     print(f"Error: {exc}", file=sys.stderr)
                     return 1
@@ -1532,27 +2074,34 @@ def main(args=None):
 
         elif args.mode == "classic-map":
             if not args.action:
-                map_parser.print_help()
+                _subparsers["classic-map"].print_help()
                 return 0
 
             mac = args.address
             inst = args.instance
 
             if args.action == "folders":
-                from bleep.ble_ops.classic_map import list_folders
+                from bleep.ble_ops.classic.map import list_folder_tree, collect_leaf_paths
                 try:
-                    folders = list_folders(mac, instance=inst)
-                    if not folders:
+                    tree = list_folder_tree(mac, instance=inst)
+                    if not tree:
                         print("[*] No folders found")
                     else:
-                        for f in folders:
-                            print(f"  {f.get('Name', '(unnamed)')}/")
+                        def _render_tree(nodes, depth=0):
+                            for node in nodes:
+                                print(f"{'  ' * depth}{node['name']}/")
+                                if node.get("children"):
+                                    _render_tree(node["children"], depth + 1)
+                        _render_tree(tree)
+                        leaves = collect_leaf_paths(tree)
+                        if leaves:
+                            print(f"\nMessage folders: {', '.join(sorted(leaves))}")
                 except Exception as exc:
                     print(f"Error: {exc}", file=sys.stderr)
                     return 1
 
             elif args.action == "list":
-                from bleep.ble_ops.classic_map import list_messages
+                from bleep.ble_ops.classic.map import list_messages
                 try:
                     filters = {}
                     if args.msg_type:
@@ -1565,27 +2114,76 @@ def main(args=None):
                     if not msgs:
                         print(f"[*] No messages in {args.folder}")
                     else:
+                        verbose = getattr(args, "map_verbose", False)
                         for m in msgs:
-                            handle = m.get("handle", "?")
+                            handle = (
+                                m.get("path", "").rsplit("message", 1)[-1]
+                                if "path" in m else "?"
+                            )
                             subject = m.get("Subject", "(no subject)")
                             status = m.get("Status", "")
-                            print(f"  {handle}  {subject}  [{status}]")
+                            if verbose:
+                                sender = m.get("Sender", m.get("SenderAddress", ""))
+                                dt = m.get("Timestamp", m.get("DateTime", ""))
+                                mtype = m.get("Type", "")
+                                extra = "  ".join(
+                                    f for f in [mtype, sender, dt] if f
+                                )
+                                print(f"  {handle}  {subject}  [{status}]  {extra}")
+                            else:
+                                print(f"  {handle}  {subject}  [{status}]")
                 except Exception as exc:
                     print(f"Error: {exc}", file=sys.stderr)
+                    if "bad request" in str(exc).lower():
+                        try:
+                            from bleep.ble_ops.classic.map import (
+                                list_folder_tree, collect_leaf_paths,
+                            )
+                            tree = list_folder_tree(mac, instance=inst)
+                            leaves = collect_leaf_paths(tree)
+                            if leaves:
+                                print(
+                                    f"\n[*] '{args.folder}' is not a message folder."
+                                    " Available message folders:",
+                                    file=sys.stderr,
+                                )
+                                for lf in sorted(leaves):
+                                    print(
+                                        f"    classic-map {mac} list {lf}",
+                                        file=sys.stderr,
+                                    )
+                        except Exception:
+                            pass
                     return 1
 
             elif args.action == "get":
-                from bleep.ble_ops.classic_map import get_message
-                dest = args.out or f"/tmp/map_msg_{args.handle}.txt"
+                from bleep.ble_ops.classic.map import get_message
+                from bleep.core.config import OBEX_STAGING_DIR, OBEX_RECEIVE_DIR
+                from pathlib import Path
+                filename = f"map_msg_{args.handle}.txt"
+                if args.out:
+                    dest = args.out
+                    use_staging = False
+                else:
+                    dest = str(OBEX_STAGING_DIR / filename)
+                    use_staging = True
                 try:
                     result = get_message(mac, args.handle, dest, instance=inst)
-                    print(f"[+] Message saved → {result}")
+                    if use_staging:
+                        final_dir = Path(args.save_dir) if args.save_dir else OBEX_RECEIVE_DIR
+                        final_dir.mkdir(parents=True, exist_ok=True)
+                        final = str(final_dir / os.path.basename(str(result)))
+                        if os.path.exists(str(result)):
+                            shutil.move(str(result), final)
+                        print(f"[+] Message saved → {final}")
+                    else:
+                        print(f"[+] Message saved → {result}")
                 except Exception as exc:
                     print(f"Error: {exc}", file=sys.stderr)
                     return 1
 
             elif args.action == "push":
-                from bleep.ble_ops.classic_map import push_message
+                from bleep.ble_ops.classic.map import push_message
                 try:
                     push_message(mac, args.file, args.folder, instance=inst)
                     print(f"[+] Message pushed to {args.folder}")
@@ -1594,7 +2192,7 @@ def main(args=None):
                     return 1
 
             elif args.action == "inbox":
-                from bleep.ble_ops.classic_map import update_inbox
+                from bleep.ble_ops.classic.map import update_inbox
                 try:
                     update_inbox(mac, instance=inst)
                     print("[+] Inbox update requested")
@@ -1603,7 +2201,7 @@ def main(args=None):
                     return 1
 
             elif args.action == "types":
-                from bleep.ble_ops.classic_map import get_supported_types
+                from bleep.ble_ops.classic.map import get_supported_types
                 try:
                     types = get_supported_types(mac, instance=inst)
                     if not types:
@@ -1617,7 +2215,7 @@ def main(args=None):
                     return 1
 
             elif args.action == "fields":
-                from bleep.ble_ops.classic_map import list_filter_fields
+                from bleep.ble_ops.classic.map import list_filter_fields
                 try:
                     fields = list_filter_fields(mac, instance=inst)
                     if not fields:
@@ -1632,7 +2230,7 @@ def main(args=None):
 
             elif args.action == "monitor":
                 import signal as _signal
-                from bleep.ble_ops.classic_map import start_message_monitor, stop_message_monitor
+                from bleep.ble_ops.classic.map import start_message_monitor, stop_message_monitor
 
                 def _mns_print(path: str, props: dict) -> None:
                     print(f"[MNS] {path}")
@@ -1655,7 +2253,7 @@ def main(args=None):
                     print("\n[+] MNS monitor stopped")
 
             elif args.action == "instances":
-                from bleep.ble_ops.classic_map import list_mas_instances
+                from bleep.ble_ops.classic.map import list_mas_instances
                 try:
                     instances_list = list_mas_instances(mac)
                     if not instances_list:
@@ -1673,13 +2271,13 @@ def main(args=None):
 
         elif args.mode == "classic-ftp":
             if not args.action:
-                ftp_parser.print_help()
+                _subparsers["classic-ftp"].print_help()
                 return 0
 
             mac = args.address
 
             if args.action == "ls":
-                from bleep.ble_ops.classic_ftp import list_folder
+                from bleep.ble_ops.classic.ftp import list_folder
                 try:
                     entries = list_folder(mac, args.path)
                     if not entries:
@@ -1701,20 +2299,35 @@ def main(args=None):
                     return 1
 
             elif args.action == "get":
-                from bleep.ble_ops.classic_ftp import get_file
-                dest = args.out or f"/tmp/{args.remote}"
+                from bleep.ble_ops.classic.ftp import get_file
+                from bleep.core.config import OBEX_STAGING_DIR, OBEX_RECEIVE_DIR
+                from pathlib import Path
+                if args.out:
+                    dest = args.out
+                    use_staging = False
+                else:
+                    dest = str(OBEX_STAGING_DIR / args.remote)
+                    use_staging = True
                 try:
                     result = get_file(
                         mac, args.remote, dest,
                         remote_path=args.remote_path, timeout=args.timeout,
                     )
-                    print(f"[+] Downloaded → {result}")
+                    if use_staging:
+                        final_dir = Path(args.save_dir) if args.save_dir else OBEX_RECEIVE_DIR
+                        final_dir.mkdir(parents=True, exist_ok=True)
+                        final = str(final_dir / os.path.basename(str(result)))
+                        if os.path.exists(str(result)):
+                            shutil.move(str(result), final)
+                        print(f"[+] Downloaded → {final}")
+                    else:
+                        print(f"[+] Downloaded → {result}")
                 except Exception as exc:
                     print(f"Error: {exc}", file=sys.stderr)
                     return 1
 
             elif args.action == "put":
-                from bleep.ble_ops.classic_ftp import put_file
+                from bleep.ble_ops.classic.ftp import put_file
                 try:
                     result = put_file(
                         mac, args.file, args.name,
@@ -1731,7 +2344,7 @@ def main(args=None):
                     return 1
 
             elif args.action == "mkdir":
-                from bleep.ble_ops.classic_ftp import create_folder
+                from bleep.ble_ops.classic.ftp import create_folder
                 try:
                     create_folder(mac, args.name, remote_path=args.remote_path)
                     print(f"[+] Created folder: {args.name}")
@@ -1740,7 +2353,7 @@ def main(args=None):
                     return 1
 
             elif args.action == "rm":
-                from bleep.ble_ops.classic_ftp import delete_item
+                from bleep.ble_ops.classic.ftp import delete_item
                 try:
                     delete_item(mac, args.name, remote_path=args.remote_path)
                     print(f"[+] Deleted: {args.name}")
@@ -1752,11 +2365,11 @@ def main(args=None):
 
         elif args.mode == "classic-pan":
             if not args.action:
-                pan_parser.print_help()
+                _subparsers["classic-pan"].print_help()
                 return 0
 
             if args.action == "connect":
-                from bleep.ble_ops.classic_pan import connect as pan_connect
+                from bleep.ble_ops.classic.pan import connect as pan_connect
                 try:
                     iface = pan_connect(args.address, args.role)
                     print(f"[+] PAN connected – interface {iface}")
@@ -1765,7 +2378,7 @@ def main(args=None):
                     return 1
 
             elif args.action == "disconnect":
-                from bleep.ble_ops.classic_pan import disconnect as pan_disconnect
+                from bleep.ble_ops.classic.pan import disconnect as pan_disconnect
                 try:
                     pan_disconnect(args.address)
                     print("[+] PAN disconnected")
@@ -1774,7 +2387,7 @@ def main(args=None):
                     return 1
 
             elif args.action == "status":
-                from bleep.ble_ops.classic_pan import status as pan_status
+                from bleep.ble_ops.classic.pan import status as pan_status
                 try:
                     info = pan_status(args.address)
                     print(f"  Connected : {info.get('connected', False)}")
@@ -1785,16 +2398,29 @@ def main(args=None):
                     return 1
 
             elif args.action == "serve":
-                from bleep.ble_ops.classic_pan import register_server
+                import signal as _signal
+                from bleep.dbuslayer.network import NetworkServer
                 try:
-                    register_server(args.role, args.bridge)
+                    server = NetworkServer()
+                    server.register(args.role, args.bridge)
                     print(f"[+] PAN server registered (role={args.role}, bridge={args.bridge})")
+                    print("[*] Keeping process alive — press Ctrl+C to unregister and exit")
+                    try:
+                        _signal.pause()
+                    except KeyboardInterrupt:
+                        pass
+                    finally:
+                        try:
+                            server.unregister(args.role)
+                            print(f"\n[+] PAN server unregistered (role={args.role})")
+                        except Exception:
+                            pass
                 except Exception as exc:
                     print(f"Error: {exc}", file=sys.stderr)
                     return 1
 
             elif args.action == "unserve":
-                from bleep.ble_ops.classic_pan import unregister_server
+                from bleep.ble_ops.classic.pan import unregister_server
                 try:
                     unregister_server(args.role)
                     print(f"[+] PAN server unregistered (role={args.role})")
@@ -1806,12 +2432,12 @@ def main(args=None):
 
         elif args.mode == "classic-spp":
             if not args.action:
-                spp_parser.print_help()
+                _subparsers["classic-spp"].print_help()
                 return 0
 
             if args.action == "register":
                 import signal as _signal
-                from bleep.ble_ops.classic_spp import register as spp_register, unregister as spp_unregister
+                from bleep.ble_ops.classic.spp import register as spp_register, unregister as spp_unregister
 
                 def _on_connect(device_path: str, sock, fd_props: dict) -> None:
                     print(f"[SPP] Connection from {device_path}")
@@ -1829,9 +2455,11 @@ def main(args=None):
                         sock.close()
                         print("\n[SPP] Connection closed")
 
+                req_auth = not getattr(args, "no_auth", False)
                 try:
                     spp_register(
                         channel=args.channel, name=args.name, role=args.role,
+                        require_auth=req_auth,
                         on_connect=_on_connect,
                     )
                 except Exception as exc:
@@ -1848,7 +2476,7 @@ def main(args=None):
                     print("\n[+] SPP profile unregistered")
 
             elif args.action == "unregister":
-                from bleep.ble_ops.classic_spp import unregister as spp_unregister
+                from bleep.ble_ops.classic.spp import unregister as spp_unregister
                 try:
                     spp_unregister()
                     print("[+] SPP profile unregistered")
@@ -1857,7 +2485,7 @@ def main(args=None):
                     return 1
 
             elif args.action == "status":
-                from bleep.ble_ops.classic_spp import status as spp_status
+                from bleep.ble_ops.classic.spp import status as spp_status
                 info = spp_status()
                 if not info.get("registered"):
                     print("[*] SPP profile not registered")
@@ -1870,25 +2498,114 @@ def main(args=None):
 
             return 0
 
+        elif args.mode == "connect-profile":
+            mac = args.address
+            uuid = args.uuid
+            adapter_name = getattr(args, "adapter", None)
+            try:
+                from bleep.dbuslayer.device_classic import system_dbus__bluez_device__classic as ClassicDevice
+                from bleep.bt_ref.utils import get_name_from_uuid
+                device = ClassicDevice(mac, bluetooth_adapter=adapter_name)
+                name = get_name_from_uuid(uuid) or uuid
+                if args.disconnect:
+                    device.disconnect_profile(uuid)
+                    print(f"[+] Disconnected profile: {name}")
+                else:
+                    device.connect_profile(uuid)
+                    print(f"[+] Connected profile: {name}")
+            except Exception as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+            return 0
+
+        elif args.mode == "hid-info":
+            mac = args.address
+            adapter_name = getattr(args, "adapter", None)
+            try:
+                from bleep.dbuslayer.device_classic import system_dbus__bluez_device__classic as ClassicDevice
+                from bleep.analysis.device_type_classifier import classify_hid
+                device = ClassicDevice(mac, bluetooth_adapter=adapter_name)
+                context: dict = {}
+                try:
+                    context["device_class"] = device.get_device_class()
+                except Exception:
+                    pass
+                try:
+                    context["uuids"] = device.get_supported_profiles()
+                except Exception:
+                    context["uuids"] = []
+                hid = classify_hid(context)
+                if hid is None:
+                    print(f"[*] {mac} does not appear to be a HID device")
+                else:
+                    print(f"[+] HID Classification for {mac}:")
+                    print(f"    Type:            {hid.hid_type}")
+                    print(f"    Subclass:        {hid.subclass_label}")
+                    if hid.reconnect_mode:
+                        print(f"    Reconnect Mode:  {hid.reconnect_mode}")
+            except Exception as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+            return 0
+
+        elif args.mode == "audio-intercept":
+            from bleep.ble_ops.audio.audio_transcribe import run_audio_intercept
+            result = run_audio_intercept(
+                args.address,
+                duration=args.duration,
+                output_dir=args.output_dir,
+                pcm_device=args.pcm,
+                transcribe=not args.no_transcribe,
+                engine=args.engine,
+            )
+            if result.error:
+                print(f"Error: {result.error}", file=sys.stderr)
+                return 1
+            print(f"[+] Captured: {result.wav_path}")
+            print(f"    Duration:    {result.duration_seconds}s")
+            print(f"    Has content: {result.has_content}")
+            if result.transcript:
+                print(f"    Engine:      {result.engine}")
+                print(f"    Transcript:  {result.transcript[:200]}")
+            elif result.has_content:
+                print("    (no transcription engine available)")
+            return 0
+
         elif args.mode == "classic-sync":
             if not args.action:
-                sync_parser.print_help()
+                _subparsers["classic-sync"].print_help()
                 return 0
 
             if args.action == "get":
-                from bleep.ble_ops.classic_sync import get_phonebook
+                from bleep.ble_ops.classic.sync import get_phonebook
+                from bleep.core.config import OBEX_STAGING_DIR, OBEX_RECEIVE_DIR
+                from pathlib import Path
+                if args.output:
+                    dest = args.output
+                    use_staging = False
+                else:
+                    dest = str(OBEX_STAGING_DIR / f"sync_{args.address.replace(':', '').upper()}.vcf")
+                    use_staging = True
                 try:
                     result = get_phonebook(
-                        args.address, args.output,
+                        args.address, dest,
                         location=args.location, timeout=args.timeout,
                     )
-                    print(f"[+] Phonebook saved → {result}")
+                    if use_staging:
+                        final_dir = Path(args.save_dir) if args.save_dir else OBEX_RECEIVE_DIR
+                        final_dir.mkdir(parents=True, exist_ok=True)
+                        final = str(final_dir / os.path.basename(str(result)))
+                        if os.path.exists(str(result)):
+                            shutil.move(str(result), final)
+                        print(f"[+] Phonebook saved → {final}")
+                    else:
+                        print(f"[+] Phonebook saved → {result}")
                 except Exception as exc:
                     print(f"Error: {exc}", file=sys.stderr)
                     return 1
 
             elif args.action == "put":
-                from bleep.ble_ops.classic_sync import put_phonebook
+                from bleep.ble_ops.classic.sync import put_phonebook
                 try:
                     put_phonebook(
                         args.address, args.file,
@@ -1903,11 +2620,25 @@ def main(args=None):
 
         elif args.mode == "classic-bip":
             if not args.action:
-                bip_parser.print_help()
+                _subparsers["classic-bip"].print_help()
                 return 0
 
-            if args.action == "props":
-                from bleep.ble_ops.classic_bip import get_properties
+            if args.action == "list":
+                print(
+                    "BlueZ's experimental Image1 interface does not provide an\n"
+                    "image-listing method.  To discover handles you can:\n"
+                    "  1. Use AVRCP media browsing (if the device is an A2DP source)\n"
+                    "     to enumerate cover-art handles exposed via bip-avrcp.\n"
+                    "  2. Start from handle '0' or '1000001' and iterate with\n"
+                    "     'classic-bip props <handle>' until the device returns an\n"
+                    "     error, incrementing by 1 each time.\n"
+                    "  3. Use 'classic-map list' or 'classic-ftp ls' to locate\n"
+                    "     image attachments whose handles can be passed to BIP."
+                )
+                return 0
+
+            elif args.action == "props":
+                from bleep.ble_ops.classic.bip import get_properties
                 try:
                     props = get_properties(
                         args.address, args.handle, timeout=args.timeout,
@@ -1919,25 +2650,57 @@ def main(args=None):
                     return 1
 
             elif args.action == "get":
-                from bleep.ble_ops.classic_bip import get_image
+                from bleep.ble_ops.classic.bip import get_image
+                from bleep.core.config import OBEX_STAGING_DIR, OBEX_RECEIVE_DIR
+                from pathlib import Path
+                if args.output:
+                    dest = args.output
+                    use_staging = False
+                else:
+                    dest = str(OBEX_STAGING_DIR / f"bip_{args.handle}")
+                    use_staging = True
                 try:
                     result = get_image(
-                        args.address, args.output, args.handle,
+                        args.address, dest, args.handle,
                         timeout=args.timeout,
                     )
-                    print(f"[+] Image saved → {result}")
+                    if use_staging:
+                        final_dir = Path(args.save_dir) if args.save_dir else OBEX_RECEIVE_DIR
+                        final_dir.mkdir(parents=True, exist_ok=True)
+                        final = str(final_dir / os.path.basename(str(result)))
+                        if os.path.exists(str(result)):
+                            shutil.move(str(result), final)
+                        print(f"[+] Image saved → {final}")
+                    else:
+                        print(f"[+] Image saved → {result}")
                 except Exception as exc:
                     print(f"Error: {exc}", file=sys.stderr)
                     return 1
 
             elif args.action == "thumb":
-                from bleep.ble_ops.classic_bip import get_thumbnail
+                from bleep.ble_ops.classic.bip import get_thumbnail
+                from bleep.core.config import OBEX_STAGING_DIR, OBEX_RECEIVE_DIR
+                from pathlib import Path
+                if args.output:
+                    dest = args.output
+                    use_staging = False
+                else:
+                    dest = str(OBEX_STAGING_DIR / f"bip_thumb_{args.handle}")
+                    use_staging = True
                 try:
                     result = get_thumbnail(
-                        args.address, args.output, args.handle,
+                        args.address, dest, args.handle,
                         timeout=args.timeout,
                     )
-                    print(f"[+] Thumbnail saved → {result}")
+                    if use_staging:
+                        final_dir = Path(args.save_dir) if args.save_dir else OBEX_RECEIVE_DIR
+                        final_dir.mkdir(parents=True, exist_ok=True)
+                        final = str(final_dir / os.path.basename(str(result)))
+                        if os.path.exists(str(result)):
+                            shutil.move(str(result), final)
+                        print(f"[+] Thumbnail saved → {final}")
+                    else:
+                        print(f"[+] Thumbnail saved → {result}")
                 except Exception as exc:
                     print(f"Error: {exc}", file=sys.stderr)
                     return 1
@@ -1945,7 +2708,7 @@ def main(args=None):
             return 0
 
         elif args.mode == "classic-ping":
-            from bleep.ble_ops.classic_ping import classic_l2ping
+            from bleep.ble_ops.classic.ping import classic_l2ping
 
             rtt, err = classic_l2ping(args.address, count=args.count, timeout=args.timeout)
             if rtt is None:
@@ -1953,10 +2716,71 @@ def main(args=None):
                 return 1
             print(f"Average RTT {rtt:.1f} ms")
             return 0
+
+        elif args.mode == "classic-rfcomm":
+            from bleep.ble_ops.classic.sdp import discover_services_sdp, build_svc_map
+            from bleep.ble_ops.classic.rfcomm import probe_rfcomm_channel
+
+            mac = args.address.strip().upper()
+            print(f"[*] Discovering SDP services for {mac}...")
+            try:
+                records = discover_services_sdp(mac)
+            except Exception as exc:
+                print(f"[!] SDP discovery failed: {exc}", file=sys.stderr)
+                return 1
+            svc_map = build_svc_map(records)
+
+            rfcomm_entries = []
+            for name, entry in svc_map.items():
+                ch = entry.get("channel") if isinstance(entry, dict) else entry
+                if ch is not None:
+                    svc_name = entry.get("name", name) if isinstance(entry, dict) else name
+                    uuid = entry.get("uuid", "") if isinstance(entry, dict) else ""
+                    rfcomm_entries.append((ch, svc_name, uuid))
+
+            if not rfcomm_entries:
+                print(f"[!] No RFCOMM channels found for {mac}")
+                return 1
+
+            rfcomm_entries.sort(key=lambda e: e[0])
+            print(f"\n[+] RFCOMM Channels ({len(rfcomm_entries)} found):\n")
+            print(f"  {'Ch':>3}  {'Service':<30}  {'UUID'}")
+            print(f"  {'---':>3}  {'-'*30}  {'-'*36}")
+            for ch, svc_name, uuid in rfcomm_entries:
+                print(f"  {ch:>3}  {svc_name:<30}  {uuid}")
+
+            if args.probe:
+                print(f"\n[*] Probing {len(rfcomm_entries)} RFCOMM channel(s)...\n")
+                for ch, svc_name, _ in rfcomm_entries:
+                    result = probe_rfcomm_channel(mac, ch, timeout=args.timeout)
+                    status = result.classification.upper()
+                    extra = ""
+                    if result.raw_response:
+                        preview = result.raw_response[:60]
+                        try:
+                            extra = f" → {preview.decode('utf-8', errors='replace').strip()!r}"
+                        except Exception:
+                            extra = f" → {preview.hex()}"
+                    elif result.error:
+                        extra = f" → {result.error}"
+                    print(f"  ch {ch:>2} ({svc_name}): [{status}]{extra}  ({result.latency_ms:.0f}ms)")
+
+            if args.bind is not None:
+                from bleep.ble_ops.classic.rfcomm import bind_rfcomm_channel
+                try:
+                    dev_path = bind_rfcomm_channel(
+                        mac, args.bind, device_id=args.device_id,
+                    )
+                    print(f"\n[+] Bound {mac} ch {args.bind} → {dev_path}")
+                except Exception as exc:
+                    print(f"\n[-] Bind failed: {exc}", file=sys.stderr)
+                    return 1
+
+            return 0
             
         elif args.mode == "ctf":
-            from bleep.ble_ops.ctf import ble_ctf__scan_and_enumeration
-            from bleep.ble_ops.ctf_discovery import discover_flags, auto_solve_flags, generate_flag_visualization
+            from bleep.ble_ops.le.ctf import ble_ctf__scan_and_enumeration
+            from bleep.ble_ops.le.ctf_discovery import discover_flags, auto_solve_flags, generate_flag_visualization
             from bleep.modes.blectf import main as _blectf_main
             
             device_mac = args.device
@@ -1997,6 +2821,58 @@ def main(args=None):
         elif args.mode == "adapter-config":
             from bleep.modes.adapter_config import handle_adapter_config
             return handle_adapter_config(args)
+
+        elif args.mode == "monitor":
+            from bleep.modes.monitor import handle_monitor
+            return handle_monitor(args)
+
+        elif args.mode == "advertise":
+            from bleep.modes.advertise import handle_advertise
+            return handle_advertise(args)
+
+        elif args.mode == "audio-config":
+            from bleep.ble_ops.audio.alsa_config import (
+                read_asound_conf, configure_bluealsa_device, remove_bluealsa_device,
+                create_audio_tunnel, backup_and_restore,
+            )
+            action = args.action
+            if not action:
+                print("Usage: bleep audio-config {show|add|remove|tunnel|backup|restore}")
+                return 1
+            if action == "show":
+                entries = read_asound_conf(args.path)
+                if not entries:
+                    print("[*] No ALSA config entries found")
+                else:
+                    for name, entry in entries.items():
+                        mac_str = f"  MAC: {entry.mac}" if entry.mac else ""
+                        print(f"  {name}{mac_str}")
+                        for line in entry.body.splitlines():
+                            print(f"    {line.strip()}")
+            elif action == "add":
+                configure_bluealsa_device(args.address, args.device_type, config_path=args.path)
+                print(f"[+] Added BlueALSA {args.device_type} for {args.address}")
+            elif action == "remove":
+                if remove_bluealsa_device(args.address, config_path=args.path):
+                    print(f"[+] Removed entries for {args.address}")
+                else:
+                    print(f"[-] No entries found for {args.address}")
+            elif action == "tunnel":
+                tc = create_audio_tunnel(args.source, args.sink, config_path=args.path)
+                print(f"[+] Tunnel: {tc.source_pcm} → {tc.loopback_device} → {tc.sink_pcm}")
+            elif action == "backup":
+                bak = backup_and_restore("backup", args.path)
+                if bak:
+                    print(f"[+] Backup: {bak}")
+            elif action == "restore":
+                backup_and_restore("restore", args.path)
+                print("[+] Restored")
+            return 0
+
+        elif args.mode == "debug":
+            from bleep.modes.debug import main as _debug_main
+
+            return _debug_main(_rebuild_debug_argv(args)) or 0
 
         else:  # interactive (default)
             from bleep.modes.interactive import main as _interactive_main

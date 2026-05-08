@@ -23,13 +23,12 @@ This document summarizes the plan to integrate Bluetooth Network (PAN) capabilit
 
 ### Following Media Capability Pattern
 
-The plan follows the existing media capability detection pattern:
+The implementation follows the existing media capability detection pattern:
 
 1. **Interface Detection**: Check for `org.bluez.Network1` interface presence
-2. **Wrapper Class**: Create `Network` wrapper (like `MediaControl`, `MediaPlayer`)
-3. **Device Helpers**: Add `is_network_device()`, `get_network()` methods
-4. **Enumeration**: Provide enumeration functions for network-capable devices
-5. **Property Access**: Enumerate all Network interface properties and methods
+2. **Wrapper Classes**: `NetworkClient` (per-device `Network1`) and `NetworkServer` (per-adapter `NetworkServer1`) in `bleep/dbuslayer/network.py`
+3. **Enumeration**: Provide enumeration functions for network-capable devices
+4. **Property Access**: Enumerate all Network interface properties and methods
 
 ### Network Interface Details (from BlueZ docs)
 
@@ -50,49 +49,62 @@ The plan follows the existing media capability detection pattern:
 - NAP: `00001116-0000-1000-8000-00805f9b34fb`
 - GN: `00001117-0000-1000-8000-00805f9b34fb`
 
-## Implementation Phases
+## Implementation Status
 
-### Phase 1: Network Interface Wrapper ✅ Planned
-- Create `bleep/dbuslayer/network.py`
-- Implement `Network` class with property accessors
-- Implement `Connect()` and `Disconnect()` methods
-- Create `find_network_devices()` helper
+> **Note (2026-04-01):** PAN networking was implemented in v2.7.9 via a different
+> architecture than originally planned here.  The D-Bus wrappers were created as
+> planned (Phase 1), but the higher-level integration took the form of the
+> `classic-pan` CLI command and `cpan` debug command rather than the
+> `network-enum` / device-class helper approach outlined in Phases 2-5.
+> The remaining phases are retained as **optional future enhancements** if
+> dedicated network enumeration separate from `classic-pan` proves useful.
 
-### Phase 2: Device Capability Detection ✅ Planned
+### Phase 1: Network Interface Wrapper ✅ Complete
+- Created `bleep/dbuslayer/network.py`
+- Implemented `NetworkClient` class (wraps `org.bluez.Network1` per-device) with property accessors and `Connect()`/`Disconnect()` methods
+- Implemented `NetworkServer` class (wraps `org.bluez.NetworkServer1` per-adapter) with `Register()`/`Unregister()` methods
+
+### Phase 1b: Operations Layer + CLI ✅ Complete (v2.7.9)
+- Created `bleep/ble_ops/classic/pan.py` — operations layer with `connect()`, `disconnect()`, `status()`, `register_server()`, `unregister_server()`
+- Created `classic-pan` CLI command with `connect|disconnect|status|serve|unserve` actions
+- Created `cpan` debug-mode command
+- PAN constants (`NETWORK_INTERFACE`, `NETWORK_SERVER_INTERFACE`, PAN UUIDs) added to `bleep/bt_ref/constants.py`
+- PAN service detection via `detect_pan_service()` for SDP integration
+- Observation database integration (`upsert_pan_access` in `bleep/core/observations.py`)
+
+### Phase 2: Device Capability Detection — Future Enhancement
 - Add `get_network()` method to device classes
 - Add `is_network_device()` method
 - Add `get_network_roles()` method (from UUIDs property)
 - Update `check_device_type()` to include network flag
 
-### Phase 3: Network Enumeration ✅ Planned
+### Phase 3: Network Enumeration — Future Enhancement
 - Create `bleep/ble_ops/classic_network.py`
 - Implement `enumerate_network_capable_devices()`
 - Support property and UUID enumeration
 
-### Phase 4: CLI Integration ✅ Planned
+### Phase 4: Dedicated Enumeration CLI — Future Enhancement
 - Add `network-enum` command to `cli.py`
 - Support verbose and JSON output modes
 - Display Network interface properties
 
-### Phase 5: Device Info Integration ✅ Planned
+### Phase 5: Device Info Integration — Future Enhancement
 - Add network capabilities to `get_device_info()`
 - Include network status in device information
 
-## Files Created
+## Files
 
-1. **`bleep/docs/network_capability_plan.md`** - Detailed implementation plan (revised)
-2. **`bleep/scripts/check_network_capabilities.py`** - Local BlueZ capability checker
+### Implemented
+- **`bleep/dbuslayer/network.py`** — Network D-Bus wrapper (`NetworkClient` + `NetworkServer`)
+- **`bleep/ble_ops/classic/pan.py`** — Operations layer
+- **`bleep/cli.py`** — `classic-pan` subcommand
+- **`bleep/modes/debug_classic_profiles.py`** — `cpan` debug command
+- **`bleep/bt_ref/constants.py`** — PAN-related constants
 
-## Files to Create/Modify
-
-### New Files (to be created)
-- `bleep/dbuslayer/network.py` - Network D-Bus wrapper (similar to `media.py`)
-- `bleep/ble_ops/classic_network.py` - Network enumeration operations
-
-### Modified Files (to be updated)
-- `bleep/dbuslayer/device_le.py` - Add network capability methods
-- `bleep/dbuslayer/device_classic.py` - Add network capability methods
-- `bleep/cli.py` - Add network enumeration command
+### Documentation
+- **`bleep/docs/network_capability_plan.md`** — Original detailed plan (Phases 2-5 are future work)
+- **`bleep/docs/bl_classic_mode.md`** — User-facing PAN docs (Section 2.9)
+- **`bleep/scripts/check_network_capabilities.py`** — Local BlueZ capability checker
 
 ## Key Design Principles
 
@@ -156,17 +168,26 @@ for device in devices:
 5. **Enumeration Tests**: Test enumeration across device types
 6. **Error Handling**: Test with non-network devices
 
-## Next Steps
+## Current Status
 
-1. Review and approve the revised implementation plan
-2. Begin Phase 1: Create Network wrapper class
-3. Test Network wrapper with known network devices
-4. Proceed through remaining phases incrementally
-5. Add comprehensive tests at each phase
+PAN client/server D-Bus wrappers and CLI/debug commands are **implemented** via
+`classic-pan` CLI and `cpan` debug command (v2.7.9+).  End-to-end operation
+(BNEP session establishment, `bnep0` interface creation) depends on the remote
+device accepting the PAN role — testing has shown that the BNEP transport layer
+may fail immediately even when BlueZ returns a nominal success from
+`Network1.Connect()`.  A post-connect verification step now detects this.
+Server registration (`classic-pan serve`) requires the CLI process to stay alive
+(uses `signal.pause()`); Ctrl-C cleanly unregisters.
+
+The Phases 2-5 enumeration enhancements are optional future work — they would add
+convenience methods and a dedicated `network-enum` CLI but are not required for
+PAN connectivity.
 
 ## References
 
-- **BlueZ Documentation**: `workDir/BlueZDocs/org.bluez.Network.5`
+- **[PAN connection analysis](pan_connection_analysis.md)** — BlueZ source code audit of D-Bus client lifetime, BNEP transport failure root-cause analysis, Agent Pairing comparison, and requirements checklist for a working NAP connection
+- **BlueZ Documentation**: `workDir/BlueZDocs/org.bluez.Network.rst`, `workDir/BlueZDocs/org.bluez.NetworkServer.rst`
+- **BlueZ Source**: `workDir/bluez/profiles/network/connection.c` (client), `workDir/bluez/profiles/network/server.c` (server)
 - **BlueZ Scripts**: `workDir/BlueZScripts/test-network`, `test-nap`
 - **Existing Patterns**: `bleep/dbuslayer/media.py` (media capability pattern)
 - **Device Helpers**: `bleep/dbuslayer/device_le.py` (media methods as reference)

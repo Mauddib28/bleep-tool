@@ -25,20 +25,36 @@ __all__ = [
     "system_dbus__bluez_agent_user_interface",
     "Characteristic",
     "Descriptor",
-    
+    # LE Advertising (BZ-6/7)
+    "le_advertising",
+    # Advertisement monitor (BZ-11/12)
+    "adv_monitor",
     # Reliability components
     "bluez_monitor",
     "recovery",
-    
     # Pairing agent components
     "agent_io",
     "pairing_state",
     "bond_storage",
 ]
 
-# Lazy-load device classes to break circular dependencies
+_LAZY_MODULES = {
+    "system_dbus__bluez_device__low_energy": ".device",
+    "le_advertising": ".le_advertising",
+    "adv_monitor": ".adv_monitor",
+    "bluez_monitor": ".bluez_monitor",
+    "recovery": ".recovery",
+    "agent_io": ".agent_io",
+    "pairing_state": ".pairing_state",
+    "bond_storage": ".bond_storage",
+}
+
+
 def __getattr__(name):
-    if name == "system_dbus__bluez_device__low_energy":
-        from .device import system_dbus__bluez_device__low_energy
-        return system_dbus__bluez_device__low_energy
+    if name in _LAZY_MODULES:
+        import importlib
+        module = importlib.import_module(_LAZY_MODULES[name], __name__)
+        value = getattr(module, name, module)
+        globals()[name] = value
+        return value
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

@@ -150,10 +150,9 @@ class system_dbus__bluez_adapter:
                 rssi = properties.get("RSSI") if "RSSI" in properties else None
                 
                 # Phase 2: Merge RSSI from DeviceManager cache if available
-                # Normalize MAC address to lowercase for cache lookup (cache stores lowercase)
                 if rssi is None and self._device_manager is not None:
-                    device_address_lower = device_address.lower() if device_address else ""
-                    cached_rssi = self._device_manager.get_captured_rssi(device_address_lower)
+                    device_address_upper = device_address.upper() if device_address else ""
+                    cached_rssi = self._device_manager.get_captured_rssi(device_address_upper)
                     if cached_rssi is not None:
                         rssi = cached_rssi
                 
@@ -162,6 +161,26 @@ class system_dbus__bluez_adapter:
                 # Map "classic" to "br/edr" for compatibility with classic-scan filter
                 type_display = "br/edr" if device_type == BT_DEVICE_TYPE_CLASSIC else device_type
                 
+                # ManufacturerData: Dict[UInt16, Array[Byte]] → {int: bytes}
+                mfr_raw = properties.get("ManufacturerData")
+                if mfr_raw:
+                    try:
+                        mfr_data = {int(k): bytes(v) for k, v in mfr_raw.items()}
+                    except (TypeError, ValueError):
+                        mfr_data = {}
+                else:
+                    mfr_data = {}
+
+                # ServiceData: Dict[String, Array[Byte]] → {str: bytes}
+                sd_raw = properties.get("ServiceData")
+                if sd_raw:
+                    try:
+                        sd_data = {str(k): bytes(v) for k, v in sd_raw.items()}
+                    except (TypeError, ValueError):
+                        sd_data = {}
+                else:
+                    sd_data = {}
+
                 devices.append(
                     {
                         "path": path,
@@ -169,12 +188,24 @@ class system_dbus__bluez_adapter:
                         "name": properties.get("Name", ""),
                         "rssi": rssi,
                         "alias": properties.get("Alias", ""),
-                        # Store raw properties for later classification (after device is inserted)
                         "address_type": properties.get("AddressType"),
                         "device_class": properties.get("Class"),
                         "uuids": [str(uuid) for uuid in properties.get("UUIDs", [])] if properties.get("UUIDs") else [],
                         "connected": properties.get("Connected", False),
-                        "type": type_display,  # Device type for filtering (e.g., classic-scan)
+                        "type": type_display,
+                        "manufacturer_data": mfr_data,
+                        "service_data": sd_data,
+                        "tx_power": int(properties["TxPower"]) if "TxPower" in properties else None,
+                        "appearance": int(properties["Appearance"]) if "Appearance" in properties else None,
+                        "modalias": str(properties["Modalias"]) if "Modalias" in properties else None,
+                        "paired": bool(properties.get("Paired", False)),
+                        "bonded": bool(properties.get("Bonded", False)),
+                        "trusted": bool(properties.get("Trusted", False)),
+                        "blocked": bool(properties.get("Blocked", False)),
+                        "wake_allowed": bool(properties.get("WakeAllowed", False)),
+                        "icon": str(properties["Icon"]) if "Icon" in properties else None,
+                        "advertising_flags": bytes(properties["AdvertisingFlags"]) if "AdvertisingFlags" in properties else None,
+                        "advertising_data": {int(k): bytes(v) for k, v in properties["AdvertisingData"].items()} if "AdvertisingData" in properties else None,
                     }
                 )
 
@@ -258,12 +289,17 @@ class system_dbus__bluez_adapter:
             if not mac:
                 return BT_DEVICE_TYPE_UNKNOWN
             
-            # Build context from properties
+            # Build context from properties — include advertisement data
+            # so LEAdvertisingDataCollector and service-data rules receive input
             context = {
                 "device_class": properties.get("Class"),
                 "address_type": properties.get("AddressType"),
                 "uuids": [str(uuid) for uuid in properties.get("UUIDs", [])],
                 "connected": properties.get("Connected", False),
+                "service_data": dict(properties.get("ServiceData", {})),
+                "advertising_data": dict(properties.get("AdvertisingData", {})),
+                "manufacturer_data": dict(properties.get("ManufacturerData", {})),
+                "appearance": properties.get("Appearance"),
             }
             
             # Use classifier to determine device type
@@ -294,6 +330,63 @@ class system_dbus__bluez_adapter:
             return bool(powered)
         except Exception:
             return False
+
+    def get_connected_devices(self) -> list:
+        """Return MAC addresses of devices currently connected to this adapter.
+
+        Uses ``GetManagedObjects()`` and checks ``Connected`` property on each
+        ``Device1`` object whose path is under this adapter's path.
+        """
+        try:
+            bus = dbus.SystemBus()
+            obj_mgr = dbus.Interface(
+                bus.get_object("org.bluez", "/"),
+                "org.freedesktop.DBus.ObjectManager",
+            )
+            managed = obj_mgr.GetManagedObjects()
+        except dbus.exceptions.DBusException:
+            return []
+
+        connected = []
+        prefix = self.adapter_path + "/"
+        for path, ifaces in managed.items():
+            if not str(path).startswith(prefix):
+                continue
+            dev_props = ifaces.get(DEVICE_INTERFACE)
+            if dev_props and bool(dev_props.get("Connected", False)):
+                addr = str(dev_props.get("Address", ""))
+                if addr:
+                    connected.append(addr.upper())
+        return sorted(connected)
+
+    @staticmethod
+    def list_adapters() -> list:
+        """Return a list of dicts describing each Bluetooth adapter on the system.
+
+        Each dict contains ``name`` (e.g. ``"hci0"``), ``path``
+        (``"/org/bluez/hci0"``), and ``powered`` (``bool``).  Returns an empty
+        list when BlueZ is unreachable or no adapters are present.
+        """
+        try:
+            bus = dbus.SystemBus()
+            obj_mgr = dbus.Interface(
+                bus.get_object("org.bluez", "/"),
+                "org.freedesktop.DBus.ObjectManager",
+            )
+            managed = obj_mgr.GetManagedObjects()
+        except dbus.exceptions.DBusException:
+            return []
+
+        adapters = []
+        for path, ifaces in managed.items():
+            if ADAPTER_INTERFACE not in ifaces:
+                continue
+            props = ifaces[ADAPTER_INTERFACE]
+            name = str(path).rsplit("/", 1)[-1]
+            powered = bool(props.get("Powered", False))
+            adapters.append({"name": name, "path": str(path), "powered": powered})
+        adapters.sort(key=lambda a: a["name"])
+        return adapters
 
     # ------------------------------------------------------------------
     # Adapter configuration — D-Bus property accessors

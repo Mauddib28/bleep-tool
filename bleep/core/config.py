@@ -20,6 +20,16 @@ for directory in [DATA_DIR, CACHE_DIR, CONFIG_DIR]:
 LOG_DIR = DATA_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
+# OBEX file receive paths.
+# obexd on Ubuntu runs under AppArmor confinement and may only write to
+# permitted paths.  ~/.cache/obexd/ is within obexd's expected write area.
+# See: bl_classic_mode.md troubleshooting, todo_tracker.md R6.
+OBEX_STAGING_DIR = Path(os.path.expanduser("~/.cache/obexd"))
+OBEX_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+# Final destination — defaults to /tmp/ for automatic cleanup on reboot.
+OBEX_RECEIVE_DIR = Path(os.getenv("BLEEP_RECEIVE_DIR", "/tmp/bleep_received"))
+OBEX_RECEIVE_DIR.mkdir(parents=True, exist_ok=True)
+
 # Legacy logging paths (for backward compatibility)
 general_logging = "/tmp/bti__logging__general.txt"
 debug_logging = "/tmp/bti__logging__debug.txt"
@@ -53,31 +63,6 @@ from bleep.bt_ref.constants import (  # noqa: E402
 # Agent paths
 AGENT_PATH = "/test/agent"
 MESH_AGENT_PATH = "/mesh/test/agent"
-
-# GATT Structure Properties
-GATT__SERVICE__PROPERTIES = [
-    "UUID",
-    "Primary",
-    "Device",
-    "Includes",
-    "Handle",
-    "Characteristics",
-]
-GATT__CHARACTERISTIC__PROPERTIES = [
-    "UUID",
-    "Service",
-    "Value",
-    "WriteAcquired",
-    "NotifyAcquired",
-    "Notifying",
-    "Flags",
-    "Handle",
-    "MTU",
-]
-GATT__DESCRIPTOR__PROPERTIES = ["UUID", "Characteristic", "Value", "Flags", "Handle"]
-
-# Pretty Printing Variables
-PRETTY_PRINT__GATT__FORMAT_LEN = 7
 
 # Default timeout values
 TIMEOUT_LIMIT_IN_SECONDS = 120  # 2 minutes
@@ -114,7 +99,7 @@ if hasattr(dbus, "mainloop") and hasattr(dbus.mainloop, "glib"):
 
 ## Logging and Debugging Variables
 
-## Constants for BlueZ (Make local, then bring in larger bluetooth_constants)
+## Constants for BlueZ (local definitions; see also bleep.bt_ref.constants)
 # BLE CTF Variables
 BLE_CTF_ADDR = "CC:50:E3:B6:BC:A6"
 INTROSPECT_INTERFACE = "org.freedesktop.DBus.Introspectable"

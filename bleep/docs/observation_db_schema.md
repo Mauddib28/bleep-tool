@@ -18,6 +18,9 @@ The observation database is a SQLite database located at `~/.bleep/observations.
 | 6 | Added `device_type_evidence` table for classification audit trail and signature caching | Evidence-based classification system, stateless classification |
 | 6.1 | **Fix (2025-11-27)**: Corrected database operation sequencing to prevent FOREIGN KEY constraint violations | Device insertion now occurs before classification evidence storage. Modified `adapter.get_discovered_devices()`, `scan._native_scan()`, and `scan._base_enum()` to ensure proper sequencing |
 | 7 | Added `sdp_records` table for full SDP record snapshots | Stores complete SDP records with all attributes (Service Record Handle, Profile Descriptors, Service Version, Service Description, raw record) |
+| 8 | MAC address normalisation to uppercase | One-time migration converts all MAC columns (`devices.mac`, `adv_reports.mac`, `services.mac`, `classic_services.mac`, `char_history.mac`, `media_players.mac`, `media_transports.mac`, `pbap_metadata.mac`, `aoi_analysis.mac`, `device_type_evidence.mac`, `sdp_records.mac`) to `UPPER()`.  `_normalize_mac()` enforces uppercase on all write paths. |
+| 9 | UUID normalisation to uppercase | One-time migration converts UUID columns in `services.uuid`, `characteristics.uuid`, `classic_services.uuid`, `sdp_records.uuid`, and `char_history.service_uuid`/`char_uuid` to `UPPER()`.  `_normalize_uuid()` enforces uppercase on all write paths. |
+| 10 | Data fidelity enrichment | Added `descriptors` table. `devices`: added `tx_power`, `modalias`, `icon`, `service_data`, `advertising_data`.  `services`: added `is_primary`, `includes`.  `characteristics`: added `mtu`.  New APIs: `get_characteristic_id()`, `upsert_descriptors()`.  `upsert_services` ON CONFLICT now updates `handle_start`/`handle_end`/`name` via COALESCE. |
 
 ## Database Relationship Diagram
 
@@ -38,6 +41,11 @@ erDiagram
         datetime last_seen
         string notes
         string device_type
+        int tx_power
+        string modalias
+        string icon
+        json service_data
+        json advertising_data
     }
     
     adv_reports {
@@ -58,6 +66,8 @@ erDiagram
         string name
         datetime first_seen
         datetime last_seen
+        boolean is_primary
+        string includes
     }
     
     characteristics {
@@ -69,6 +79,17 @@ erDiagram
         blob value
         datetime last_read
         string permission_map
+        int mtu
+    }
+    
+    descriptors {
+        int id PK
+        int characteristic_id FK
+        string uuid
+        int handle
+        string flags
+        blob value
+        datetime last_read
     }
     
     classic_services {
@@ -163,6 +184,7 @@ erDiagram
     devices ||--o{ aoi_analysis : "analyzes"
     devices ||--o{ device_type_evidence : "classifies"
     services ||--o{ characteristics : "contains"
+    characteristics ||--o{ descriptors : "has"
 ```
 
 The diagram shows the primary relationships between tables in the observation database:
@@ -178,7 +200,9 @@ The diagram shows the primary relationships between tables in the observation da
 
 2. Each **service** can contain multiple characteristics.
 
-3. Media players and transports are loosely coupled to devices (no enforced foreign key).
+3. Each **characteristic** can have multiple descriptors (e.g., CCCD, User Description).
+
+4. Media players and transports are loosely coupled to devices (no enforced foreign key).
 
 ## Data Types and Conventions
 
@@ -186,7 +210,7 @@ The diagram shows the primary relationships between tables in the observation da
 
 The database uses SQLite's type system with the following conventions:
 
-- **TEXT**: String data, stored as UTF-8. MAC addresses are normalized to lowercase (e.g., `'aa:bb:cc:dd:ee:ff'`).
+- **TEXT**: String data, stored as UTF-8. MAC addresses are normalized to uppercase (e.g., `'AA:BB:CC:DD:EE:FF'`) since schema v8. UUIDs are normalized to uppercase since schema v9.
 - **INTEGER**: Signed 64-bit integers. Used for handles, RSSI values, device classes, etc.
 - **BLOB**: Binary large object. Used for raw advertising data, manufacturer data, and characteristic values. When exported via API, BLOBs are converted to hex strings for JSON serialization.
 - **JSON**: Stored as TEXT but validated as JSON. Used for structured data like decoded advertising reports, profile descriptors, and analysis results. SQLite 3.38+ provides JSON functions for querying.
@@ -221,7 +245,7 @@ Primary table for storing discovered Bluetooth devices. This is the central tabl
 
 | Column | Type | Constraints | Description |
 |--------|------|------------|-------------|
-| mac | TEXT | PRIMARY KEY, NOT NULL | Device MAC address, normalized to lowercase (e.g., `'aa:bb:cc:dd:ee:ff'`). Used as the primary identifier for all device-related data. |
+| mac | TEXT | PRIMARY KEY, NOT NULL | Device MAC address, normalized to uppercase (e.g., `'AA:BB:CC:DD:EE:FF'`) since schema v8. Used as the primary identifier for all device-related data. |
 | addr_type | TEXT | NULL | Address type for LE devices: `'public'` (default, inconclusive), `'random'` (conclusive LE evidence), or `NULL` (Classic devices). |
 | name | TEXT | NULL | Device name or alias as reported by the device or set by the user. May be `NULL` if device doesn't advertise a name. |
 | appearance | INT | NULL | Bluetooth appearance value (16-bit) from LE advertising data. Used for device categorization (e.g., phone, watch, keyboard). |
@@ -235,13 +259,18 @@ Primary table for storing discovered Bluetooth devices. This is the central tabl
 | last_seen | DATETIME | NULL | Most recent discovery timestamp in ISO 8601 format (UTC). **Updated on every device interaction** (scan, connect, etc.). |
 | notes | TEXT | NULL | User-provided notes or annotations. Free-form text for custom device labeling or analysis notes. |
 | device_type | TEXT | NULL | Device type classification: `'unknown'` (default), `'classic'` (BR/EDR only), `'le'` (BLE only), or `'dual'` (both protocols). Classification is evidence-based and stateless. |
+| tx_power | INT | NULL | Transmit power level in dBm from `org.bluez.Device1.TxPower`. Added in schema v10. |
+| modalias | TEXT | NULL | USB-style modalias string (e.g., `'usb:v05ACp1234d0100'`) from `org.bluez.Device1.Modalias`. Encodes vendor/product/version. Added in schema v10. |
+| icon | TEXT | NULL | Icon hint from BlueZ (e.g., `'phone'`, `'audio-card'`) derived from device class. Added in schema v10. |
+| service_data | JSON | NULL | Service-specific advertising data keyed by service UUID. Added in schema v10. |
+| advertising_data | JSON | NULL | Raw advertising data structures from `org.bluez.Device1.AdvertisingData`. Added in schema v10. |
 
 **Indexes:**
 - `idx_devices_device_type` on `device_type` - Fast filtering by device type
 - `idx_devices_last_seen` on `last_seen` - Time-based queries and "recent devices" filtering
 
 **Usage Notes:**
-- MAC addresses are normalized to lowercase for consistency
+- MAC addresses are normalized to uppercase for consistency (since schema v8)
 - `first_seen` and `last_seen` use UTC timestamps
 - `device_type` is automatically determined by the classification system based on evidence
 - Device records are created automatically during scanning/enumeration operations
@@ -297,6 +326,8 @@ Stores GATT (Generic Attribute Profile) service information for Bluetooth Low En
 | name | TEXT | NULL | Human-readable service name if known (e.g., `'Generic Access'`, `'Device Information'`). Extracted from UUID translation tables. |
 | first_seen | DATETIME | NULL | First discovery timestamp in ISO 8601 format (UTC). Preserved on updates. |
 | last_seen | DATETIME | NULL | Most recent discovery timestamp in ISO 8601 format (UTC). Updated on each enumeration. |
+| is_primary | BOOLEAN | DEFAULT 1 | Whether this is a primary service (`1`) or secondary/included service (`0`). From `org.bluez.GattService1.Primary`. Added in schema v10. |
+| includes | TEXT | NULL | JSON array of included service UUIDs (from `org.bluez.GattService1.Includes`). Added in schema v10. |
 
 **Usage Notes:**
 - Services are discovered during GATT enumeration (`gatt-enum`, `explore`, `enum-scan` commands)
@@ -304,6 +335,7 @@ Stores GATT (Generic Attribute Profile) service information for Bluetooth Low En
 - `first_seen` and `last_seen` track when services were first and last observed
 - Services are automatically linked to characteristics via `service_id` foreign key
 - Use `handle_start` and `handle_end` for GATT operations requiring handle ranges
+- ON CONFLICT updates `last_seen`, `handle_start`, `handle_end`, and `name` via `COALESCE` so subsequent scans fill in previously-NULL values (since schema v10)
 
 ### characteristics
 
@@ -325,6 +357,7 @@ Stores GATT characteristic information for services. Each row represents a chara
 | value | BLOB | NULL | Most recent characteristic value read from the device. Stored as binary for complete fidelity. When exported via API, converted to hex string. Updated on each successful read operation. |
 | last_read | DATETIME | NULL | Timestamp of last successful read operation in ISO 8601 format (UTC). |
 | permission_map | TEXT | NULL | JSON representation of permission/access information. Contains details about read/write permissions, authentication requirements, etc. Format: JSON object. |
+| mtu | INT | NULL | Maximum Transmission Unit negotiated for this characteristic. From `org.bluez.GattCharacteristic1.MTU`. Added in schema v10. |
 
 **Usage Notes:**
 - Characteristics are discovered during GATT enumeration
@@ -333,6 +366,36 @@ Stores GATT characteristic information for services. Each row represents a chara
 - `properties` field indicates what operations are supported (read, write, notify, etc.)
 - Use `handle` for direct GATT operations requiring the handle
 - `permission_map` provides detailed access control information in structured format
+
+### descriptors
+
+Stores GATT descriptor information for characteristics. Each row represents a descriptor discovered within a characteristic (e.g., Client Characteristic Configuration Descriptor, Characteristic User Description). Added in schema v10.
+
+**Primary Key:** `id` (INTEGER AUTOINCREMENT)
+
+**Foreign Key:** `characteristic_id` REFERENCES `characteristics(id) ON DELETE CASCADE`
+
+**Unique Constraint:** `(characteristic_id, uuid)` - Ensures one descriptor per UUID per characteristic
+
+**Indexes:**
+- `idx_descriptors_char_id` on `characteristic_id` - Fast lookups by parent characteristic
+
+| Column | Type | Constraints | Description |
+|--------|------|------------|-------------|
+| id | INTEGER | PRIMARY KEY, AUTOINCREMENT | Unique identifier for each descriptor record. |
+| characteristic_id | INT | NOT NULL, REFERENCES characteristics(id) ON DELETE CASCADE | Associated characteristic (foreign key). When a characteristic is deleted, all its descriptors are automatically deleted. |
+| uuid | TEXT | NOT NULL | Descriptor UUID (e.g., `'2902'` for CCCD, `'2901'` for Characteristic User Description). |
+| handle | INT | NULL | Descriptor handle used for GATT operations. |
+| flags | TEXT | NULL | Comma-separated list of descriptor flags/properties. |
+| value | BLOB | NULL | Most recent descriptor value read from the device. Stored as binary. |
+| last_read | DATETIME | NULL | Timestamp of last successful read operation in ISO 8601 format (UTC). |
+
+**Usage Notes:**
+- Descriptors are collected during GATT enumeration (via `explore` command)
+- The unique constraint on `(characteristic_id, uuid)` ensures descriptors are not duplicated
+- Common descriptors include CCCD (`0x2902`), Characteristic User Description (`0x2901`), and Characteristic Presentation Format (`0x2904`)
+- `value` for CCCD indicates notification/indication enable state
+- Managed via `upsert_descriptors()` and `get_characteristic_id()` APIs
 
 ### classic_services
 
@@ -985,6 +1048,17 @@ timeline = get_characteristic_timeline('00:11:22:33:44:55', service_uuid='1800')
 # Get AoI analysis
 analysis = get_aoi_analysis('00:11:22:33:44:55')
 ```
+
+### v10 APIs
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `get_characteristic_id` | `(service_id: int, char_uuid: str) -> int \| None` | Retrieve the row ID of a characteristic by its parent service ID and UUID. |
+| `upsert_descriptors` | `(characteristic_id: int, desc_list: List[Dict])` | Insert/update descriptors for a characteristic. Each dict may contain `uuid`, `handle`, `value`, `flags`. |
+| `upsert_services` | *(updated)* | Now writes `is_primary` (bool→int) and `includes` (list→JSON) columns via `ON CONFLICT … COALESCE`. |
+| `upsert_characteristics` | *(updated)* | Now writes the `mtu` column via `ON CONFLICT … COALESCE`. |
+| `get_device_detail` | *(updated)* | Return dict now includes a `"descriptors"` key with all descriptor rows for the device. |
+| `export_device_data` | *(updated)* | Inherits descriptor inclusion from `get_device_detail`. |
 
 For comprehensive function documentation with signatures, parameters, return values, and detailed examples, see [Programmatic API Usage Examples](../observation_db.md#programmatic-access) in the main observation database documentation.
 

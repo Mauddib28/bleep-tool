@@ -1,6 +1,6 @@
 """RFCOMM data-exchange commands for debug mode.
 
-Commands: copen, csend, crecv, craw.
+Commands: copen, csend, crecv, craw, cbind.
 
 Split from ``debug_classic_data.py`` to keep file sizes manageable.
 """
@@ -33,7 +33,7 @@ def _resolve_rfcomm_channel(
     """
     if (getattr(opts, "first", False) or getattr(opts, "svc", None)) and not state.current_mapping:
         try:
-            from bleep.ble_ops.classic_sdp import discover_services_sdp, build_svc_map
+            from bleep.ble_ops.classic.sdp import discover_services_sdp, build_svc_map
             records = discover_services_sdp(state.current_device.mac_address)
             state.current_mapping = build_svc_map(records)
         except Exception as exc:
@@ -151,7 +151,7 @@ def cmd_copen(args: List[str], state: DebugState) -> None:
     if channel is None:
         return
 
-    from bleep.ble_ops.classic_connect import classic_rfccomm_open
+    from bleep.ble_ops.classic.connect import classic_rfccomm_open
     try:
         state.rfcomm_sock = classic_rfccomm_open(
             state.current_device.mac_address, channel, timeout=8.0,
@@ -298,7 +298,7 @@ def cmd_craw(args: List[str], state: DebugState) -> None:
         if channel is None:
             print("[-] Specify a channel, --svc, or --first, or use 'copen' beforehand")
             return
-        from bleep.ble_ops.classic_connect import classic_rfccomm_open
+        from bleep.ble_ops.classic.connect import classic_rfccomm_open
         try:
             sock = classic_rfccomm_open(
                 state.current_device.mac_address, channel, timeout=8.0,
@@ -376,3 +376,144 @@ def cmd_craw(args: List[str], state: DebugState) -> None:
             print("[*] RFCOMM socket closed")
         else:
             print("[*] Session ended (socket kept open)")
+
+
+# ---------------------------------------------------------------------------
+# crfcomm — RFCOMM channel listing + optional probe
+# ---------------------------------------------------------------------------
+
+
+def cmd_crfcomm(args: List[str], state: DebugState) -> None:
+    """List RFCOMM channels from the SDP service map, optionally probe each.
+
+    Usage: crfcomm [--probe] [--timeout N]
+    """
+    parser = argparse.ArgumentParser(prog="crfcomm", add_help=False)
+    parser.add_argument("--probe", action="store_true", help="Probe each RFCOMM channel")
+    parser.add_argument("--timeout", type=float, default=4.0, help="Per-channel probe timeout")
+    try:
+        opts = parser.parse_args(args)
+    except SystemExit:
+        return
+
+    if state.current_mode != "classic" or not state.current_device:
+        print("[-] No Classic device connected (use 'cconnect <MAC>' first)")
+        return
+
+    mac = state.current_device.mac_address.upper()
+
+    if not state.current_mapping:
+        print("[*] No service map cached — running SDP discovery...")
+        try:
+            from bleep.ble_ops.classic.sdp import discover_services_sdp, build_svc_map
+            records = discover_services_sdp(mac)
+            state.current_mapping = build_svc_map(records)
+        except Exception as exc:
+            print(f"[-] SDP discovery failed: {format_dbus_error(exc)}")
+            return
+
+    from bleep.modes.debug_classic import _ch
+
+    rfcomm_entries = []
+    for name, entry in state.current_mapping.items():
+        ch = _ch(entry)
+        if ch is not None:
+            svc_name = entry.get("name", name) if isinstance(entry, dict) else name
+            uuid = entry.get("uuid", "") if isinstance(entry, dict) else ""
+            rfcomm_entries.append((ch, svc_name, uuid))
+
+    if not rfcomm_entries:
+        print(f"[-] No RFCOMM channels found for {mac}")
+        return
+
+    rfcomm_entries.sort(key=lambda e: e[0])
+    print(f"\nRFCOMM Channels ({len(rfcomm_entries)} found):\n")
+    print(f"  {'Ch':>3}  {'Service':<30}  {'UUID'}")
+    print(f"  {'---':>3}  {'-'*30}  {'-'*36}")
+    for ch, svc_name, uuid in rfcomm_entries:
+        print(f"  {ch:>3}  {svc_name:<30}  {uuid}")
+
+    if opts.probe:
+        from bleep.ble_ops.classic.rfcomm import probe_rfcomm_channel
+
+        print(f"\n[*] Probing {len(rfcomm_entries)} RFCOMM channel(s)...\n")
+        for ch, svc_name, _ in rfcomm_entries:
+            result = probe_rfcomm_channel(mac, ch, timeout=opts.timeout)
+            status = result.classification.upper()
+            extra = ""
+            if result.raw_response:
+                preview = result.raw_response[:60]
+                try:
+                    extra = f" → {preview.decode('utf-8', errors='replace').strip()!r}"
+                except Exception:
+                    extra = f" → {preview.hex()}"
+            elif result.error:
+                extra = f" → {result.error}"
+            print(f"  ch {ch:>2} ({svc_name}): [{status}]{extra}  ({result.latency_ms:.0f}ms)")
+
+
+# ---------------------------------------------------------------------------
+# cbind — persistent RFCOMM binding
+# ---------------------------------------------------------------------------
+
+CBIND_HELP = """\
+cbind <channel> [--device N]  Bind /dev/rfcommN to target MAC + channel
+cbind release [N]             Release /dev/rfcommN (default N=0)
+cbind list                    Show active rfcomm bindings
+"""
+
+
+def cmd_cbind(state: DebugState, args: List[str]) -> None:
+    """Manage persistent RFCOMM channel bindings."""
+    if not args:
+        print(CBIND_HELP)
+        return
+
+    subcmd = args[0].lower()
+
+    if subcmd == "list":
+        from bleep.ble_ops.classic.rfcomm import list_rfcomm_bindings
+        output = list_rfcomm_bindings()
+        print(output)
+        if state.rfcomm_bindings:
+            print(f"\n  Tracked by this session: {state.rfcomm_bindings}")
+        return
+
+    if subcmd == "release":
+        from bleep.ble_ops.classic.rfcomm import release_rfcomm_channel
+        device_id = int(args[1]) if len(args) > 1 else 0
+        try:
+            release_rfcomm_channel(device_id)
+            if device_id in state.rfcomm_bindings:
+                state.rfcomm_bindings.remove(device_id)
+            print(f"[+] Released /dev/rfcomm{device_id}")
+        except Exception as exc:
+            print(f"[-] Release failed: {exc}")
+        return
+
+    # cbind <channel> [--device N]
+    mac = getattr(state.current_device, "address", None) if state.current_device else None
+    if not mac:
+        print("[-] No device selected — use 'cselect' or 'connect' first")
+        return
+
+    try:
+        channel = int(subcmd)
+    except ValueError:
+        print(f"[-] Invalid channel: {subcmd}")
+        print(CBIND_HELP)
+        return
+
+    device_id = 0
+    if "--device" in args:
+        idx = args.index("--device")
+        if idx + 1 < len(args):
+            device_id = int(args[idx + 1])
+
+    from bleep.ble_ops.classic.rfcomm import bind_rfcomm_channel
+    try:
+        dev_path = bind_rfcomm_channel(mac, channel, device_id=device_id)
+        state.rfcomm_bindings.append(device_id)
+        print(f"[+] Bound {mac} ch {channel} → {dev_path}")
+    except Exception as exc:
+        print(f"[-] Bind failed: {exc}")

@@ -14,7 +14,7 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 from collections import defaultdict
 import re
 
-from bleep.ble_ops.classic_version import map_profile_version_to_spec, map_lmp_version_to_spec
+from bleep.ble_ops.classic.version import map_profile_version_to_spec, map_lmp_version_to_spec
 from bleep.core.log import print_and_log, LOG__DEBUG
 
 __all__ = [

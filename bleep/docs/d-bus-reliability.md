@@ -58,6 +58,21 @@ def connect_device(device_interface):
     device_interface.Connect()
 ```
 
+**Consumers of `call_method_with_timeout()`**:
+
+* `bleep.core.preflight.check_endpoint_contention(deep_probe=True)` — walks
+  every registered D-Bus bus name and introspects it for
+  `org.bluez.MediaEndpoint1` interfaces (then resolves owners via
+  `GetConnectionUnixProcessID` + `/proc/<pid>/comm`).  A congested or
+  malicious bus name cannot stall the pre-flight because each D-Bus
+  method call (`ListNames`, `Introspect`, `GetNameOwner`,
+  `GetConnectionUnixProcessID`, `Properties.Get`) is guarded
+  individually (default 3 s each).  Used by `MediaStreamManager` to
+  block audio acquire before cycling the device when BlueALSA owns the
+  competing endpoint, and by the `audiocfg --endpoints` /
+  `mediaenum --endpoints` debug surfaces.  See
+  [audio_recon.md](audio_recon.md#troubleshooting-mediaendpoint1-contention-transport-timeout-on-audioplay--audiorec).
+
 ### 2. BlueZ Service Monitor (`bleep/dbuslayer/bluez_monitor.py`)
 
 Monitors the health and availability of BlueZ services. Features:
@@ -180,8 +195,7 @@ The reliability components are designed to be easily integrated with existing co
 For detailed guidance on using the reliability system effectively, refer to:
 
 - [D-Bus Best Practices Guide](dbus_best_practices.md)
-- [Diagnostic Tool Documentation](../scripts/dbus_diagnostic.py)
-- [API Reference](../docs/api_reference.md)
+- Diagnostic tool: `bleep/scripts/dbus_diagnostic.py` (run via `python -m bleep.scripts.dbus_diagnostic --all`)
 
 ## Troubleshooting
 

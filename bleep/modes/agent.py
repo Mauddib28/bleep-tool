@@ -141,31 +141,19 @@ def _check_agent_status(bus) -> int:
 
 
 def _get_device_path(bus, mac_address: str) -> str:
-    """Get the D-Bus path for a device by its MAC address."""
+    """Get the D-Bus path for a device by its MAC address.
+
+    Delegates to :func:`bleep.pairing.resolve_device_for_pair` and raises
+    ``ValueError`` when the device is not discoverable.
+    """
     from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as Adapter
-    
+    from bleep.pairing import resolve_device_for_pair
+
     adapter = Adapter()
-    devices = adapter.get_devices()
-    
-    for device in devices:
-        if device.get("Address", "").lower() == mac_address.lower():
-            return device.get("path")
-            
-    # If device not found, try to discover it
-    print_and_log(f"[*] Device {mac_address} not found, attempting discovery...", LOG__GENERAL)
-    adapter.start_discovery()
-    
-    # Wait for discovery
-    for _ in range(5):
-        time.sleep(1)
-        devices = adapter.get_devices()
-        for device in devices:
-            if device.get("Address", "").lower() == mac_address.lower():
-                adapter.stop_discovery()
-                return device.get("path")
-    
-    adapter.stop_discovery()
-    raise ValueError(f"Device {mac_address} not found")
+    path = resolve_device_for_pair(mac_address, adapter)
+    if path is None:
+        raise ValueError(f"Device {mac_address} not found")
+    return path
 
 
 # ---------------------------------------------------------------------------

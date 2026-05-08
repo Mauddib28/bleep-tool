@@ -19,15 +19,15 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 import hashlib
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
-from bleep.ble_ops.scan import passive_scan
-from bleep.ble_ops.ctf import (
+from bleep.ble_ops.le.scan import passive_scan
+from bleep.ble_ops.le.ctf import (
     BLE_CTF__CHARACTERISTIC_FLAGS, 
     ble_ctf__scan_and_enumeration,
     ble_ctf__read_characteristic,
     ble_ctf__write_flag,
     ble_ctf__write_characteristic
 )
-from bleep.ble_ops.ctf_discovery import (
+from bleep.ble_ops.le.ctf_discovery import (
     discover_flags,
     auto_solve_flags,
     generate_flag_visualization
@@ -871,7 +871,7 @@ def main():
                 if device:
                     try:
                         device.disconnect()
-                    except:
+                    except Exception:
                         pass
                 print_and_log("[*] Exiting BLE CTF Mode", LOG__GENERAL)
                 break
@@ -1073,7 +1073,7 @@ def main():
             if device:
                 try:
                     device.disconnect()
-                except:
+                except Exception:
                     pass
             print_and_log("[*] Exiting BLE CTF Mode", LOG__GENERAL)
             break

@@ -98,6 +98,10 @@ sudo bleep adapter-config set wbs on
 | UUIDs | array | No | Available local service UUIDs |
 | Modalias | string | No | USB/BT vendor info |
 | Roles | array | No | Supported roles (central, peripheral) |
+| PowerState | string | No | Controller power state: `on`, `off`, `on-disabling`, `off-enabling` (BlueZ ≥ 5.64) |
+| Manufacturer | uint16 | No | Bluetooth SIG-assigned company identifier of the adapter chipset |
+| Version | uint8 | No | LMP version of the controller |
+| ExperimentalFeatures | array | No | UUIDs of enabled BlueZ experimental features (e.g. `d4992530-…` = LL privacy) |
 
 ### 3.2  Management-Socket Properties
 

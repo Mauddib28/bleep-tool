@@ -1,7 +1,7 @@
 # GLib MainLoop Architecture: Current State and Future Design
 
 **Date:** 2026-03-01
-**Status:** Design document — not yet implemented
+**Status:** Design document — partial implementation tracked below (see Related Work Items)
 **Scope:** Debug mode and agent callback dispatch across all BLEEP modes
 
 ## Problem Statement
@@ -166,6 +166,19 @@ Consider implementing Option A when:
 
 The current stop/restart pattern is adequate for the v2.6 use cases
 (single-shot and brute-force pairing initiated by the user).
+
+## Related Work Items
+
+The following `todo_tracker.md` items track the actual implementation of
+this design and related MainLoop fixes:
+
+| Item | Description | Status |
+|------|-------------|--------|
+| **FW1** (Pairing section) | Re-enable unified D-Bus monitoring after `pair_device()` returns | Open |
+| **F1** (Pairing Future Work) | MainLoop inversion — `input()` to worker thread (this doc's Option A) | Open |
+| **F3** (Pin Brute-Force §) | PoC confirmed temporary `GLib.MainLoop` + `timeout_add` works for `RequestPinCode` dispatch | Done |
+| **F1** (debug.py fix) | `_cmd_pair()`: stop background loop before agent creation/pairing | Done |
+| **F3** (agent.py fix) | `pair_device()`: replaced `context.iteration` loop with temporary MainLoop | Done |
 
 ## References
 

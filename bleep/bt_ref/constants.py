@@ -5,6 +5,9 @@ This module provides centralized constants for Bluetooth operations, organized b
 All constants are imported directly from the original monolith for compatibility.
 """
 
+from __future__ import annotations
+from typing import Optional
+
 # D-Bus Core Constants
 DBUS_PROPERTIES = "org.freedesktop.DBus.Properties"
 DBUS_OM_IFACE = "org.freedesktop.DBus.ObjectManager"
@@ -28,6 +31,12 @@ GATT_DESCRIPTOR_INTERFACE = BLUEZ_SERVICE_NAME + ".GattDescriptor1"
 # Advertisement Interface Constants
 ADVERTISEMENT_INTERFACE = BLUEZ_SERVICE_NAME + ".LEAdvertisement1"
 ADVERTISING_MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".LEAdvertisingManager1"
+LE_ADVERTISEMENT_BASE_PATH = "/org/bluez/bleep/advertisement"
+
+# Advertisement Monitor Interface Constants (BZ-11/12)
+ADV_MONITOR_INTERFACE = BLUEZ_SERVICE_NAME + ".AdvertisementMonitor1"
+ADV_MONITOR_MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".AdvertisementMonitorManager1"
+ADV_MONITOR_APP_BASE_PATH = "/org/bluez/bleep/adv_monitor_app"
 
 # Media Interface Constants
 MEDIA_CONTROL_INTERFACE = BLUEZ_SERVICE_NAME + ".MediaControl1"
@@ -98,8 +107,92 @@ FTP_UUID_SHORT = "0x1106"
 # MAP (Message Access Profile)
 MAP_MSE_UUID = "00001132-0000-1000-8000-00805f9b34fb"
 MAP_MSE_UUID_SHORT = "0x1132"
+MAP_MNS_UUID = "00001133-0000-1000-8000-00805f9b34fb"
+MAP_MNS_UUID_SHORT = "0x1133"
 MAP_UUID = "00001134-0000-1000-8000-00805f9b34fb"
 MAP_UUID_SHORT = "0x1134"
+
+# MAP SDP attribute IDs (Bluetooth Assigned Numbers + MAP v1.4.3 spec)
+MAP_SDP_ATTR_MAS_INSTANCE_ID = 0x0315
+MAP_SDP_ATTR_SUPPORTED_MESSAGE_TYPES = 0x0316
+MAP_SDP_ATTR_SUPPORTED_FEATURES = 0x0317  # MapSupportedFeatures bitmask
+
+# MapSupportedFeatures bitmask (MAP v1.4.3, Section 7.1.1 / 7.1.2)
+# Bits defined for both MCE (client) and MSE (server) roles.
+MAP_FEATURE_NOTIFICATION_REGISTRATION = 0x00000001  # Bit 0
+MAP_FEATURE_NOTIFICATION = 0x00000002               # Bit 1
+MAP_FEATURE_BROWSING = 0x00000004                    # Bit 2
+MAP_FEATURE_UPLOADING = 0x00000008                   # Bit 3
+MAP_FEATURE_DELETE = 0x00000010                      # Bit 4
+MAP_FEATURE_INSTANCE_INFO = 0x00000020               # Bit 5
+MAP_FEATURE_EXTENDED_EVENT_REPORT_1_1 = 0x00000040   # Bit 6
+MAP_FEATURE_EVENT_REPORT_1_2 = 0x00000080            # Bit 7
+MAP_FEATURE_MESSAGE_FORMAT_1_1 = 0x00000100          # Bit 8
+MAP_FEATURE_MESSAGES_LISTING_FORMAT_1_1 = 0x00000200 # Bit 9
+MAP_FEATURE_PERSISTENT_MSG_HANDLES = 0x00000400      # Bit 10
+MAP_FEATURE_DATABASE_ID = 0x00000800                 # Bit 11
+MAP_FEATURE_FOLDER_VERSION_COUNTER = 0x00001000      # Bit 12
+MAP_FEATURE_CONVERSATION_VERSION_COUNTER = 0x00002000  # Bit 13
+MAP_FEATURE_PARTICIPANT_PRESENCE_CHANGE = 0x00004000   # Bit 14
+MAP_FEATURE_PARTICIPANT_CHAT_STATE_CHANGE = 0x00008000 # Bit 15
+MAP_FEATURE_PBAP_CONTACT_CROSS_REF = 0x00010000       # Bit 16
+MAP_FEATURE_NOTIFICATION_FILTERING = 0x00020000        # Bit 17
+MAP_FEATURE_UTC_OFFSET_TIMESTAMP = 0x00040000          # Bit 18
+MAP_FEATURE_MAPSUPPORTEDFEATURES_IN_CONNECT = 0x00080000  # Bit 19
+MAP_FEATURE_CONVERSATION_LISTING = 0x00100000          # Bit 20
+MAP_FEATURE_OWNER_STATUS = 0x00200000                  # Bit 21
+MAP_FEATURE_MESSAGE_FORWARDING = 0x00400000            # Bit 22
+
+MAP_FEATURE_NAMES = {
+    MAP_FEATURE_NOTIFICATION_REGISTRATION: "NotificationRegistration",
+    MAP_FEATURE_NOTIFICATION: "Notification",
+    MAP_FEATURE_BROWSING: "Browsing",
+    MAP_FEATURE_UPLOADING: "Uploading",
+    MAP_FEATURE_DELETE: "Delete",
+    MAP_FEATURE_INSTANCE_INFO: "InstanceInformation",
+    MAP_FEATURE_EXTENDED_EVENT_REPORT_1_1: "ExtendedEventReport1.1",
+    MAP_FEATURE_EVENT_REPORT_1_2: "EventReport1.2",
+    MAP_FEATURE_MESSAGE_FORMAT_1_1: "MessageFormat1.1",
+    MAP_FEATURE_MESSAGES_LISTING_FORMAT_1_1: "MessagesListingFormat1.1",
+    MAP_FEATURE_PERSISTENT_MSG_HANDLES: "PersistentMessageHandles",
+    MAP_FEATURE_DATABASE_ID: "DatabaseIdentifier",
+    MAP_FEATURE_FOLDER_VERSION_COUNTER: "FolderVersionCounter",
+    MAP_FEATURE_CONVERSATION_VERSION_COUNTER: "ConversationVersionCounter",
+    MAP_FEATURE_PARTICIPANT_PRESENCE_CHANGE: "ParticipantPresenceChange",
+    MAP_FEATURE_PARTICIPANT_CHAT_STATE_CHANGE: "ParticipantChatStateChange",
+    MAP_FEATURE_PBAP_CONTACT_CROSS_REF: "PBAPContactCrossReference",
+    MAP_FEATURE_NOTIFICATION_FILTERING: "NotificationFiltering",
+    MAP_FEATURE_UTC_OFFSET_TIMESTAMP: "UTCOffsetTimestamp",
+    MAP_FEATURE_MAPSUPPORTEDFEATURES_IN_CONNECT: "MapSupportedFeaturesInConnect",
+    MAP_FEATURE_CONVERSATION_LISTING: "ConversationListing",
+    MAP_FEATURE_OWNER_STATUS: "OwnerStatus",
+    MAP_FEATURE_MESSAGE_FORWARDING: "MessageForwarding",
+}
+
+# MAP supported message type bits (SDP attribute 0x0316)
+MAP_MSG_TYPE_EMAIL = 0x01
+MAP_MSG_TYPE_SMS_GSM = 0x02
+MAP_MSG_TYPE_SMS_CDMA = 0x04
+MAP_MSG_TYPE_MMS = 0x08
+MAP_MSG_TYPE_IM = 0x10
+
+MAP_MSG_TYPE_NAMES = {
+    MAP_MSG_TYPE_EMAIL: "EMAIL",
+    MAP_MSG_TYPE_SMS_GSM: "SMS_GSM",
+    MAP_MSG_TYPE_SMS_CDMA: "SMS_CDMA",
+    MAP_MSG_TYPE_MMS: "MMS",
+    MAP_MSG_TYPE_IM: "IM",
+}
+
+
+def decode_map_supported_features(bitmask: int) -> list:
+    """Decode a MapSupportedFeatures bitmask into human-readable feature names."""
+    return [name for bit, name in MAP_FEATURE_NAMES.items() if bitmask & bit]
+
+
+def decode_map_message_types(bitmask: int) -> list:
+    """Decode a MAP supported message types bitmask into names."""
+    return [name for bit, name in MAP_MSG_TYPE_NAMES.items() if bitmask & bit]
 
 # SYNC (IrMC Synchronization)
 SYNC_UUID = "00001104-0000-1000-8000-00805f9b34fb"
@@ -164,8 +257,60 @@ RESULT_ERR_NOTIFY_NOT_PERMITTED = 25
 RESULT_ERR_INDICATE_NOT_PERMITTED = 26
 RESULT_ERR_TIMEOUT = 27  # Explicit timeout error (not from BlueZ, used by timeout_manager)
 
-# Base UUID Constants
-BASE_UUID__BLUETOOTH = "00000000-0000-1000-8000-00805F9B34F"
+# BlueZ-specific connection error codes (from workDir/BlueZDocs/errors.txt)
+RESULT_ERR_PROFILE_UNAVAILABLE = 28       # BR/EDR: no connectable services / target service
+RESULT_ERR_PAGE_TIMEOUT = 29              # BR/EDR: page timeout (EHOSTDOWN)
+RESULT_ERR_CONNECTION_REFUSED = 30        # Remote refused (security, resources, address type)
+RESULT_ERR_CONNECTION_LIMIT = 31          # Concurrent connection limit (EMLINK)
+RESULT_ERR_ALREADY_CONNECTED = 32         # Profile or ACL already connected (EALREADY/EISCONN)
+RESULT_ERR_AUTH_CANCELED = 33             # Pair() canceled by user or agent
+RESULT_ERR_AUTH_REJECTED = 34             # Pair() rejected by remote device
+RESULT_ERR_AUTH_TIMEOUT = 35              # Pair() timed out
+RESULT_ERR_CONNECTION_ABORTED_REMOTE = 36 # Remote terminated (low resources / power off)
+RESULT_ERR_CONNECTION_ABORTED_LOCAL = 37  # Local host aborted
+RESULT_ERR_PROTOCOL_ERROR = 38            # LMP or link-layer protocol error (EPROTO)
+RESULT_ERR_SOCKET_ERROR = 39              # BT IO socket creation/connect failed (EIO)
+RESULT_ERR_NOT_POWERED = 40              # Adapter not powered (EHOSTUNREACH)
+
+# ---------------------------------------------------------------------------
+# Legacy PIN codes (pre-BT 2.1, RequestPinCode agent method).
+# Format: string, 1–16 characters, ALPHANUMERIC (BlueZ rejects len<1 or len>16).
+# Grouped by length, ordered by empirical frequency within each group.
+# ---------------------------------------------------------------------------
+COMMON_PINS_4 = ["0000", "1234", "9999", "1111", "0001", "1010", "2468"]
+COMMON_PINS_6 = ["000000", "123456", "888888", "098765"]
+COMMON_PINS_ALPHA = ["BlueZ", "BRCM", "default"]
+COMMON_PINS = COMMON_PINS_4 + COMMON_PINS_6 + COMMON_PINS_ALPHA
+
+# ---------------------------------------------------------------------------
+# SSP Passkeys (BT 2.1+, RequestPasskey agent method).
+# Format: uint32, 0–999999.  Always displayed as 6-digit zero-padded.
+# NOTE: SSP normally generates a RANDOM passkey per pairing attempt;
+# brute-forcing random passkeys is infeasible (1-in-1,000,000 per try).
+# This list is only useful for the rare case of devices with a FIXED passkey
+# (some embedded / industrial hardware).
+# ---------------------------------------------------------------------------
+COMMON_PASSKEYS = [0, 1234, 123456, 9999, 1111]
+
+# ---------------------------------------------------------------------------
+# IO Capability strings for BlueZ AgentManager1.RegisterAgent().
+# Empty string "" falls back to KeyboardDisplay in bluetoothd.
+# IMPORTANT: For BR/EDR, the kernel converts KeyboardDisplay (0x04) to
+# DisplayYesNo (0x01) — they are functionally identical on BR/EDR.
+# KeyboardDisplay is SMP-specific (LE).
+# ---------------------------------------------------------------------------
+AGENT_CAPABILITIES = [
+    "NoInputNoOutput",
+    "DisplayOnly",
+    "DisplayYesNo",
+    "KeyboardOnly",
+    "KeyboardDisplay",
+]
+
+# Base UUID Constants — the canonical BT SIG base UUID (Core Spec v5.4, Vol 3, Part B §2.5.1).
+# All short-form (16-bit / 32-bit) UUIDs expand into this 128-bit template.
+BT_SIG_BASE_UUID = "00000000-0000-1000-8000-00805f9b34fb"
+BT_SIG_BASE_UUID_NODASH = BT_SIG_BASE_UUID.replace("-", "").lower()
 
 # GATT Property Constants
 GATT__SERVICE__PROPERTIES = [
@@ -261,6 +406,10 @@ UUID_NAMES = {
     "0000110b-0000-1000-8000-00805f9b34fb": "Advanced Audio Distribution Profile (A2DP) - A2DP Sink",
     # ESP SSP (Custom UUID - not in Bluetooth SIG specifications)
     "0000abf0-0000-1000-8000-00805f9b34fb": "ESP SSP",
+    # Microsoft Nearby Sharing (proprietary CDPX protocol over BLE)
+    "a82efa21-ae5c-3dde-9bbc-f16da7b16c5a": "Microsoft Nearby Sharing",
+    # Samsung IcService_New (proprietary cross-device interconnect over RFCOMM)
+    "a23d00bc-217c-123b-9c00-fc44577136ee": "Samsung IcService_New",
 }
 
 # Common Service/Characteristic UUIDs
@@ -322,6 +471,37 @@ AUDIO_PROFILE_NAMES = {
     HFP_AUDIO_GATEWAY_UUID: "HFP Audio Gateway",
     HSP_AUDIO_GATEWAY_UUID: "HSP Audio Gateway",
     HSP_HEADSET_UUID: "HSP Headset",
+    AVRCP_TARGET_UUID: "AVRCP Target",
+    AVRCP_CONTROLLER_UUID: "AVRCP Controller",
+}
+
+# ============================================================================
+# MediaEndpoint ↔ MediaTransport UUID Relationship
+# ============================================================================
+# In BlueZ, a MediaEndpoint1 interface represents the **remote** device's role
+# (e.g. A2DP Sink = "this device can receive audio"), while the associated
+# MediaTransport1 interface represents the **local** host's complementary role
+# (e.g. A2DP Source = "the host sends audio via this file descriptor").
+#
+# The transport UUID is always derived from the local endpoint registered by
+# the audio server (PulseAudio/PipeWire). Per the Bluetooth SIG AVDTP
+# specification, local and remote endpoints must have complementary roles
+# (Source ↔ Sink). BlueZ enforces this in avdtp.c:avdtp_find_remote_sep().
+#
+# This mapping is advisory — used for diagnostic logging and fallback
+# transport discovery. BLEEP does not reject transports with unexpected UUIDs.
+#
+# Reference: BlueZ profiles/audio/transport.c get_uuid(),
+#            BlueZ profiles/audio/avdtp.c avdtp_find_remote_sep()
+PROFILE_UUID_COMPLEMENTS = {
+    A2DP_SINK_UUID: A2DP_SOURCE_UUID,
+    A2DP_SOURCE_UUID: A2DP_SINK_UUID,
+    HFP_AUDIO_GATEWAY_UUID: HFP_HANDS_FREE_UUID,
+    HFP_HANDS_FREE_UUID: HFP_AUDIO_GATEWAY_UUID,
+    HSP_AUDIO_GATEWAY_UUID: HSP_HEADSET_UUID,
+    HSP_HEADSET_UUID: HSP_AUDIO_GATEWAY_UUID,
+    AVRCP_TARGET_UUID: AVRCP_CONTROLLER_UUID,
+    AVRCP_CONTROLLER_UUID: AVRCP_TARGET_UUID,
 }
 
 # ============================================================================
@@ -351,6 +531,33 @@ CODEC_NAMES = {
     LC3_CODEC_ID: "LC3",
     VENDOR_SPECIFIC_CODEC_ID: "Vendor Specific",
 }
+
+
+# ---------------------------------------------------------------------------
+# SBC codec capabilities and default configuration for endpoint registration
+# Values from A2DP specification section 4.3.2 and BlueZ simple-endpoint.
+# ---------------------------------------------------------------------------
+
+# Channel Modes: Mono DualChannel Stereo JointStereo
+# Frequencies: 16kHz 32kHz 44.1kHz 48kHz
+# Subbands: 4 8
+# Blocks: 4 8 12 16
+# Bitpool: 2-64
+SBC_CAPABILITIES = bytes([0xFF, 0xFF, 0x02, 0x40])
+
+# JointStereo 44.1kHz Subbands:8 Blocks:16 Bitpool:2-53
+SBC_DEFAULT_CONFIGURATION = bytes([0x21, 0x15, 0x02, 0x35])
+
+
+CODEC_NAME_TO_ID = {v.upper(): k for k, v in CODEC_NAMES.items()}
+
+
+def codec_name_to_id(name: str) -> Optional[int]:
+    """Map a codec name (e.g. 'SBC', 'AAC', 'MP3') to its numeric ID.
+
+    Returns None if the name is not recognised.
+    """
+    return CODEC_NAME_TO_ID.get(name.upper())
 
 
 def get_codec_name(codec_id: int) -> str:

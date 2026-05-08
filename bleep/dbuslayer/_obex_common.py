@@ -30,14 +30,31 @@ def poll_obex_transfer(
     Returns a dict with ``status``, and optionally ``transferred``, ``size``,
     and ``filename`` keys on success.
 
+    When the transfer object is removed by obexd before the poller can read
+    its status (fast-completion race), returns ``{"status": "removed"}``.
+    This is **not** necessarily a failure — obexd removes transfer objects
+    immediately after completion, and on fast devices the transfer finishes
+    before the first poll.  Callers must verify the actual outcome (e.g.
+    file existence for pull, assume success for send).
+
     Raises ``RuntimeError`` on timeout or ``error`` status.
     """
+    from bleep.core.log import print_and_log, LOG__DEBUG
+
     obj = bus.get_object(_OBEX_SERVICE, transfer_path)
     props = dbus.Interface(obj, DBUS_PROPERTIES)
 
     start = time.time()
     while True:
-        status = str(props.Get(_OBEX_TRANSFER_IFACE, "Status")).lower()
+        try:
+            status = str(props.Get(_OBEX_TRANSFER_IFACE, "Status")).lower()
+        except dbus.exceptions.DBusException:
+            print_and_log(
+                f"[{label}] Transfer object removed before status could be read "
+                f"(fast-completion race) — caller will verify outcome",
+                LOG__DEBUG,
+            )
+            return {"status": "removed"}
         if status in ("complete", "error"):
             break
         if (time.time() - start) > timeout:

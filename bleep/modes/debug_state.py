@@ -48,8 +48,11 @@ class DebugState:
     current_mine_map: Any = None
     current_perm_map: Any = None
     rfcomm_sock: Any = None
+    rfcomm_bindings: List[int] = field(default_factory=list)
     db_available: bool = False
     obs: Any = None
+    pan_client: Any = None
+    pan_server: Any = None
 
 
 # ---------------------------------------------------------------------------

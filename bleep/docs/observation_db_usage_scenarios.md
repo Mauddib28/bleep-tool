@@ -29,7 +29,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from bleep.core.observations import get_devices, get_device_detail
-from bleep.ble_ops.scan import passive_scan_and_connect
+from bleep.dbuslayer.adapter import system_dbus__bluez_adapter
 
 DB_PATH = Path.home() / ".bleep" / "observations.db"
 SCAN_INTERVAL = 300  # 5 minutes
@@ -52,8 +52,10 @@ def monitor_device_presence():
         print(f"\n[*] Scan #{scan_count} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
         try:
-            # Perform passive scan
-            devices = passive_scan_and_connect(duration=10)
+            # Perform passive scan via the adapter
+            adapter = system_dbus__bluez_adapter()
+            adapter.run_discovery(timeout=10)
+            devices = adapter.get_discovered_devices()
             print(f"[+] Discovered {len(devices)} devices")
             
             # Wait for next scan

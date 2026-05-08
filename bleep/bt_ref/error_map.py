@@ -1,9 +1,12 @@
 """
-Error mapping and handling for BLEEP.
+Error classification, categorization and recovery for BLEEP.
 
-This module provides centralized error handling, mapping, and recovery strategies
-for Bluetooth operations. It maps low-level D-Bus and BlueZ errors to BLEEP's
-error codes and provides recovery mechanisms where possible.
+This module provides error *categorization* (permission / connection / protocol /
+resource / state) and recovery strategies on top of the canonical decoder
+:func:`bleep.core.error_handling.decode_dbus_error`.
+
+The primary entry point is :func:`classify_dbus_error` (aliased as
+``map_dbus_error`` for backward compatibility).
 """
 
 from typing import Dict, Optional, Tuple, Callable
@@ -20,12 +23,9 @@ ERR_CAT_RESOURCE = "resource"
 ERR_CAT_STATE = "state"
 ERR_CAT_UNKNOWN = "unknown"
 
-# Map D-Bus error names to BLEEP result codes
-# **DEPRECATED as primary source of truth**: This table is now only used as a
-# refinement fallback when core.decode_dbus_error() returns generic RESULT_ERR.
-# The canonical decoder is bleep.core.error_handling.decode_dbus_error().
-# TODO (B5): After full parity validation, consider removing this table entirely
-# and relying solely on core decode + bt_ref-local category normalization.
+# Refinement fallback — only consulted when core.decode_dbus_error() returns the
+# generic RESULT_ERR.  All entries are aligned with the canonical decoder's
+# _DBUS_ERROR_NAME_MAP (bleep.core.error_handling) to avoid divergence.
 DBUS_ERROR_MAP: Dict[str, int] = {
     "org.freedesktop.DBus.Error.AccessDenied": RESULT_ERR_ACCESS_DENIED,
     "org.freedesktop.DBus.Error.InvalidArgs": RESULT_ERR_BAD_ARGS,
@@ -34,11 +34,11 @@ DBUS_ERROR_MAP: Dict[str, int] = {
     "org.freedesktop.DBus.Error.UnknownObject": RESULT_ERR_UNKNOWN_OBJECT,
     "org.freedesktop.DBus.Error.Failed": RESULT_ERR,
     "org.bluez.Error.NotSupported": RESULT_ERR_NOT_SUPPORTED,
-    "org.bluez.Error.NotPermitted": RESULT_ERR_ACCESS_DENIED,
+    "org.bluez.Error.NotPermitted": RESULT_ERR_NOT_PERMITTED,
     "org.bluez.Error.InvalidValueLength": RESULT_ERR_BAD_ARGS,
     "org.bluez.Error.Failed": RESULT_ERR,
     "org.bluez.Error.InProgress": RESULT_ERR_ACTION_IN_PROGRESS,
-    "org.bluez.Error.AlreadyConnected": RESULT_ERR_WRONG_STATE,
+    "org.bluez.Error.AlreadyConnected": RESULT_ERR_ALREADY_CONNECTED,
     "org.bluez.Error.NotConnected": RESULT_ERR_NOT_CONNECTED,
     "org.bluez.Error.NotAvailable": RESULT_ERR_NOT_FOUND,
     "org.bluez.Error.DoesNotExist": RESULT_ERR_NOT_FOUND,
@@ -122,15 +122,17 @@ RECOVERY_STRATEGIES: Dict[str, Callable] = {
 }
 
 
-def map_dbus_error(error: dbus.exceptions.DBusException) -> Tuple[int, str]:
-    """
-    Map a D-Bus exception to a BLEEP result code and error category.
+def classify_dbus_error(error: dbus.exceptions.DBusException) -> Tuple[int, str]:
+    """Classify a D-Bus exception into a BLEEP result code and error category.
 
-    Args:
-        error: The D-Bus exception to map
+    Uses :func:`bleep.core.error_handling.decode_dbus_error` as the canonical
+    decoder, then applies bt_ref-local refinement and category derivation.
 
-    Returns:
-        Tuple of (result_code, error_category)
+    Returns
+    -------
+    Tuple[int, str]
+        ``(result_code, error_category)`` where *error_category* is one of the
+        ``ERR_CAT_*`` strings defined in this module.
     """
     error_name = error.get_dbus_name()
 
@@ -177,6 +179,10 @@ def map_dbus_error(error: dbus.exceptions.DBusException) -> Tuple[int, str]:
     return result_code, category
 
 
+# Backward-compatible alias (renamed to avoid collision with core.errors.map_dbus_error)
+map_dbus_error = classify_dbus_error
+
+
 def get_recovery_strategy(error_category: str) -> Optional[Callable]:
     """
     Get the recovery strategy for an error category if one exists.
@@ -203,7 +209,7 @@ def handle_error(error: Exception, device=None) -> Tuple[int, bool]:
         where recovered is True if recovery was successful
     """
     if isinstance(error, dbus.exceptions.DBusException):
-        result_code, category = map_dbus_error(error)
+        result_code, category = classify_dbus_error(error)
     else:
         result_code = RESULT_EXCEPTION
         category = ERR_CAT_UNKNOWN

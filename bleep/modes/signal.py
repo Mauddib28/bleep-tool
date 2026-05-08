@@ -14,7 +14,7 @@ from gi.repository import GLib
 
 from bleep.core.log import print_and_log, LOG__GENERAL
 from bleep.dbuslayer.signals import system_dbus__bluez_signals as _Signals
-from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
 
 
 def _arg_parser() -> argparse.ArgumentParser:
@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None):
         print_and_log(f"[NOTIFY] {uuid}: {value.hex()}", LOG__GENERAL)
 
     dev_uuid = None
-    from bleep.ble_ops.conversion import handle_hex_to_int
+    from bleep.ble_ops.common.conversion import handle_hex_to_int
 
     if args.char.lower().startswith("char"):
         # User supplied *char00xx* notation → extract hex suffix

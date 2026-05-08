@@ -32,8 +32,8 @@ except NameError:  # pragma: no cover – define only if missing
 class BLEEPError(Exception):
     """Base exception all legacy code raises.
 
-    The `.code` attribute maps to bluetooth_constants RESULT_* values so the
-    rest of the system can keep using integer status codes until refactor is
+    The `.code` attribute maps to ``bleep.bt_ref.constants`` RESULT_* values so
+    the rest of the system can keep using integer status codes until refactor is
     finished.
     """
 
@@ -159,6 +159,67 @@ class NotAuthorizedError(BLEEPError):
         self.reason = reason
 
 
+class ProfileUnavailableError(ConnectionError):
+    """BR/EDR connection failed: no connectable services or target service."""
+
+    def __init__(self, device_address: str, reason: Optional[str] = None):
+        super().__init__(device_address, reason or "no connectable profile")
+        self.code = RESULT_ERR_PROFILE_UNAVAILABLE
+
+
+class AlreadyConnectedError(BLEEPError):
+    """Device or profile is already connected."""
+
+    def __init__(self, detail: str = ""):
+        super().__init__(detail or "Already connected", RESULT_ERR_ALREADY_CONNECTED)
+
+
+class PageTimeoutError(ConnectionError):
+    """BR/EDR page timeout — device may be out of range or powered off."""
+
+    def __init__(self, device_address: str, reason: Optional[str] = None):
+        super().__init__(device_address, reason or "page timeout")
+        self.code = RESULT_ERR_PAGE_TIMEOUT
+
+
+class ConnectionRefusedError(ConnectionError):
+    """Remote device refused connection (security, resources, or address type)."""
+
+    def __init__(self, device_address: str, reason: Optional[str] = None):
+        super().__init__(device_address, reason or "connection refused")
+        self.code = RESULT_ERR_CONNECTION_REFUSED
+
+
+class ConnectionLimitError(ConnectionError):
+    """Concurrent connection limit reached for this adapter."""
+
+    def __init__(self, device_address: str, reason: Optional[str] = None):
+        super().__init__(device_address, reason or "concurrent connection limit")
+        self.code = RESULT_ERR_CONNECTION_LIMIT
+
+
+class AuthenticationCanceledError(BLEEPError):
+    """Pairing canceled by user or agent."""
+
+    def __init__(self, detail: str = ""):
+        super().__init__(detail or "Authentication canceled", RESULT_ERR_AUTH_CANCELED)
+
+
+class AuthenticationRejectedError(BLEEPError):
+    """Pairing rejected by the remote device."""
+
+    def __init__(self, detail: str = ""):
+        super().__init__(detail or "Authentication rejected", RESULT_ERR_AUTH_REJECTED)
+
+
+class AuthenticationTimeoutError(TimeoutError):
+    """Pairing timed out waiting for user/agent response."""
+
+    def __init__(self, detail: str = ""):
+        super().__init__(detail or "Authentication timeout")
+        self.code = RESULT_ERR_AUTH_TIMEOUT
+
+
 # Map D-Bus exceptions to BLEEP exceptions
 DBUS_ERROR_MAP = {
     "org.freedesktop.DBus.Error.InvalidArgs": InvalidArgumentError,
@@ -196,30 +257,48 @@ def map_dbus_error(exc: dbus.exceptions.DBusException) -> BLEEPError:
 
     # Fast path mappings using error name
     if name == "org.bluez.Error.NotPermitted":
-        # Preserve message payload to distinguish policy/authorization causes.
         return PermissionError("D-Bus operation", msg or str(exc))
     if name == "org.bluez.Error.NotAuthorized":
-        # Preserve message payload when present (some BlueZ builds include it).
         return NotAuthorizedError("D-Bus operation", reason=msg or None)
+    if name == "org.bluez.Error.BREDR.ProfileUnavailable":
+        return ProfileUnavailableError("D-Bus operation", msg or None)
+    if name == "org.bluez.Error.NotReady":
+        return NotReadyError()
+    if name == "org.bluez.Error.AlreadyConnected":
+        return AlreadyConnectedError(msg or "")
+    if name == "org.bluez.Error.AuthenticationCanceled":
+        return AuthenticationCanceledError(msg or "")
+    if name == "org.bluez.Error.AuthenticationFailed":
+        return NotAuthorizedError("D-Bus operation", reason=msg or "authentication failed")
+    if name == "org.bluez.Error.AuthenticationRejected":
+        return AuthenticationRejectedError(msg or "")
+    if name == "org.bluez.Error.AuthenticationTimeout":
+        return AuthenticationTimeoutError(msg or "")
+    if name == "org.bluez.Error.ConnectionAttemptFailed":
+        return ConnectionError("D-Bus operation", msg or "connection attempt failed")
     if name == "org.freedesktop.DBus.Error.NoReply":
         return TimeoutError("D-Bus operation")
     if name == "org.freedesktop.DBus.Error.ServiceUnknown":
-        # Preserve payload; BlueZ/DBus often includes the missing service/bus name in msg.
         return ServiceNotFoundError("D-Bus operation", msg or exc.get_dbus_name())
     if name == "org.bluez.Error.InProgress":
         return OperationInProgressError(msg or "D-Bus operation")
     if name == "org.bluez.Error.Failed":
-        # Preserve BlueZ's message payload (e.g. "br-connection-unknown") so
-        # callers can diagnose controller/state-machine failures.
-        if "Not connected" in msg:
-            return ConnectionError("D-Bus operation", msg or str(exc))
-        if "ATT error" in msg:
+        msg_lower = msg.lower()
+        if "not connected" in msg_lower:
+            return ConnectionError("D-Bus operation", msg)
+        if "profile unavailable" in msg_lower:
+            return ProfileUnavailableError("D-Bus operation", msg)
+        if "page timeout" in msg_lower:
+            return PageTimeoutError("D-Bus operation", msg)
+        if "concurrent connection limit" in msg_lower:
+            return ConnectionLimitError("D-Bus operation", msg)
+        if "connection refused" in msg_lower or "-refused" in msg_lower:
+            return ConnectionRefusedError("D-Bus operation", msg)
+        if "att error" in msg_lower:
             return BLEEPError("D-Bus operation", error_code)
-        # Generic org.bluez.Error.Failed: include message text if present
         if msg:
             return BLEEPError(f"D-Bus operation: {name}: {msg}", error_code)
     if name == "org.freedesktop.DBus.Error.UnknownObject":
-        # Preserve payload; UnknownObject is not always a "device not found".
         if msg:
             return BLEEPError(f"D-Bus operation: {name}: {msg}", error_code)
         return BLEEPError(f"D-Bus operation: {name}", error_code)
@@ -274,6 +353,14 @@ __all__ = [
     "NotReadyError",
     "NotReady",
     "NotAuthorizedError",
+    "ProfileUnavailableError",
+    "AlreadyConnectedError",
+    "PageTimeoutError",
+    "ConnectionRefusedError",
+    "ConnectionLimitError",
+    "AuthenticationCanceledError",
+    "AuthenticationRejectedError",
+    "AuthenticationTimeoutError",
     "map_dbus_error",
     "handle_dbus_exception",
 ]

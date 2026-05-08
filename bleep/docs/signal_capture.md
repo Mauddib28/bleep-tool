@@ -23,6 +23,10 @@ Defined in `bleep/signals/capture_config.py`:
 - `PROPERTY_CHANGE` - D-Bus property changes
 - `READ` - Characteristic read operations
 - `WRITE` - Characteristic write operations
+- `DEVICE_CONNECT` - Device connection events (v2.8.0)
+- `DEVICE_DISCONNECT` - Device disconnection events (v2.8.0)
+- `PAIR_START` - Pairing initiated events (v2.8.0)
+- `PAIR_COMPLETE` - Pairing completed events (v2.8.0)
 - `ANY` - Matches any signal type
 
 ### 2. Signal Filters
@@ -126,8 +130,34 @@ If characteristic operations are not showing up in the timeline:
 1. Ensure the signal system is properly initialized
 2. Check if the operation is using direct D-Bus access (may need manual signal emission)
 3. Verify the database connection is working correctly
-4. Check if the device MAC address is correctly normalized (lowercase)
+4. Check if the device MAC address is correctly normalized (uppercase)
 5. Ensure the service and characteristic UUIDs are correctly formatted
+
+## User Callbacks (v2.8.0)
+
+The `BleepCallback` system allows users to create custom callbacks that are automatically loaded and registered with the signal router.
+
+### Architecture
+
+- **Base class**: `bleep/callbacks/base.py` — `BleepCallback` ABC with `name`, `trigger` (a `SignalType`), `execute(context)`, `on_load()`, `on_unload()`.
+- **Auto-loader**: `bleep/callbacks/__init__.py` — `load_callbacks(directory)` scans `~/.config/bleep/callbacks/` (default) for `.py` files containing `BleepCallback` subclasses. Each subclass is instantiated and registered with the signal router. If `trigger` is not `ANY`, only matching `signal_type` events are dispatched.
+- **Example callbacks**: `bleep/callbacks/examples/log_all_notifications.py` (logs all BLE notifications), `pair_event_logger.py` (logs `PAIR_START`/`PAIR_COMPLETE` events).
+
+### Creating a Callback
+
+Place a `.py` file in `~/.config/bleep/callbacks/`:
+
+```python
+from bleep.callbacks.base import BleepCallback
+from bleep.signals.capture_config import SignalType
+
+class MyCallback(BleepCallback):
+    name = "my_callback"
+    trigger = SignalType.NOTIFICATION  # or ANY for all events
+
+    def execute(self, context):
+        print(f"Got: {context}")
+```
 
 ## Future Enhancements
 

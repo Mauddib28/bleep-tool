@@ -129,7 +129,7 @@ class system_dbus__device_management_service:
                 adapter = self.get_adapter()
                 devices = adapter.get_devices()
                 for device in devices:
-                    if device["address"].lower() == device_address.lower():
+                    if device["address"].upper() == device_address.upper():
                         # Check device type if available
                         if "type" in device:
                             if device["type"].lower() == "br/edr":
@@ -171,7 +171,7 @@ class system_dbus__device_management_service:
     def disconnect_device(self, device_address):
         """Disconnect from a Bluetooth device."""
         try:
-            from bleep.dbuslayer.device import system_dbus__bluez_device__low_energy
+            from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy
 
             device = system_dbus__bluez_device__low_energy(
                 device_address, self.get_adapter().adapter_name
@@ -186,7 +186,7 @@ class system_dbus__device_management_service:
     def get_device_info(self, device_address):
         """Get detailed information about a device."""
         try:
-            from bleep.dbuslayer.device import system_dbus__bluez_device__low_energy
+            from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy
 
             device = system_dbus__bluez_device__low_energy(
                 device_address, self.get_adapter().adapter_name
@@ -206,7 +206,7 @@ class system_dbus__device_management_service:
     def enumerate_services(self, device_address):
         """Enumerate services for a connected device using existing enumeration logic."""
         try:
-            from bleep.ble_ops.connect import (
+            from bleep.ble_ops.le.connect import (
                 connect_and_enumerate__bluetooth__low_energy as _connect_enum,
             )
 

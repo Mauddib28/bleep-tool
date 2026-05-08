@@ -126,7 +126,7 @@ class PinBruteForcer:
     def run_pin_brute(
         self,
         mac: str,
-        pin_iterator: Iterator[str],
+        pin_iterator: Optional[Iterator[str]] = None,
         capabilities: str = "KeyboardDisplay",
         discover_duration: int = 10,
     ) -> BruteForceResult:
@@ -136,8 +136,9 @@ class PinBruteForcer:
         ----------
         mac : str
             Target device MAC address (e.g. ``D8:3A:DD:0B:69:B9``).
-        pin_iterator : Iterator[str]
-            Yields candidate PIN strings.
+        pin_iterator : Iterator[str] | None
+            Yields candidate PIN strings. Falls back to ``COMMON_PINS``
+            from ``bleep.bt_ref.constants`` when ``None``.
         capabilities : str
             Agent capability to register (must include RequestPinCode).
         discover_duration : int
@@ -147,23 +148,32 @@ class PinBruteForcer:
         -------
         BruteForceResult
         """
+        if pin_iterator is None:
+            from bleep.bt_ref.constants import COMMON_PINS
+            pin_iterator = iter(COMMON_PINS)
         return self._run(mac, pin_iterator, None, capabilities, discover_duration)
 
     def run_passkey_brute(
         self,
         mac: str,
-        passkey_iterator: Iterator[int],
+        passkey_iterator: Optional[Iterator[int]] = None,
         capabilities: str = "KeyboardDisplay",
         discover_duration: int = 10,
     ) -> BruteForceResult:
-        """Brute-force a passkey for an LE device.
+        """Attempt known passkeys against a device with a fixed SSP passkey.
+
+        SSP normally generates a random passkey per attempt, making
+        brute-force infeasible (1-in-1,000,000).  This method is only
+        useful for the rare case of devices that advertise a FIXED
+        passkey (some embedded / industrial hardware).
 
         Parameters
         ----------
         mac : str
             Target device MAC address.
-        passkey_iterator : Iterator[int]
-            Yields candidate passkey integers (0-999999).
+        passkey_iterator : Iterator[int] | None
+            Yields candidate passkey integers (0–999999). Falls back to
+            ``COMMON_PASSKEYS`` from ``bleep.bt_ref.constants`` when ``None``.
         capabilities : str
             Agent capability to register.
         discover_duration : int
@@ -173,6 +183,9 @@ class PinBruteForcer:
         -------
         BruteForceResult
         """
+        if passkey_iterator is None:
+            from bleep.bt_ref.constants import COMMON_PASSKEYS
+            passkey_iterator = iter(COMMON_PASSKEYS)
         return self._run(mac, None, passkey_iterator, capabilities, discover_duration)
 
     # ------------------------------------------------------------------
@@ -429,25 +442,15 @@ class PinBruteForcer:
     def _remove_stale_bond(
         self, mac: str, device_path: str, adapter, discover_duration: int
     ) -> None:
-        """Remove existing pairing if present."""
-        try:
-            props = dbus.Interface(
-                self._bus.get_object(BLUEZ_SERVICE_NAME, device_path),
-                DBUS_PROPERTIES,
-            )
-            if bool(props.Get(DEVICE_INTERFACE, "Paired")):
-                print_and_log(
-                    f"[*] BruteForce: removing stale bond for {mac}",
-                    LOG__DEBUG,
-                )
-                adapter_obj = dbus.Interface(
-                    self._bus.get_object(BLUEZ_SERVICE_NAME, self._adapter_path),
-                    "org.bluez.Adapter1",
-                )
-                adapter_obj.RemoveDevice(device_path)
-                time.sleep(0.3)
-        except dbus.exceptions.DBusException:
-            pass
+        """Remove existing pairing if present.
+
+        Delegates to the shared ``bleep.pairing.remove_stale_bond`` helper.
+        """
+        from bleep.pairing import remove_stale_bond
+        remove_stale_bond(
+            mac, device_path, adapter,
+            rediscover=False, bus=self._bus,
+        )
 
     def _handle_failure(
         self,

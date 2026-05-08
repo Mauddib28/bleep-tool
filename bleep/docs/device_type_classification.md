@@ -22,8 +22,7 @@ BLEEP uses an evidence-based classification system to determine whether a Blueto
 3. **Database Integration**:
    - `device_type_evidence` table for audit/debugging (NOT used for classification)
    - Signature caching for performance optimization
-   - Schema v6 migration support (device_type_evidence table)
-   - Schema v7 migration support (sdp_records table)
+   - Current schema: **v10** (see [observation_db_schema.md](observation_db_schema.md) for migration history)
 
 ## Device Types
 
@@ -140,6 +139,20 @@ BLEEP uses an evidence-based classification system to determine whether a Blueto
   - Source: D-Bus `AdvertisingData` property
   - Value: Advertising data dictionary
   - Collector: `LEAdvertisingDataCollector`
+
+#### HID Evidence (v2.8.0)
+
+- **`HID_CLASSIFICATION`** (STRONG):
+  - Source: Combined analysis of Appearance, Class of Device, HID Service UUID (0x1124), and `Input1.ReconnectMode` D-Bus property
+  - Value: `HIDInfo` dataclass with `is_hid`, `hid_type` (keyboard/mouse/gamepad/joystick/generic), `appearance_value`, `reconnect_mode`, and `evidence_sources`
+  - Function: `classify_hid(device_proxy)` in `bleep/analysis/device_type_classifier.py`
+  - CLI: `bleep hid-info <MAC>` or debug mode `chid`
+
+The `classify_hid()` function evaluates four evidence sources:
+1. **Appearance** (GAP 0x19): values 960–968 map to specific HID types (961=keyboard, 962=mouse, etc.)
+2. **Class of Device**: major class 0x05 (Peripheral)
+3. **HID Service UUID**: presence of `00001124-0000-1000-8000-00805f9b34fb`
+4. **Input1.ReconnectMode**: `device` or `host` confirms HID capability
 
 ## Mode-Aware Evidence Collection
 
@@ -558,9 +571,7 @@ The `sdp_records` table is automatically created during database initialization.
 
 ## References
 
-- **Implementation Plan**: `bleep/docs/DUAL_DEVICE_DETECTION_PLAN.md`
-- **Type Property Fix**: `bleep/docs/TYPE_PROPERTY_FIX_PLAN.md`
-- **Database Schema**: `bleep/docs/observation_db_schema.md`
+- **Database Schema**: [observation_db_schema.md](observation_db_schema.md) (device_type_evidence table, schema v6)
 - **Source Code**: `bleep/analysis/device_type_classifier.py`
-- **Changelog**: `bleep/docs/changelog.md` (v2.4.4)
+- **Changelog**: [changelog.md](changelog.md) (v2.4.4)
 

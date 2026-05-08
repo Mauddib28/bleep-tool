@@ -38,6 +38,7 @@ __all__ = [
     "TrustManager",
     "create_agent",
     "ensure_default_pairing_agent",
+    "attempt_downgrade_pair",
 ]
 
 # ---------------------------------------------------------------------------
@@ -188,6 +189,74 @@ def clear_default_pairing_agent() -> None:
         _DEFAULT_AGENT = None
 
 
+def attempt_downgrade_pair(
+    bus: dbus.SystemBus,
+    device_path: str,
+    *,
+    capabilities_order: Optional[List[str]] = None,
+    timeout: int = 15,
+) -> Dict[str, Any]:
+    """Cycle through agent capabilities to discover the weakest pairing mode.
+
+    For each capability, registers an agent, attempts ``Pair()``, records
+    the outcome (success / auth method / error), then unregisters.  Stops
+    on the first successful pairing.
+
+    Parameters
+    ----------
+    bus : dbus.SystemBus
+    device_path : str
+        Full D-Bus object path (``/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF``).
+    capabilities_order : list[str] | None
+        Override the default downgrade sequence.
+    timeout : int
+        Per-attempt pairing timeout.
+
+    Returns
+    -------
+    dict
+        ``{"success": bool, "capability": str, "auth_method": str|None,
+          "attempts": [{"capability": str, "result": str, "auth_method": str|None}]}``
+    """
+    from bleep.bt_ref.constants import AGENT_CAPABILITIES
+
+    order = capabilities_order or AGENT_CAPABILITIES
+
+    device_iface = dbus.Interface(
+        bus.get_object("org.bluez", device_path), DEVICE_INTERFACE
+    )
+
+    results: List[Dict[str, Any]] = []
+    for cap in order:
+        print_and_log(f"[*] Downgrade probe: trying capability '{cap}'", LOG__AGENT)
+        agent = SimpleAgent(bus)
+        try:
+            agent.register(capabilities=cap, default=True)
+        except Exception as exc:
+            results.append({"capability": cap, "result": f"register failed: {exc}", "auth_method": None})
+            continue
+
+        try:
+            device_iface.Pair(timeout=timeout)
+            auth = agent.get_last_auth_type()
+            results.append({"capability": cap, "result": "success", "auth_method": auth})
+            print_and_log(f"[+] Paired with capability '{cap}' (auth: {auth})", LOG__AGENT)
+            agent.unregister()
+            return {"success": True, "capability": cap, "auth_method": auth, "attempts": results}
+        except dbus.exceptions.DBusException as exc:
+            auth = agent.get_last_auth_type()
+            err = _format_dbus_error(exc)
+            results.append({"capability": cap, "result": err, "auth_method": auth})
+            print_and_log(f"[-] Pair failed with '{cap}': {err} (auth: {auth})", LOG__AGENT)
+        finally:
+            try:
+                agent.unregister()
+            except Exception:
+                pass
+
+    return {"success": False, "capability": None, "auth_method": None, "attempts": results}
+
+
 class BlueZAgent(dbus.service.Object):
     """Base class for implementing a Bluetooth agent.
     
@@ -218,6 +287,7 @@ class BlueZAgent(dbus.service.Object):
         # Agent method invocation tracking (for correlation with D-Bus monitoring)
         self._method_invocations: Dict[str, float] = {}  # method_name -> timestamp
         self._capabilities: str = "NoInputNoOutput"  # Will be set during registration
+        self.last_auth_method: Optional[str] = None  # Set by Request*/Display* handlers
         
         # CRITICAL: Log bus unique name for destination verification
         try:
@@ -591,6 +661,7 @@ class BlueZAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def AuthorizeService(self, device, uuid):
         """Authorize a service before the device can use it."""
+        self.last_auth_method = "AuthorizeService"
         print_and_log(
             f"[*] AuthorizeService METHOD CALLED by BlueZ: device_path={device}, uuid={uuid}, agent_path={self.agent_path}, registered={self._is_registered}",
             LOG__AGENT
@@ -613,13 +684,11 @@ class BlueZAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="s")
     def RequestPinCode(self, device):
         """Request PIN code for pairing."""
-        # CRITICAL: Log entry point immediately to verify method is invoked
         print_and_log(
             "[!!!] RequestPinCode METHOD ENTRY POINT REACHED - Agent method invoked by BlueZ",
             LOG__AGENT
         )
-        
-        # Track method invocation
+        self.last_auth_method = "RequestPinCode"
         self._track_method_invocation("RequestPinCode")
         
         # Validate capability supports this method
@@ -674,6 +743,7 @@ class BlueZAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="u")
     def RequestPasskey(self, device):
         """Request passkey for pairing."""
+        self.last_auth_method = "RequestPasskey"
         print_and_log(
             f"[*] RequestPasskey METHOD CALLED by BlueZ: device_path={device}, agent_path={self.agent_path}, registered={self._is_registered}",
             LOG__AGENT
@@ -692,6 +762,7 @@ class BlueZAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="ouq", out_signature="")
     def DisplayPasskey(self, device, passkey, entered):
         """Display passkey on agent."""
+        self.last_auth_method = "DisplayPasskey"
         print_and_log(
             f"[*] DisplayPasskey METHOD CALLED by BlueZ: device_path={device}, passkey={passkey:06d}, entered={entered}, agent_path={self.agent_path}, registered={self._is_registered}",
             LOG__AGENT
@@ -712,7 +783,8 @@ class BlueZAgent(dbus.service.Object):
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def DisplayPinCode(self, device, pincode):
-        """Display PIN code on agent."""
+        """Display PIN code on agent (legacy keyboard pairing, pre-SSP)."""
+        self.last_auth_method = "DisplayPinCode"
         print_and_log(
             f"[*] DisplayPinCode METHOD CALLED by BlueZ: device_path={device}, pincode={pincode}, agent_path={self.agent_path}, registered={self._is_registered}",
             LOG__AGENT
@@ -731,6 +803,7 @@ class BlueZAgent(dbus.service.Object):
     @dbus.service.method(AGENT_INTERFACE, in_signature="ou", out_signature="")
     def RequestConfirmation(self, device, passkey):
         """Request confirmation of passkey."""
+        self.last_auth_method = "RequestConfirmation"
         print_and_log(
             f"[*] RequestConfirmation METHOD CALLED by BlueZ: device_path={device}, passkey={passkey:06d}, agent_path={self.agent_path}, registered={self._is_registered}",
             LOG__AGENT
@@ -752,7 +825,8 @@ class BlueZAgent(dbus.service.Object):
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="")
     def RequestAuthorization(self, device):
-        """Request authorization for pairing."""
+        """Request authorization for pairing (Just Works or cable pairing)."""
+        self.last_auth_method = "RequestAuthorization"
         print_and_log(
             f"[*] RequestAuthorization METHOD CALLED by BlueZ: device_path={device}, agent_path={self.agent_path}, registered={self._is_registered}",
             LOG__AGENT
@@ -789,6 +863,20 @@ class BlueZAgent(dbus.service.Object):
             print_and_log(f"[-] Cancel notification error: {str(e)}", LOG__DEBUG)
             
         print_and_log("[+] Request canceled", LOG__DEBUG)
+
+    # ------------------------------------------------------------------
+    # Auth-type reporting (M3)
+    # ------------------------------------------------------------------
+
+    def get_last_auth_type(self) -> Optional[str]:
+        """Return the BlueZ agent method name last invoked for pairing.
+
+        Possible values: ``"RequestPinCode"``, ``"RequestPasskey"``,
+        ``"DisplayPasskey"``, ``"RequestConfirmation"``,
+        ``"AuthorizeService"``, or ``None`` if no pairing interaction
+        has occurred yet.
+        """
+        return self.last_auth_method
 
 
 class SimpleAgent(BlueZAgent):
@@ -1202,7 +1290,7 @@ class TrustManager:
                 name = props.Get(DEVICE_INTERFACE, "Name")
                 addr = props.Get(DEVICE_INTERFACE, "Address")
                 device_info = f"{name} ({addr})"
-            except:
+            except Exception:
                 device_info = device_path
                 
             status = "trusted" if trusted else "untrusted"

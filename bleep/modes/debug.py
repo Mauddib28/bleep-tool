@@ -17,22 +17,24 @@ The shell is organised into focused submodules:
 - ``debug_scan``      – Scan / enumeration commands
 - ``debug_aoi``       – AOI analysis and database commands
 - ``debug_multiread`` – Multi-read and brute-write commands
+- ``debug_media``     – Media/audio commands (mediaenum, mediactrl, audioplay, …)
 
-Usage:
-  python -m bleep -m debug [options]
+Usage (equivalent — both supported):
+  bleep debug [options] [device]
+  python -m bleep.modes.debug [options] [device]
 
 Options:
-  --device <mac>     MAC address of device to connect to
-  --no-connect       Start debug shell without connecting to a device
-  --monitor          Enable real-time property monitoring
-  --detailed         Show detailed information including decoded UUIDs
+  device                  MAC address of device to connect to (positional)
+  -n, --no-connect        Start debug shell without connecting to a device
+  -m, --monitor           Enable real-time property monitoring
+  -d, --detailed          Show detailed information including decoded UUIDs
 """
 
 import argparse
 import shlex
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
-from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
 
 try:
     import readline  # noqa: F401 – enables arrow-key editing in input()
@@ -71,16 +73,23 @@ from bleep.modes.debug_classic import (
     cmd_csdp, cmd_pbap,
 )
 from bleep.modes.debug_classic_data import (
-    cmd_copen, cmd_csend, cmd_crecv, cmd_craw,
-    cmd_copp, cmd_cmap, cmd_cftp, cmd_cpan, cmd_cspp, cmd_csync, cmd_cbip,
+    cmd_copen, cmd_csend, cmd_crecv, cmd_craw, cmd_crfcomm,
+    cmd_copp, cmd_cmapinfo, cmd_cmap, cmd_cftp, cmd_cpan, cmd_cspp, cmd_csync, cmd_cbip,
 )
+from bleep.modes.debug_classic_profiles import cmd_cprofiles, cmd_cprofile
+from bleep.modes.debug_hid import cmd_chid
+from bleep.modes.debug_classic_rfcomm import cmd_cbind
 from bleep.modes.debug_pairing import cmd_agent, cmd_pair
 from bleep.modes.debug_scan import (
-    cmd_scan, cmd_scann, cmd_scanp, cmd_scanb,
-    cmd_enum, cmd_enumn, cmd_enump, cmd_enumb,
+    cmd_scan, cmd_scann, cmd_scanp, cmd_scanb, cmd_dscan,
+    cmd_enum, cmd_enumn, cmd_enump, cmd_enumb, cmd_mines,
 )
 from bleep.modes.debug_aoi import cmd_aoi, cmd_dbsave, cmd_dbexport
 from bleep.modes.debug_multiread import cmd_multiread, cmd_multiread_all, cmd_brutewrite
+from bleep.modes.debug_media import (
+    cmd_mediaenum, cmd_mediactrl, cmd_mediaprops,
+    cmd_audiorecon, cmd_audioplay, cmd_audiorec, cmd_audiocfg,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -88,68 +97,126 @@ from bleep.modes.debug_multiread import cmd_multiread, cmd_multiread_all, cmd_br
 # ---------------------------------------------------------------------------
 
 def _cmd_help(args, state):
-    """Display available commands."""
-    print("\nAvailable commands:")
-    print("  help                       - Show this help")
-    print("  scan                       - Passive BLE scan (10 s)")
-    print("  scann                      - Naggy scan (DuplicateData off)")
-    print("  scanp <MAC>                - Pokey scan (spam active 1-s scans)")
-    print("  scanb                      - Brute scan (BR/EDR + LE)")
-    print("  cscan                      - Classic (BR/EDR) passive scan")
-    print("  connect <mac>              - Connect to a device")
-    print("  cconnect <mac>             - Connect to a Classic device & enumerate RFCOMM")
-    print("  disconnect                 - Disconnect from current device")
-    print("  cservices                  - List RFCOMM service→channel map for Classic device")
-    print("  ckeep [--first|--svc NAME|CHANNEL]|--close - Open/close keep-alive RFCOMM socket")
-    print("  copen [--first|--svc NAME|CHANNEL]|--close|--status - Open/close RFCOMM data socket")
-    print("  csend <hex:XX|str:XX|file:PATH|data>       - Send data over RFCOMM")
-    print("  crecv [--timeout N] [--size N] [--hex] [--save FILE] - Receive from RFCOMM")
-    print("  craw [channel|--svc NAME|--first] [--hex]  - Interactive RFCOMM send/recv session")
-    print("  copp send <file> | pull [dest.vcf]         - Object Push Profile (send/pull)")
-    print("  cmap folders|list|get|push|inbox|props|read|delete - Message Access Profile")
-    print("  cftp ls|cd|get|put|mkdir|rm|cp|mv           - File Transfer Profile (browse/transfer)")
-    print("  cpan connect|disconnect|status|server       - Personal Area Networking (PAN)")
-    print("  cspp register|unregister|status             - SPP serial port profile")
-    print("  csync get|put [--location int|sim1]         - IrMC Synchronization (phonebook)")
-    print("  cbip props|get|thumb <handle>               - Basic Imaging Profile [experimental]")
-    print("  agent status|register|unregister - Pairing agent visibility/control (debug)")
-    print("  pair <MAC> [--pin CODE] [--cap CAP] [--timeout SEC] - Pair with device (default: KeyboardDisplay)")
-    print("  csdp <mac> [--connectionless] [--l2ping-count N] [--l2ping-timeout N] - SDP discovery")
-    print("  pbap [--repos PB,ICH] [--format vcard21] [--auto-auth] [--watchdog 8] [--out /path/to/file.vcf] - Dump phonebook via PBAP")
-    print("  info                       - Show device information")
-    print("  interfaces                 - List available D-Bus interfaces")
-    print("  props [interface]          - List properties for an interface")
-    print("  methods <interface>        - List methods for an interface")
-    print("  signals <interface>        - List signals for an interface")
-    print("  call <interface> <method> [args...] - Call a method")
-    print("  monitor [start|stop]       - Monitor device properties")
-    print("  introspect [path]          - Introspect a D-Bus object")
-    print("  services                   - List GATT services")
-    print("  chars [service_uuid]       - List characteristics")
-    print("  char <char_uuid>           - Show detailed characteristic info")
-    print("  read <char_uuid|handle>    - Read characteristic value")
-    print("  write <char_uuid|handle> <value> - Write to characteristic")
-    print("  notify <char_uuid|handle> [on|off] - Subscribe/unsubscribe to notifications")
-    print("  detailed [on|off]          - Toggle detailed view mode with UUID decoding")
-    print("  enum <MAC>                - Passive enumeration (no writes)")
-    print("  enumn <MAC>               - Naggy enumeration (multi-read only)")
-    print("  enump <MAC> [--rounds N] [--verify]    - Pokey enumeration with 0/1 write probes")
-    print("  enumb <MAC> <CHAR_UUID> [--range a-b] [--patterns ...] [--payload-file FILE] [--force] [--verify] - Brute enumeration")
-    print("  aoi [--save] [MAC]        - Assets-of-Interest analysis and reporting")
-    print("\nAdvanced read/write commands:")
-    print("  multiread <char_uuid|handle> [rounds=N]   - Read a characteristic multiple times (e.g., rounds=1000)")
-    print("  multiread_all [rounds=3]                  - Read all readable characteristics multiple times")
-    print("  brutewrite <char_uuid|handle> <pattern> [--range start-end] [--verify]  - Brute force write values")
-    print("\nNavigation commands:")
-    print("  ls [path]                  - List objects at current or specified path")
-    print("  cd <path>                  - Change to specified D-Bus path")
-    print("  pwd                        - Show current D-Bus path")
-    print("  back                       - Go back to previous path")
-    print("\nDatabase commands:")
-    print("  dbsave [on|off]           - Toggle database saving")
-    print("  dbexport [--save]         - Export device data from database")
-    print("\nOther commands:")
-    print("  quit                       - Exit debug mode")
+    """Display available commands, grouped by purpose.
+
+    When ``state.detailed_view`` is *True* the full usage synopsis and
+    description is shown for every command.  When *False* a compact
+    listing is printed instead.
+    """
+    verbose = state.detailed_view
+
+    _GROUPS = [
+        ("Scanning", [
+            ("scan",     "scan",                                                           "Passive BLE scan (10 s)"),
+            ("scann",    "scann",                                                          "Naggy scan (DuplicateData off)"),
+            ("scanp",    "scanp <MAC>",                                                    "Pokey scan (spam active 1-s scans)"),
+            ("scanb",    "scanb",                                                          "Brute scan (BR/EDR + LE, sequential)"),
+            ("dscan",    "dscan [--timeout T]",                                            "Dual scan (LE + BR/EDR, single session)"),
+            ("cscan",    "cscan",                                                          "Classic (BR/EDR) passive scan"),
+        ]),
+        ("Connection", [
+            ("connect",    "connect <mac>",                                                "Connect to a device"),
+            ("cconnect",   "cconnect <mac>",                                               "Connect to a Classic device & enumerate RFCOMM"),
+            ("disconnect", "disconnect",                                                   "Disconnect from current device"),
+        ]),
+        ("Device Information", [
+            ("info",     "info",                                                           "Show device information"),
+            ("services", "services",                                                       "List GATT services"),
+            ("chars",    "chars [service_uuid]",                                           "List characteristics"),
+            ("char",     "char <char_uuid>",                                               "Show detailed characteristic info"),
+            ("cservices","cservices",                                                       "List RFCOMM service/channel map for Classic device"),
+            ("mines",    "mines",                                                          "Show landmine and permission maps from last enumeration"),
+            ("detailed", "detailed [on|off]",                                              "Toggle detailed view mode with UUID decoding"),
+        ]),
+        ("BLE Enumeration", [
+            ("enum",     "enum <MAC>",                                                     "Passive enumeration (no writes)"),
+            ("enumn",    "enumn <MAC>",                                                    "Naggy enumeration (multi-read only)"),
+            ("enump",    "enump <MAC> [--rounds N] [--verify]",                            "Pokey enumeration with 0/1 write probes"),
+            ("enumb",    "enumb <MAC> <CHAR_UUID> [--range a-b] [--patterns ...] [--payload-file FILE] [--force] [--verify]", "Brute enumeration"),
+        ]),
+        ("BLE Read/Write", [
+            ("read",     "read <char_uuid|handle>",                                        "Read characteristic value"),
+            ("write",    "write <char_uuid|handle> <value>",                               "Write to characteristic"),
+            ("notify",   "notify <char_uuid|handle> [on|off]",                             "Subscribe/unsubscribe to notifications"),
+        ]),
+        ("Advanced BLE Read/Write", [
+            ("multiread",     "multiread <char_uuid|handle> [rounds=N]",                   "Read a characteristic multiple times (e.g., rounds=1000)"),
+            ("multiread_all", "multiread_all [rounds=3]",                                  "Read all readable characteristics multiple times"),
+            ("brutewrite",    "brutewrite <char_uuid|handle> <pattern> [--range start-end] [--verify]", "Brute force write values"),
+        ]),
+        ("BR/EDR Classic Profiles", [
+            ("csdp",  "csdp <mac> [--connectionless] [--l2ping-count N] [--l2ping-timeout N]", "SDP discovery"),
+            ("pbap",  "pbap [--repos PB,ICH] [--format vcard21] [--auto-auth] [--watchdog 8] [--out /path/to/file.vcf]", "Dump phonebook via PBAP"),
+            ("ckeep", "ckeep [--first|--svc NAME|CHANNEL]|--close",                       "Open/close keep-alive RFCOMM socket"),
+            ("copen", "copen [--first|--svc NAME|CHANNEL]|--close|--status",               "Open/close RFCOMM data socket"),
+            ("csend", "csend <hex:XX|str:XX|file:PATH|data>",                              "Send data over RFCOMM"),
+            ("crecv", "crecv [--timeout N] [--size N] [--hex] [--save FILE]",              "Receive from RFCOMM"),
+            ("craw",  "craw [channel|--svc NAME|--first] [--hex]",                         "Interactive RFCOMM send/recv session"),
+            ("crfcomm","crfcomm [--probe] [--timeout N]",                                    "List RFCOMM channels, optionally probe endpoints"),
+            ("copp",  "copp send <file> | pull [dest] | exchange <local> [dest]",          "Object Push Profile"),
+            ("cmapinfo","cmapinfo",                                                        "MAP version, features & BlueZ compat info"),
+            ("cmap",  "cmap folders|list|get|push|inbox|props|read|delete",                "Message Access Profile"),
+            ("cftp",  "cftp ls|cd|get|put|mkdir|rm|cp|mv",                                 "File Transfer Profile (browse/transfer)"),
+            ("cpan",      "cpan connect|disconnect|status|server",                         "Personal Area Networking (PAN)"),
+            ("cprofiles", "cprofiles",                                                     "List Device1.UUIDs (advertised profiles)"),
+            ("cprofile",  "cprofile connect|disconnect <UUID>",                            "Connect/disconnect a specific profile"),
+            ("chid",      "chid",                                                          "Show HID classification for connected device"),
+            ("cspp",      "cspp register [--auth|--no-auth]|unregister|status",            "SPP serial port profile"),
+            ("csync", "csync get|put [--location int|sim1]",                               "IrMC Synchronization (phonebook)"),
+            ("cbip",  "cbip props|get|thumb <handle>",                                     "Basic Imaging Profile [experimental]"),
+            ("cbind", "cbind <ch> [--device N] | release [N] | list",                       "Persistent RFCOMM /dev/rfcommN binding"),
+        ]),
+        ("Pairing & Security", [
+            ("agent", "agent status|register|unregister",                                  "Pairing agent visibility/control (debug)"),
+            ("pair",  "pair <MAC> [--pin CODE] [--cap CAP] [--timeout SEC] [--probe]",     "Pair with device (--probe: discover auth method)"),
+        ]),
+        ("D-Bus Inspection", [
+            ("interfaces", "interfaces",                                                   "List available D-Bus interfaces"),
+            ("props",      "props [interface]",                                            "List properties for an interface"),
+            ("methods",    "methods <interface>",                                          "List methods for an interface"),
+            ("signals",    "signals <interface>",                                          "List signals for an interface"),
+            ("call",       "call <interface> <method> [args...]",                          "Call a method"),
+            ("monitor",    "monitor [start|stop]",                                        "Monitor device properties"),
+            ("introspect", "introspect [path]",                                           "Introspect a D-Bus object"),
+        ]),
+        ("Navigation", [
+            ("ls",   "ls [path]",                                                          "List objects at current or specified path"),
+            ("cd",   "cd <path>",                                                          "Change to specified D-Bus path"),
+            ("pwd",  "pwd",                                                                "Show current D-Bus path"),
+            ("back", "back",                                                               "Go back to previous path"),
+        ]),
+        ("Analysis & Database", [
+            ("aoi",      "aoi [--save] [MAC]",                                             "Assets-of-Interest analysis and reporting"),
+            ("dbsave",   "dbsave [on|off]",                                                "Toggle database saving"),
+            ("dbexport", "dbexport [--save]",                                              "Export device data from database"),
+        ]),
+        ("Media & Audio", [
+            ("mediaenum",  "mediaenum",                                                    "List media D-Bus objects for connected device"),
+            ("mediactrl",  "mediactrl <play|pause|stop|next|prev|volume|info|press> [val]","AVRCP media player control"),
+            ("mediaprops", "mediaprops",                                                   "Show MediaControl/Player/Transport properties"),
+            ("audiorecon", "audiorecon [--mac MAC] [--file F] [--no-play] [--no-record]",  "Audio reconnaissance (backend, cards, play/rec)"),
+            ("audioplay",  "audioplay <file> [--system] [--volume N] [--direct]",          "Play audio file to connected BT device"),
+            ("audiorec",   "audiorec <output> [--system] [--duration N] [--direct]",       "Record audio from connected BT device"),
+            ("audiocfg",   "audiocfg",                                                     "Show host audio backend and BT stack status"),
+        ]),
+        ("Session", [
+            ("help", "help",                                                               "Show this help"),
+            ("quit", "quit",                                                               "Exit debug mode"),
+        ]),
+    ]
+
+    if verbose:
+        print("\nAvailable commands (detailed):")
+        for group_name, commands in _GROUPS:
+            print(f"\n{group_name}:")
+            for _cmd_name, usage, desc in commands:
+                print(f"  {usage:<60s} - {desc}")
+    else:
+        print("\nAvailable commands (use 'detailed on' then 'help' for full usage):")
+        for group_name, commands in _GROUPS:
+            names = ", ".join(c[0] for c in commands)
+            print(f"\n{group_name}:")
+            print(f"  {names}")
     print()
 
 
@@ -170,6 +237,7 @@ def _build_dispatch_table(state: DebugState):
         "scann":         _wrap(cmd_scann),
         "scanp":         _wrap(cmd_scanp),
         "scanb":         _wrap(cmd_scanb),
+        "dscan":         _wrap(cmd_dscan),
         "cscan":         _wrap(cmd_cscan),
         "connect":       _wrap(cmd_connect),
         "cconnect":      _wrap(cmd_cconnect),
@@ -180,13 +248,19 @@ def _build_dispatch_table(state: DebugState):
         "csend":         _wrap(cmd_csend),
         "crecv":         _wrap(cmd_crecv),
         "craw":          _wrap(cmd_craw),
+        "crfcomm":       _wrap(cmd_crfcomm),
         "copp":          _wrap(cmd_copp),
+        "cmapinfo":      _wrap(cmd_cmapinfo),
         "cmap":          _wrap(cmd_cmap),
         "cftp":          _wrap(cmd_cftp),
         "cpan":          _wrap(cmd_cpan),
+        "cprofiles":     _wrap(cmd_cprofiles),
+        "cprofile":      _wrap(cmd_cprofile),
+        "chid":          _wrap(cmd_chid),
         "cspp":          _wrap(cmd_cspp),
         "csync":         _wrap(cmd_csync),
         "cbip":          _wrap(cmd_cbip),
+        "cbind":         _wrap(cmd_cbind),
         "agent":         _wrap(cmd_agent),
         "pair":          _wrap(cmd_pair),
         "csdp":          _wrap(cmd_csdp),
@@ -210,6 +284,7 @@ def _build_dispatch_table(state: DebugState):
         "enumn":         _wrap(cmd_enumn),
         "enump":         _wrap(cmd_enump),
         "enumb":         _wrap(cmd_enumb),
+        "mines":         _wrap(cmd_mines),
         "aoi":           _wrap(cmd_aoi),
         "dbsave":        _wrap(cmd_dbsave),
         "dbexport":      _wrap(cmd_dbexport),
@@ -220,6 +295,13 @@ def _build_dispatch_table(state: DebugState):
         "cd":            _wrap(cmd_cd),
         "pwd":           _wrap(cmd_pwd),
         "back":          _wrap(cmd_back),
+        "mediaenum":     _wrap(cmd_mediaenum),
+        "mediactrl":     _wrap(cmd_mediactrl),
+        "mediaprops":    _wrap(cmd_mediaprops),
+        "audiorecon":    _wrap(cmd_audiorecon),
+        "audioplay":     _wrap(cmd_audioplay),
+        "audiorec":      _wrap(cmd_audiorec),
+        "audiocfg":      _wrap(cmd_audiocfg),
         "quit":          lambda _: None,
         "exit":          lambda _: None,
     }
@@ -275,6 +357,14 @@ def debug_shell(state: DebugState) -> None:
                     state.current_device.disconnect()
                 except Exception:
                     pass
+            if state.rfcomm_bindings:
+                from bleep.ble_ops.classic.rfcomm import release_rfcomm_channel
+                for dev_id in list(state.rfcomm_bindings):
+                    try:
+                        release_rfcomm_channel(dev_id)
+                    except Exception:
+                        pass
+                state.rfcomm_bindings.clear()
             stop_glib_mainloop(state)
             break
 
@@ -313,11 +403,17 @@ def main(args=None) -> int:
     state = DebugState()
     state.detailed_view = parsed_args.detailed
 
+    # Adapter guard — bail early if no BT hardware
+    from bleep.core.preflight import require_adapter
+    if not require_adapter():
+        return 1
+
     # Wire up the database module
     state.db_available = _DB_AVAILABLE
     state.obs = _obs_module
 
     if parsed_args.device and not parsed_args.no_connect:
+        parsed_args.device = parsed_args.device.upper()
         try:
             print_and_log(f"[*] Connecting to {parsed_args.device}...", LOG__GENERAL)
             dev, mapping, _, _ = _connect_enum(parsed_args.device)

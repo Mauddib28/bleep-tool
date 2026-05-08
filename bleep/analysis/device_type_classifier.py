@@ -55,6 +55,9 @@ class EvidenceType(Enum):
     LE_SERVICE_UUIDS = "le_service_uuids"
     LE_ADVERTISING_DATA = "le_advertising_data"
 
+    # HID Evidence
+    HID_CLASSIFICATION = "hid_classification"
+
 
 class EvidenceWeight(Enum):
     """Weight/confidence level of evidence."""
@@ -89,6 +92,7 @@ class ClassificationResult:
     evidence_summary: Dict[str, List[str]]  # Evidence by type
     reasoning: str  # Human-readable explanation
     cached: bool = False  # Whether this was a cached result
+    evidence_source: str = "measured"  # "heuristic" | "measured_sdp" | "measured_gatt" | "cached"
 
 
 # ============================================================================
@@ -277,7 +281,7 @@ class ClassicSDPRecordsCollector(EvidenceCollector):
         if sdp_records is None:
             # Try to get SDP records using existing function
             try:
-                from bleep.ble_ops.classic_sdp import discover_services_sdp_connectionless
+                from bleep.ble_ops.classic.sdp import discover_services_sdp_connectionless
                 sdp_records = discover_services_sdp_connectionless(mac)
             except Exception as e:
                 print_and_log(
@@ -327,7 +331,7 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
         bool
             True if UUID is Service Discovery Server (0x1000)
         """
-        from bleep.ble_ops.uuid_utils import identify_uuid
+        from bleep.ble_ops.common.uuid_utils import identify_uuid
         from bleep.bt_ref.constants import SERVICE_DISCOVERY_SERVER_UUID_16
         
         # Service Discovery Server 16-bit UUID is 0x1000
@@ -371,7 +375,7 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
     ) -> None:
         """Collect Classic service UUIDs from UUIDs property using existing BLEEP constants."""
         from bleep.bt_ref import uuids as bt_uuids
-        from bleep.ble_ops.uuid_utils import identify_uuid
+        from bleep.ble_ops.common.uuid_utils import identify_uuid
         
         uuids_list = context.get("uuids", [])
         if not uuids_list:
@@ -595,7 +599,7 @@ class LEServiceUUIDsCollector(EvidenceCollector):
     ) -> None:
         """Collect GATT service UUIDs from UUIDs property using existing BLEEP constants."""
         from bleep.bt_ref import uuids as bt_uuids
-        from bleep.ble_ops.uuid_utils import identify_uuid
+        from bleep.ble_ops.common.uuid_utils import identify_uuid
         
         uuids_list = context.get("uuids", [])
         if not uuids_list:
@@ -709,6 +713,81 @@ class LEAdvertisingDataCollector(EvidenceCollector):
             )
 
 
+# Known beacon / service-data UUIDs → heuristic labels
+_BEACON_SERVICE_DATA_UUIDS = {
+    "0000fcf1-0000-1000-8000-00805f9b34fb": "find_my_beacon",
+    "0000fe0f-0000-1000-8000-00805f9b34fb": "exposure_notification_v1",
+    "0000fd6f-0000-1000-8000-00805f9b34fb": "exposure_notification_v2",
+    "0000fe05-0000-1000-8000-00805f9b34fb": "microsoft_cdp",
+    "a82efa21-ae5c-3dde-9bbc-f16da7b16c5a": "nearby_sharing",
+}
+
+# Common vendor UART service UUIDs (LE peripheral UART tunnels)
+_VENDOR_UART_UUIDS = {
+    "0000ffe0-0000-1000-8000-00805f9b34fb",
+    "0000ffe1-0000-1000-8000-00805f9b34fb",
+    "0000fff0-0000-1000-8000-00805f9b34fb",
+    "0000fff1-0000-1000-8000-00805f9b34fb",
+    "6e400001-b5a3-f393-e0a9-e50e24dcca9e",  # Nordic UART
+}
+
+
+class LEServiceDataCollector(EvidenceCollector):
+    """Collects evidence from ServiceData for beacons, CDP, and UART heuristics."""
+
+    @property
+    def name(self) -> str:
+        return "le_service_data"
+
+    @property
+    def evidence_types(self) -> List[EvidenceType]:
+        return [EvidenceType.LE_ADVERTISING_DATA]
+
+    @property
+    def supported_modes(self) -> List[str]:
+        return ["passive", "naggy"]
+
+    def collect(self, mac: str, context: Dict[str, Any], evidence: EvidenceSet) -> None:
+        service_data = context.get("service_data") or {}
+        uuids = [str(u).lower() for u in context.get("uuids", [])]
+
+        # Beacon / known service-data signatures
+        for sd_uuid_raw in service_data:
+            sd_uuid = str(sd_uuid_raw).lower()
+            for known_uuid, label in _BEACON_SERVICE_DATA_UUIDS.items():
+                if sd_uuid == known_uuid or sd_uuid.startswith(known_uuid[:8]):
+                    evidence.add(
+                        EvidenceType.LE_ADVERTISING_DATA,
+                        EvidenceWeight.STRONG,
+                        "service_data_heuristic",
+                        label,
+                        {"uuid": sd_uuid, "evidence_source": "heuristic"},
+                    )
+
+        # Microsoft CDP in advertised UUIDs
+        cdp_uuid = "0000fe05-0000-1000-8000-00805f9b34fb"
+        if cdp_uuid in uuids:
+            evidence.add(
+                EvidenceType.LE_ADVERTISING_DATA,
+                EvidenceWeight.STRONG,
+                "uuid_heuristic",
+                "microsoft_cdp",
+                {"uuid": cdp_uuid, "evidence_source": "heuristic"},
+            )
+
+        # Vendor UART heuristics — these UUIDs are LE-only peripheral services
+        for u in uuids:
+            if u in _VENDOR_UART_UUIDS:
+                evidence.add(
+                    EvidenceType.LE_ADVERTISING_DATA,
+                    EvidenceWeight.STRONG,
+                    "uuid_heuristic",
+                    "le_vendor_uart",
+                    {"uuid": u, "evidence_source": "heuristic"},
+                )
+                break  # one hit is enough
+
+
 # ============================================================================
 # Main Classifier
 # ============================================================================
@@ -730,6 +809,7 @@ class DeviceTypeClassifier:
             LEGATTServicesCollector(),
             LEServiceUUIDsCollector(),
             LEAdvertisingDataCollector(),
+            LEServiceDataCollector(),
         ]
     
     def register_collector(self, collector: EvidenceCollector) -> None:
@@ -808,7 +888,6 @@ class DeviceTypeClassifier:
     def _get_collectors_for_mode(self, scan_mode: str) -> List[EvidenceCollector]:
         """Return collectors appropriate for the scan mode."""
         if scan_mode == "passive":
-            # Only use collectors that work with advertising data
             return [
                 c for c in self._collectors
                 if c.name in [
@@ -816,7 +895,8 @@ class DeviceTypeClassifier:
                     "classic_service_uuids",
                     "le_address_type",
                     "le_service_uuids",
-                    "le_advertising_data"
+                    "le_advertising_data",
+                    "le_service_data",
                 ]
             ]
         elif scan_mode == "naggy":
@@ -834,41 +914,52 @@ class DeviceTypeClassifier:
     
     def classify(self, evidence: EvidenceSet) -> ClassificationResult:
         """Classify device type based on collected evidence."""
-        # Check for dual-mode (strict requirement)
+        src = self._determine_evidence_source(evidence)
+
         if self._classify_dual(evidence):
             return ClassificationResult(
                 device_type=constants.BT_DEVICE_TYPE_DUAL,
                 confidence=self._calculate_confidence(evidence, "dual"),
                 evidence_summary=evidence.summarize(),
-                reasoning=self._generate_reasoning(evidence, "dual")
+                reasoning=self._generate_reasoning(evidence, "dual"),
+                evidence_source=src,
             )
-        
-        # Check for Classic
+
         if self._classify_classic(evidence):
             return ClassificationResult(
                 device_type=constants.BT_DEVICE_TYPE_CLASSIC,
                 confidence=self._calculate_confidence(evidence, "classic"),
                 evidence_summary=evidence.summarize(),
-                reasoning=self._generate_reasoning(evidence, "classic")
+                reasoning=self._generate_reasoning(evidence, "classic"),
+                evidence_source=src,
             )
-        
-        # Check for LE
+
         if self._classify_le(evidence):
             return ClassificationResult(
                 device_type=constants.BT_DEVICE_TYPE_LE,
                 confidence=self._calculate_confidence(evidence, "le"),
                 evidence_summary=evidence.summarize(),
-                reasoning=self._generate_reasoning(evidence, "le")
+                reasoning=self._generate_reasoning(evidence, "le"),
+                evidence_source=src,
             )
-        
-        # Default to unknown
+
         return ClassificationResult(
             device_type=constants.BT_DEVICE_TYPE_UNKNOWN,
             confidence=0.0,
             evidence_summary=evidence.summarize(),
-            reasoning="Not enough evidence to determine device type"
+            reasoning="Not enough evidence to determine device type",
+            evidence_source="heuristic",
         )
     
+    @staticmethod
+    def _determine_evidence_source(evidence: EvidenceSet) -> str:
+        """Infer the primary evidence source label for the classification."""
+        if evidence.has(EvidenceType.CLASSIC_SDP_RECORDS, weight=EvidenceWeight.CONCLUSIVE):
+            return "measured_sdp"
+        if evidence.has(EvidenceType.LE_GATT_SERVICES, weight=EvidenceWeight.STRONG):
+            return "measured_gatt"
+        return "heuristic"
+
     def _classify_dual(self, evidence: EvidenceSet) -> bool:
         """
         Strict dual-detection: Requires CONCLUSIVE evidence from BOTH protocols.
@@ -902,8 +993,11 @@ class DeviceTypeClassifier:
         )
         
         le_strong = (
-            evidence.has(EvidenceType.LE_GATT_SERVICES, weight=EvidenceWeight.STRONG) and
-            evidence.has(EvidenceType.LE_SERVICE_UUIDS, weight=EvidenceWeight.STRONG)
+            evidence.has(EvidenceType.LE_ADVERTISING_DATA, weight=EvidenceWeight.STRONG) or
+            (
+                evidence.has(EvidenceType.LE_GATT_SERVICES, weight=EvidenceWeight.STRONG) and
+                evidence.has(EvidenceType.LE_SERVICE_UUIDS, weight=EvidenceWeight.STRONG)
+            )
         )
         
         has_classic = classic_conclusive or classic_strong
@@ -921,10 +1015,15 @@ class DeviceTypeClassifier:
         )
     
     def _classify_le(self, evidence: EvidenceSet) -> bool:
-        """Classify as LE if conclusive or strong LE evidence exists."""
+        """Classify as LE if conclusive or strong LE evidence exists.
+
+        Includes advertising/service-data heuristics so scan-only devices
+        (no GATT connection) can still be classified as LE.
+        """
         return (
             evidence.has(EvidenceType.LE_ADDRESS_TYPE_RANDOM, weight=EvidenceWeight.CONCLUSIVE) or
             evidence.has(EvidenceType.LE_GATT_SERVICES, weight=EvidenceWeight.STRONG) or
+            evidence.has(EvidenceType.LE_ADVERTISING_DATA, weight=EvidenceWeight.STRONG) or
             (
                 evidence.has(EvidenceType.LE_SERVICE_UUIDS, weight=EvidenceWeight.STRONG) and
                 evidence.has(EvidenceType.LE_GATT_SERVICES, weight=EvidenceWeight.STRONG)
@@ -975,6 +1074,8 @@ class DeviceTypeClassifier:
             reasons.append("GATT services resolved")
         if evidence.has(EvidenceType.LE_SERVICE_UUIDS, weight=EvidenceWeight.STRONG):
             reasons.append("GATT service UUIDs detected")
+        if evidence.has(EvidenceType.LE_ADVERTISING_DATA, weight=EvidenceWeight.STRONG):
+            reasons.append("LE advertising/service-data heuristic matched")
         
         if reasons:
             return f"Classified as {device_type} based on: {', '.join(reasons)}"
@@ -1035,10 +1136,11 @@ class DeviceTypeClassifier:
                 similarity = self._signature_similarity(current_sig, stored_sig)
                 return ClassificationResult(
                     device_type=stored_type,
-                    confidence=0.9,  # High confidence for cached match
+                    confidence=0.9,
                     evidence_summary={},
                     reasoning=f"Cached classification (signature match: {similarity:.2f})",
-                    cached=True
+                    cached=True,
+                    evidence_source="cached",
                 )
             
             # Signatures don't match - need full classification
@@ -1084,7 +1186,7 @@ class DeviceTypeClassifier:
     def _has_classic_uuids(self, uuids: List[str]) -> bool:
         """Check if UUIDs list contains Classic service patterns using existing BLEEP constants."""
         from bleep.bt_ref import uuids as bt_uuids
-        from bleep.ble_ops.uuid_utils import identify_uuid
+        from bleep.ble_ops.common.uuid_utils import identify_uuid
         
         classic_profile_uuids = getattr(bt_uuids, 'SPEC_UUID_NAMES__SERV_CLASS', {})
         if not classic_profile_uuids:
@@ -1123,7 +1225,7 @@ class DeviceTypeClassifier:
     def _has_le_uuids(self, uuids: List[str]) -> bool:
         """Check if UUIDs list contains GATT service patterns using existing BLEEP constants."""
         from bleep.bt_ref import uuids as bt_uuids
-        from bleep.ble_ops.uuid_utils import identify_uuid
+        from bleep.ble_ops.common.uuid_utils import identify_uuid
         
         gatt_service_uuids = getattr(bt_uuids, 'SPEC_UUID_NAMES__SERV', {})
         if not gatt_service_uuids:
@@ -1248,6 +1350,81 @@ class DeviceTypeClassifier:
 # Module Exports
 # ============================================================================
 
+@dataclass
+class HIDInfo:
+    """Human Interface Device classification result."""
+    hid_type: str  # "keyboard", "mouse", "joystick", "gamepad", "generic", etc.
+    reconnect_mode: Optional[str]  # "none", "host", "device", "any"
+    subclass_label: str  # Human-readable label from appearance or CoD
+
+_HID_APPEARANCE_TYPES = {
+    960: ("generic", "Human Interface Device"),
+    961: ("keyboard", "HID: Keyboard"),
+    962: ("mouse", "HID: Mouse"),
+    963: ("joystick", "HID: Joystick"),
+    964: ("gamepad", "HID: Gamepad"),
+    965: ("digitizer", "HID: Digitizer Tablet"),
+    966: ("card_reader", "HID: Card Reader"),
+    967: ("digital_pen", "HID: Digital Pen"),
+    968: ("barcode_scanner", "HID: Barcode Scanner"),
+}
+
+_HID_SERVICE_UUID = "1124"
+_COD_PERIPHERAL_MAJOR = 0x05
+
+
+def classify_hid(context: Dict[str, Any]) -> Optional[HIDInfo]:
+    """Classify a device as a HID based on available evidence.
+
+    Combines appearance value (960+ range), Class of Device peripheral
+    major class (0x05), Input1.ReconnectMode, and HID service UUID
+    ``0x1124`` to produce a typed HID classification.
+
+    Returns ``None`` when the device is not identifiable as a HID.
+    """
+    hid_type: Optional[str] = None
+    subclass_label = ""
+    reconnect_mode: Optional[str] = None
+
+    appearance = context.get("appearance")
+    if isinstance(appearance, int) and appearance in _HID_APPEARANCE_TYPES:
+        hid_type, subclass_label = _HID_APPEARANCE_TYPES[appearance]
+
+    device_class = context.get("device_class")
+    if isinstance(device_class, int):
+        major = (device_class >> 8) & 0x1F
+        if major == _COD_PERIPHERAL_MAJOR:
+            if hid_type is None:
+                hid_type = "generic"
+                subclass_label = "Peripheral (CoD 0x05)"
+
+    uuids = context.get("uuids") or []
+    for u in uuids:
+        short = str(u).replace("-", "").lower()
+        if short.startswith(_HID_SERVICE_UUID.lower()) or short == _HID_SERVICE_UUID.lower():
+            if hid_type is None:
+                hid_type = "generic"
+                subclass_label = "HID Service (UUID 0x1124)"
+            break
+
+    input1 = context.get("_Input1") or context.get("input1") or {}
+    reconnect_mode = input1.get("ReconnectMode")
+    if reconnect_mode is not None:
+        reconnect_mode = str(reconnect_mode).lower()
+        if hid_type is None:
+            hid_type = "generic"
+            subclass_label = "Input1 device"
+
+    if hid_type is None:
+        return None
+
+    return HIDInfo(
+        hid_type=hid_type,
+        reconnect_mode=reconnect_mode,
+        subclass_label=subclass_label,
+    )
+
+
 __all__ = [
     'DeviceTypeClassifier',
     'EvidenceType',
@@ -1255,5 +1432,7 @@ __all__ = [
     'EvidenceSet',
     'ClassificationResult',
     'EvidenceCollector',
+    'HIDInfo',
+    'classify_hid',
 ]
 

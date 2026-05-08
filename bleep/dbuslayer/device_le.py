@@ -38,14 +38,23 @@ from bleep.dbuslayer.characteristic import Characteristic
 from bleep.dbuslayer.descriptor import Descriptor
 from bleep.dbuslayer.signals import system_dbus__bluez_signals as _SignalsRegistry
 from bleep.dbuslayer.media import MediaControl, MediaEndpoint, MediaTransport, MediaPlayer, find_media_devices
-from bleep.ble_ops.uuid_utils import identify_uuid
+from bleep.ble_ops.common.uuid_utils import identify_uuid
 
 __all__ = [
     "system_dbus__bluez_device__low_energy",
 ]
 
-# Create a singleton signals manager
-_signals_manager = _SignalsRegistry()
+# Lazy singleton – defer D-Bus SystemBus() call until first real use.
+_signals_manager = None
+
+
+def _get_signals_manager():
+    global _signals_manager
+    if _signals_manager is None:
+        import bleep
+        bleep._ensure_bluez_signals()
+        _signals_manager = _SignalsRegistry()
+    return _signals_manager
 
 
 class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy name
@@ -56,7 +65,7 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
     """
 
     def __init__(self, mac_address: str, adapter_name: str = ADAPTER_NAME):
-        self.mac_address = mac_address.lower()
+        self.mac_address = mac_address.upper()
         self.adapter_name = adapter_name
 
         self._bus = dbus.SystemBus()
@@ -115,8 +124,8 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         self._dbus_health_issues = False  # Flag for D-Bus health problems
         self._dbus_error_count = 0  # Counter for consecutive D-Bus errors
 
-        # Register with global signals manager
-        _signals_manager.register_device(self)
+        # Register with global signals manager (lazy init)
+        _get_signals_manager().register_device(self)
 
         # ------------------------------------------------------------------
         # Legacy-compat: expose *device_address* attribute used heavily in old
@@ -219,10 +228,26 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             each *Connect()* call.  Some BLE stacks need >5 s when bonding.
         """
         # PRE-CONNECTION CHECKS
+        # 0. Sync internal state with D-Bus reality for fresh instances.
+        #    A newly constructed _LEDevice always starts with _connection_state
+        #    "disconnected" even if the device is already connected at the BlueZ
+        #    level (e.g. streaming audio).  Without this sync the retry loop
+        #    would unconditionally call Disconnect() first, tearing down any
+        #    active ACL link and killing ongoing A2DP streams.
         # 1. Check connection state before attempting connection
         with self._connection_state_lock:
             current_state = self._connection_state
-        
+
+        if current_state == "disconnected":
+            try:
+                if self.is_connected():
+                    with self._connection_state_lock:
+                        self._connection_state = "connected"
+                        self._last_connection_check = time.time()
+                    current_state = "connected"
+            except Exception:
+                pass
+
         # If already connected, verify with D-Bus and return early
         if current_state == "connected":
             try:
@@ -267,8 +292,8 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                             LOG__GENERAL
                         )
                         return True
-                except Exception:
-                    pass
+                except Exception as _e:
+                    print_and_log(f"[DEBUG] Connection state check failed: {_e}", LOG__DEBUG)
 
         # 3. Check D-Bus health
         dbus_healthy = self._check_dbus_health()
@@ -286,8 +311,8 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
 
         # 4. Check if any other device is connected (optional warning)
         try:
-            if _signals_manager.has_any_connected_device():
-                connected_devs = _signals_manager.get_connected_devices()
+            if _get_signals_manager().has_any_connected_device():
+                connected_devs = _get_signals_manager().get_connected_devices()
                 other_connected = [d for d in connected_devs 
                                   if d.mac_address != self.mac_address]
                 if other_connected:
@@ -295,8 +320,8 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                         f"[*] Note: {len(other_connected)} other device(s) currently connected",
                         LOG__DEBUG
                     )
-        except Exception:
-            pass  # Non-critical check
+        except Exception as _e:
+            print_and_log(f"[DEBUG] Connected-device check skipped: {_e}", LOG__DEBUG)
 
         # Set connection state to "connecting"
         with self._connection_state_lock:
@@ -373,8 +398,8 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                                 LOG__GENERAL
                             )
                             return True
-                    except Exception:
-                        pass  # Fall through to normal error handling
+                    except Exception as _e:
+                        print_and_log(f"[DEBUG] AlreadyConnected re-check failed: {_e}", LOG__DEBUG)
 
                 error_name = e.get_dbus_name() or "unknown"
                 error_msg = e.get_dbus_message() or ""
@@ -916,6 +941,8 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                 "name": None,
                 "start_handle": handle_int_to_hex(service.handle) if getattr(service, "handle", None) is not None else None,
                 "end_handle": None,
+                "Primary": getattr(service, "primary", True),
+                "Includes": getattr(service, "includes", []),
                 "chars": {},
             }
 
@@ -946,134 +973,60 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         self.ble_device__mapping = svc_map
         self.ble_device__handle_uuid_map = handle_map
 
-        # Perform deep enumeration if requested
-        if deep:
-            self._deep_enumerate_gatt()
-            
-        # Check device type if not skipped
+        self._enumerate_gatt_values(deep=deep)
+
         if not skip_device_type_check:
             self.check_device_type(skip_device_type_check=True)
             
         return self._services
 
     # ------------------------------------------------------------------
-    # Phase-5: full characteristic/descriptor probing -------------------
+    # Phase-5: characteristic/descriptor value probing ------------------
     # ------------------------------------------------------------------
-    def _deep_enumerate_gatt(self) -> None:
-        """Run the exhaustive service→characteristic→descriptor probe.
 
-        Updated for gatt_parity_9:
-        • All read/descriptor errors are first aggregated per-UUID and left *in_review*.
-        • After enumeration finishes, aggregated error codes are analysed **once** to
-          decide whether the UUID belongs to the *permission* or *landmine* maps so
-          duplicates between the two are avoided.
-        • Multiple distinct error codes for the same UUID are supported.
-        """
+    @staticmethod
+    def _classify_read_errors(err_list: list[int], *, obj_type: str) -> tuple[str | None, str | None]:
+        """Return (permission_category, landmine_category) for *err_list*."""
         from bleep.bt_ref import constants as _C
-        from bleep.ble_ops.conversion import convert__hex_to_ascii
-        
-        # ------------------------------------------------------------------
-        # Step-0  Reset state ------------------------------------------------
-        # ------------------------------------------------------------------
-        self.ble_device__mapping = {}
-        self.ble_device__mine_mapping = {"in_review": {"uncategorized": []}}
-        self.ble_device__permission_mapping = {"in_review": {"uncategorized": []}}
 
-        # Keep a temporary aggregation of error codes per UUID so we can decide
-        # on the *final* classification after the full walk completes.
-        agg_errors: dict[str, list[int]] = {}
+        perm_cat: str | None = None
+        mine_cat: str | None = None
 
-        # ------------------------------------------------------------------
-        # Step-1  Walk services → characteristics → descriptors -------------
-        # ------------------------------------------------------------------
-        for svc in self._services:
-            svc_entry: dict[str, Any] = {"Characteristics": {}}
-            self.ble_device__mapping[svc.uuid] = svc_entry
+        if _C.RESULT_ERR_READ_NOT_PERMITTED in err_list:
+            perm_cat = "read_not_permitted"
+        elif _C.RESULT_ERR_NOT_AUTHORIZED in err_list:
+            perm_cat = "requires_authentication"
+        elif _C.RESULT_ERR_NOT_SUPPORTED in err_list:
+            perm_cat = "not_supported"
+        elif _C.RESULT_ERR_WRITE_NOT_PERMITTED in err_list:
+            perm_cat = "write_not_permitted"
+        elif _C.RESULT_ERR_NOTIFY_NOT_PERMITTED in err_list:
+            perm_cat = "notify_not_permitted"
+        elif _C.RESULT_ERR_INDICATE_NOT_PERMITTED in err_list:
+            perm_cat = "indicate_not_permitted"
+        elif _C.RESULT_ERR_NOT_PERMITTED in err_list:
+            perm_cat = "notify_not_permitted" if obj_type == "descriptor" else "write_not_permitted"
 
-            for char in svc.get_characteristics():
-                char_map: dict[str, Any] = {
-                    "Handle": handle_int_to_hex(char.handle) if char.handle is not None else None,
-                    "Flags": char.flags,
-                    "Value": None,
-                    "Raw": None,
-                    "Descriptors": {},
-                }
+        if _C.RESULT_ERR_NO_REPLY in err_list:
+            mine_cat = "no_reply"
+        elif _C.RESULT_ERR_REMOTE_DISCONNECT in err_list:
+            mine_cat = "remote_disconnect"
+        elif _C.RESULT_ERR_UNKNOWN_CONNECT_FAILURE in err_list:
+            mine_cat = "unknown_failure"
+        elif _C.RESULT_ERR_ACTION_IN_PROGRESS in err_list:
+            mine_cat = "action_in_progress"
+        elif _C.RESULT_ERR in err_list:
+            mine_cat = "other_error"
 
-                should_probe = any(flag in char.flags for flag in ("read", "write"))
-                if should_probe:
-                    value, err_code = char.safe_read_with_retry()
-                    if err_code is None and value is not None:
-                        ascii_val = convert__hex_to_ascii(value)
-                        if not ascii_val.strip() or "\ufffd" in ascii_val:
-                            ascii_val = None
-                        char_map["Value"] = ascii_val
-                        char_map["Raw"] = list(value)
-                    else:
-                        # Aggregate error for later classification
-                        if err_code is not None:
-                            agg_errors.setdefault(char.uuid, []).append(err_code)
+        return perm_cat, mine_cat
 
-                svc_entry["Characteristics"][char.uuid] = char_map
-
-                # --- Descriptor probe ------------------------------------
-                for desc in char.descriptors:
-                    d_val, d_err = desc.safe_read_with_retry()
-                    desc_entry: dict[str, Any] = {
-                        "Handle": handle_int_to_hex(desc.handle) if desc.handle is not None else None,
-                        "Flags": getattr(desc, "flags", []),
-                        "Value": convert__hex_to_ascii(d_val) if d_val else None,
-                        "Raw": list(d_val) if d_val else None,
-                    }
-                    char_map["Descriptors"][desc.uuid] = desc_entry
-                    if d_err is not None:
-                        agg_errors.setdefault(desc.uuid, []).append(d_err)
-
-        # ------------------------------------------------------------------
-        # Step-2  Classify aggregated errors -------------------------------
-        # ------------------------------------------------------------------
-        def _classify_errors(err_list: list[int], *, obj_type: str) -> tuple[str | None, str | None]:
-            """Return (permission_category, landmine_category) based on *err_list* and object type."""
-            perm_cat: str | None = None
-            mine_cat: str | None = None
-
-            # --------------------- Permission categories ------------------
-            if _C.RESULT_ERR_READ_NOT_PERMITTED in err_list:
-                perm_cat = "read_not_permitted"
-            elif _C.RESULT_ERR_NOT_AUTHORIZED in err_list:
-                perm_cat = "requires_authentication"
-            elif _C.RESULT_ERR_NOT_SUPPORTED in err_list:
-                perm_cat = "not_supported"
-            elif _C.RESULT_ERR_WRITE_NOT_PERMITTED in err_list:
-                perm_cat = "write_not_permitted"
-            elif _C.RESULT_ERR_NOTIFY_NOT_PERMITTED in err_list:
-                perm_cat = "notify_not_permitted"
-            elif _C.RESULT_ERR_INDICATE_NOT_PERMITTED in err_list:
-                perm_cat = "indicate_not_permitted"
-            elif _C.RESULT_ERR_NOT_PERMITTED in err_list:
-                # Generic fallback – guess based on object type; keep previous
-                # heuristic for backward compatibility.
-                perm_cat = "notify_not_permitted" if obj_type == "descriptor" else "write_not_permitted"
-
-            # ------------------------ Landmine categories ------------------
-            if _C.RESULT_ERR_NO_REPLY in err_list:
-                mine_cat = "no_reply"
-            elif _C.RESULT_ERR_REMOTE_DISCONNECT in err_list:
-                mine_cat = "remote_disconnect"
-            elif _C.RESULT_ERR_UNKNOWN_CONNECT_FAILURE in err_list:
-                mine_cat = "unknown_failure"
-            elif _C.RESULT_ERR_ACTION_IN_PROGRESS in err_list:
-                mine_cat = "action_in_progress"
-            elif _C.RESULT_ERR in err_list:
-                mine_cat = "other_error"
-
-            return perm_cat, mine_cat
-
-        # Build quick lookup set of characteristic UUIDs to detect descriptor vs characteristic
+    def _apply_error_classification(self, agg_errors: dict[str, list[int]]) -> None:
+        """Classify aggregated read errors into permission/landmine maps."""
         _char_uuids = {c.uuid for s in self._services for c in s.characteristics}
 
         for uuid, errs in agg_errors.items():
             obj_t = "characteristic" if uuid in _char_uuids else "descriptor"
-            perm, mine = _classify_errors(errs, obj_type=obj_t)
+            perm, mine = self._classify_read_errors(errs, obj_type=obj_t)
 
             if perm:
                 self.update_permission_mapping(uuid, perm, obj_type=obj_t)
@@ -1089,7 +1042,6 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                     self.ble_device__mine_mapping, uuid
                 )
 
-        # Finally, ensure maps are cleaned to remove empty placeholders
         self.ble_device__permission_mapping = self.device_map__clean_map(
             self.ble_device__permission_mapping
         )
@@ -1097,12 +1049,134 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             self.ble_device__mine_mapping
         )
 
+    def _enumerate_gatt_values(self, *, deep: bool = True) -> None:
+        """Read characteristic and descriptor values from the connected device.
+
+        When *deep* is True the method rebuilds the mapping from scratch using
+        ``safe_read_with_retry()`` (multiple attempts per UUID).  When False it
+        performs a single ``read_value()`` per readable characteristic/descriptor
+        and updates the existing mapping built by ``services_resolved()`` in-place.
+
+        In both modes, read errors are aggregated and classified into the
+        permission and landmine maps.
+        """
+        from bleep.bt_ref import constants as _C
+        from bleep.ble_ops.common.conversion import convert__hex_to_ascii
+
+        _ERR_MAP = {
+            "org.bluez.Error.NotPermitted": _C.RESULT_ERR_READ_NOT_PERMITTED,
+            "org.bluez.Error.NotAuthorized": _C.RESULT_ERR_NOT_AUTHORIZED,
+            "org.bluez.Error.NotSupported": _C.RESULT_ERR_NOT_SUPPORTED,
+            "org.bluez.Error.NotConnected": _C.RESULT_ERR_NOT_CONNECTED,
+            "org.freedesktop.DBus.Error.NoReply": _C.RESULT_ERR_NO_REPLY,
+            "org.bluez.Error.InProgress": _C.RESULT_ERR_ACTION_IN_PROGRESS,
+        }
+
+        self.ble_device__mine_mapping = {"in_review": {"uncategorized": []}}
+        self.ble_device__permission_mapping = {"in_review": {"uncategorized": []}}
+        agg_errors: dict[str, list[int]] = {}
+
+        if deep:
+            # ---- Deep mode: rebuild mapping with uppercase keys ----------
+            self.ble_device__mapping = {}
+
+            for svc in self._services:
+                svc_entry: dict[str, Any] = {
+                    "Primary": getattr(svc, "primary", True),
+                    "Handle": handle_int_to_hex(svc.handle) if getattr(svc, "handle", None) is not None else None,
+                    "Includes": getattr(svc, "includes", []),
+                    "Characteristics": {},
+                }
+                self.ble_device__mapping[svc.uuid] = svc_entry
+
+                for char in svc.get_characteristics():
+                    char_map: dict[str, Any] = {
+                        "Handle": handle_int_to_hex(char.handle) if char.handle is not None else None,
+                        "Flags": char.flags,
+                        "MTU": getattr(char, "mtu", None),
+                        "Notifying": getattr(char, "notifying", False),
+                        "WriteAcquired": getattr(char, "write_acquired", False) or None,
+                        "NotifyAcquired": getattr(char, "notify_acquired", False) or None,
+                        "Value": None,
+                        "Raw": None,
+                        "Descriptors": {},
+                    }
+
+                    should_probe = any(flag in char.flags for flag in ("read", "write"))
+                    if should_probe:
+                        value, err_code = char.safe_read_with_retry()
+                        if err_code is None and value is not None:
+                            ascii_val = convert__hex_to_ascii(value)
+                            if not ascii_val.strip() or "\ufffd" in ascii_val:
+                                ascii_val = None
+                            char_map["Value"] = ascii_val
+                            char_map["Raw"] = list(value)
+                        elif err_code is not None:
+                            agg_errors.setdefault(char.uuid, []).append(err_code)
+
+                    svc_entry["Characteristics"][char.uuid] = char_map
+
+                    for desc in char.descriptors:
+                        d_val, d_err = desc.safe_read_with_retry()
+                        desc_entry: dict[str, Any] = {
+                            "Handle": handle_int_to_hex(desc.handle) if desc.handle is not None else None,
+                            "Flags": getattr(desc, "flags", []),
+                            "Value": convert__hex_to_ascii(d_val) if d_val else None,
+                            "Raw": list(d_val) if d_val else None,
+                        }
+                        char_map["Descriptors"][desc.uuid] = desc_entry
+                        if d_err is not None:
+                            agg_errors.setdefault(desc.uuid, []).append(d_err)
+
+        else:
+            # ---- Non-deep: single read, update existing mapping in-place -
+            for svc in self._services:
+                svc_data = self.ble_device__mapping.get(svc.uuid, {})
+                chars = svc_data.get("chars", {})
+
+                for char in svc.characteristics:
+                    char_data = chars.get(char.uuid)
+                    if char_data is None:
+                        continue
+                    props = char_data.get("properties", {})
+
+                    if "read" in props:
+                        try:
+                            value = char.read_value()
+                            if value is not None:
+                                ascii_val = convert__hex_to_ascii(value)
+                                if not ascii_val.strip() or "\ufffd" in ascii_val:
+                                    ascii_val = None
+                                char_data["value"] = ascii_val
+                                char_data["raw"] = list(value)
+                        except dbus.exceptions.DBusException as exc:
+                            char_data["value"] = None
+                            mapped = _ERR_MAP.get(
+                                exc.get_dbus_name(),
+                                _C.RESULT_ERR_UNKNOWN_CONNECT_FAILURE,
+                            )
+                            agg_errors.setdefault(char.uuid, []).append(mapped)
+
+                    # Read descriptors
+                    descs: dict[str, Any] = {}
+                    for desc in getattr(char, "descriptors", []) or []:
+                        d_val = desc.read_value()
+                        descs[desc.uuid] = {
+                            "handle": handle_int_to_hex(desc.handle) if desc.handle is not None else None,
+                            "value": convert__hex_to_ascii(d_val) if d_val else None,
+                            "raw": list(d_val) if d_val else None,
+                        }
+                    if descs:
+                        char_data["descriptors"] = descs
+
+        self._apply_error_classification(agg_errors)
+
+        label = "Deep" if deep else "Standard"
         print_and_log(
-            f"[*] Deep enumeration completed. Landmine map: {self.ble_device__mine_mapping}; "
+            f"[*] {label} enumeration completed. Landmine map: {self.ble_device__mine_mapping}; "
             f"Permission map: {self.ble_device__permission_mapping}",
             LOG__DEBUG,
         )
-        # No return value – maps updated in-place
 
     # ------------------------------------------------------------------
     # Landmine and permission mapping methods
@@ -1601,7 +1675,8 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         if "ServicesResolved" in changed:
             if changed["ServicesResolved"]:
                 print_and_log(f"[+] Services resolved for {self.mac_address}", LOG__DEBUG)
-                self.services_resolved()
+                if not self._services:
+                    self.services_resolved()
 
     def _detach_property_signal(self):
         if self._properties_signal is not None:
@@ -1795,10 +1870,9 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                 signals = _get_global_signals()
                 safe_call(signals, 'handle_read_event', char.path, value)
             except (ImportError, AttributeError):
-                # Fall back to local signal manager
-                global _signals_manager
-                if _signals_manager:
-                    safe_call(_signals_manager, 'handle_read_event', char.path, value)
+                mgr = _get_signals_manager()
+                if mgr:
+                    safe_call(mgr, 'handle_read_event', char.path, value)
             
             return value
         except dbus.exceptions.DBusException as e:
@@ -1813,8 +1887,14 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             self.record_landmine(uuid, "read_error", BlueZErrorHandler.get_user_friendly_message(e))
             self.update_mine_mapping(uuid, "value_error")
             
-            # Rethrow the exception
             raise map_dbus_error(e)
+
+    def read_characteristic_with_fallback(self, uuid: str, offset: int = 0) -> bytes:
+        """Read a characteristic using the three-tier fallback strategy."""
+        char = self._find_characteristic(uuid)
+        if not char:
+            raise ValueError(f"Characteristic {uuid} not found")
+        return char.read_value_with_fallback(offset)
 
     def write_characteristic(
         self,
@@ -1856,10 +1936,9 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                 signals = _get_global_signals()
                 signals.handle_write_event(char.path, value)
             except (ImportError, AttributeError):
-                # Fall back to local signal manager
-                global _signals_manager
-                if _signals_manager:
-                    _signals_manager.handle_write_event(char.path, value)
+                mgr = _get_signals_manager()
+                if mgr:
+                    mgr.handle_write_event(char.path, value)
                 
         except dbus.exceptions.DBusException as e:
             from bleep.core.error_handling import BlueZErrorHandler
@@ -2158,7 +2237,32 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             len(self.get_media_endpoints()) > 0 or 
             len(self.get_media_transports()) > 0
         )
-    
+
+    def has_media_uuids(self) -> bool:
+        """Check if the device advertises audio/media UUIDs (A2DP, AVRCP, HFP, HSP).
+
+        Unlike ``is_media_device()`` which requires D-Bus media objects to be
+        present (needs an active audio stack), this checks the raw UUIDs from
+        the Device1 property which are available after discovery or pairing.
+        """
+        from bleep.bt_ref.constants import AUDIO_SERVICE_UUIDS
+        uuids = self.get_uuids()
+        if not uuids:
+            return False
+        return bool(AUDIO_SERVICE_UUIDS.intersection(u.lower() for u in uuids))
+
+    def get_media_uuid_names(self) -> list:
+        """Return human-readable names for advertised audio/media UUIDs."""
+        from bleep.bt_ref.constants import AUDIO_SERVICE_UUIDS, AUDIO_PROFILE_NAMES
+        uuids = self.get_uuids()
+        if not uuids:
+            return []
+        return [
+            AUDIO_PROFILE_NAMES.get(u.lower(), u)
+            for u in uuids
+            if u.lower() in AUDIO_SERVICE_UUIDS
+        ]
+
     def play_media(self) -> bool:
         """Start media playback.
         
@@ -2593,7 +2697,7 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             
         try:
             info["services_count"] = len(self.services_resolved(skip_device_type_check=True))
-        except:
+        except Exception:
             info["services_count"] = 0
             
         return info

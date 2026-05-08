@@ -1,7 +1,10 @@
-"""Simple GATT Service abstraction used by system_dbus__bluez_device__low_energy.
+"""GATT Service abstraction used by system_dbus__bluez_device__low_energy.
 
-Only provides signal-connect placeholders; real characteristic handling will be
-added during Phase-5.
+Wraps the BlueZ ``org.bluez.GattService1`` interface.  Subscribes to
+``PropertiesChanged`` and updates local state (``primary``, ``includes``,
+``handle``) when the remote device's GATT database changes (e.g. after a
+*Service Changed* indication).  Callers can register callbacks via
+:meth:`on_property_changed` to receive updates.
 """
 
 from __future__ import annotations
@@ -75,6 +78,7 @@ class Service:  # noqa: N801 – keep simple name
         self.uuid = uuid
         self.primary = primary
         self.handle = None
+        self.includes: list[str] = []
         
         # Get the bus name to use for the object
         bus_name = BLUEZ_SERVICE_NAME
@@ -85,6 +89,7 @@ class Service:  # noqa: N801 – keep simple name
             self.bus.get_object(bus_name, path), DBUS_PROPERTIES
         )
         self._signal = None
+        self._property_callbacks: list = []
         self.characteristics: list[Characteristic] = []
         
         # Try to get the Handle property, if available
@@ -93,6 +98,13 @@ class Service:  # noqa: N801 – keep simple name
         except Exception as e:
             print_and_log(f"[-] Error getting handle: {e}", LOG__DEBUG)
             _print_detailed_dbus_error(e)
+
+        # Includes — list of D-Bus object paths for included services.
+        try:
+            raw_includes = self._props_iface.Get(GATT_SERVICE_INTERFACE, "Includes")
+            self.includes = [str(p) for p in raw_includes]
+        except dbus.exceptions.DBusException:
+            self.includes = []
 
     # ------------------------------------------------------------------
     # Signal wiring (placeholders)
@@ -111,13 +123,57 @@ class Service:  # noqa: N801 – keep simple name
                 self._signal = None
 
     # ------------------------------------------------------------------
+    # Callback registration
+    # ------------------------------------------------------------------
+    def on_property_changed(self, callback) -> None:
+        """Register a callback for service property changes.
+
+        Parameters
+        ----------
+        callback : callable(service_path: str, prop_name: str, new_value)
+            Invoked whenever a ``GattService1`` property changes on D-Bus.
+        """
+        self._property_callbacks.append(callback)
+
+    # ------------------------------------------------------------------
     # Signal callbacks
     # ------------------------------------------------------------------
     def _props_changed(self, interface, changed, invalidated):
-        print_and_log(
-            f"[DEBUG] Service {self.uuid} properties changed: {dict(changed)}",
-            LOG__DEBUG,
-        )
+        """Handle PropertiesChanged for this service.
+
+        Updates local state for ``Primary``, ``Includes``, and ``Handle``
+        and dispatches to registered callbacks.
+        """
+        if interface != GATT_SERVICE_INTERFACE:
+            return
+
+        changed = dict(changed)
+
+        if "Primary" in changed:
+            self.primary = bool(changed["Primary"])
+        if "Includes" in changed:
+            self.includes = [str(p) for p in changed["Includes"]]
+        if "Handle" in changed:
+            try:
+                self.handle = int(changed["Handle"])
+            except (TypeError, ValueError):
+                pass
+
+        if changed:
+            print_and_log(
+                f"[DEBUG] Service {self.uuid} properties changed: {changed}",
+                LOG__DEBUG,
+            )
+
+        for prop_name, value in changed.items():
+            for cb in self._property_callbacks:
+                try:
+                    cb(self.path, prop_name, value)
+                except Exception as exc:
+                    print_and_log(
+                        f"[ERROR] Service property callback error: {exc}",
+                        LOG__DEBUG,
+                    )
 
     def discover_characteristics(self):
         """Populate `self.characteristics` with Characteristic objects."""

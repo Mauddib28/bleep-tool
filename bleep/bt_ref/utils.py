@@ -46,12 +46,18 @@ def dbus_to_python(data):
         data = int(data)
     elif isinstance(data, dbus.Int16):
         data = int(data)
+    elif isinstance(data, dbus.UInt64):
+        data = int(data)
+    elif isinstance(data, dbus.UInt32):
+        data = int(data)
     elif isinstance(data, dbus.UInt16):
         data = int(data)
     elif isinstance(data, dbus.Byte):
         data = int(data)
     elif isinstance(data, dbus.Double):
         data = float(data)
+    elif isinstance(data, dbus.types.UnixFd):
+        data = data.take()
     elif isinstance(data, dbus.Array):
         data = [dbus_to_python(value) for value in data]
     elif isinstance(data, dbus.Dictionary):

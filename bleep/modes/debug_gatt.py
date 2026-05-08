@@ -14,8 +14,8 @@ import dbus
 from bleep.core.log import print_and_log, LOG__DEBUG, LOG__GENERAL
 from bleep.bt_ref.utils import get_name_from_uuid
 from bleep.modes.debug_utils import parse_value
-from bleep.ble_ops.conversion import format_device_class, decode_appearance, decode_pnp_id
-from bleep.ble_ops.modalias import format_modalias_info
+from bleep.ble_ops.common.conversion import format_device_class, decode_appearance, decode_pnp_id
+from bleep.ble_ops.common.modalias import format_modalias_info
 
 from bleep.modes.debug_state import DebugState, DEVICE_PROMPT
 from bleep.modes.debug_dbus import print_detailed_dbus_error
@@ -101,8 +101,29 @@ def cmd_services(args: List[str], state: DebugState) -> None:
         print("[-] No device connected")
         return
 
+    force_refresh = "--refresh" in args
+
     try:
-        services = state.current_device.services_resolved(skip_device_type_check=True)
+        # Use cached mapping when available (unless --refresh)
+        if state.current_mapping and not force_refresh:
+            services = state.current_device.services_resolved(skip_device_type_check=True)
+        else:
+            # If services aren't resolved, try reconnect + poll
+            if not state.current_device.is_services_resolved():
+                if not state.current_device.is_connected():
+                    print("[*] Device disconnected — reconnecting…")
+                    state.current_device.connect()
+
+                import time as _time
+                print("[*] Waiting for services to resolve…")
+                for _ in range(20):
+                    if state.current_device.is_services_resolved():
+                        break
+                    _time.sleep(0.5)
+
+            services = state.current_device.services_resolved(skip_device_type_check=True)
+            if services and state.current_mapping is None:
+                state.current_mapping = services
 
         if not services:
             print("\nNo GATT services found on device")
@@ -110,7 +131,7 @@ def cmd_services(args: List[str], state: DebugState) -> None:
             print("  1. The device doesn't expose any GATT services")
             print("  2. Services haven't been resolved yet")
             print("  3. There was an error during service discovery")
-            print("\nTry using 'call org.bluez.Device1 Connect' to reconnect and resolve services")
+            print("\nTry: 'services --refresh' or 'call org.bluez.Device1 Connect'")
             print()
             return
 

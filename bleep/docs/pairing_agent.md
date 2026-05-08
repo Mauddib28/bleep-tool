@@ -36,9 +36,51 @@ The pairing agent system consists of several interrelated components:
 
 ## Using the Agent
 
-### Command Line (Agent Mode)
+### Command Line — `bleep pair` (Recommended)
 
-The agent can be used from the command line via the `bleep agent` mode:
+The `bleep pair` command is the primary CLI interface for all pairing
+operations.  It supports PIN, passkey, interactive, brute-force, and probe
+modes with the same flags available in the debug-mode shell.
+
+```bash
+# Basic pairing (default PIN 0000)
+bleep pair AA:BB:CC:DD:EE:FF
+
+# Custom PIN or passkey
+bleep pair AA:BB:CC:DD:EE:FF --pin 12345
+bleep pair AA:BB:CC:DD:EE:FF --passkey 123456
+
+# Interactive mode (prompt for credentials)
+bleep pair AA:BB:CC:DD:EE:FF --interactive
+
+# Check pairing state without pairing
+bleep pair AA:BB:CC:DD:EE:FF --check
+
+# Force-remove existing bond and re-pair
+bleep pair AA:BB:CC:DD:EE:FF --reset --pin 12345
+
+# Pair only — skip post-pair connection
+bleep pair AA:BB:CC:DD:EE:FF --no-connect
+
+# Brute-force PIN codes
+bleep pair AA:BB:CC:DD:EE:FF --brute
+bleep pair AA:BB:CC:DD:EE:FF --brute --range 00000-99999
+bleep pair AA:BB:CC:DD:EE:FF --brute --pin-list pins.txt
+
+# Probe auth method (cycle IO capabilities)
+bleep pair AA:BB:CC:DD:EE:FF --probe
+```
+
+Before pairing, the command checks whether the device is already paired.
+If it is, the current state is reported and the pairing step is skipped
+(pass `--reset` to force a full re-pair).  After pairing succeeds, a
+post-pair connection is attempted automatically (pass `--no-connect` to
+skip).
+
+### Command Line — `bleep agent` (Agent Mode)
+
+The `bleep agent` mode provides lower-level agent management — registering
+a persistent agent, trust/bond operations, and status checks:
 
 ```bash
 # Run a simple agent
@@ -268,6 +310,17 @@ so the user can verify manually.
 - `--test` flag for PoC disconnect monitoring
 - Bond storage with MAC address extraction from device path
 - State machine tracking with safe terminal-state guards
+
+### New in v2.8.0
+
+- **`bleep pair` CLI command** — first-class CLI mode mirroring the full debug-mode `pair` feature set (`--pin`, `--passkey`, `--interactive`, `--brute`, `--probe`, `--check`, `--reset`, `--no-connect`, `--no-trust`, `--no-profiles`)
+- **`bleep classic-connect` CLI command** — connect to Classic devices via SDP + raw RFCOMM, bypassing the `Device1.Connect()` profile-handler requirement.  Accepts `--no-profiles` to opt out of the post-RFCOMM best-effort `Device1.Connect()` that attaches BlueZ audio profile handlers when SDP advertises A2DP/HFP/HSP/AVRCP UUIDs (see `classic_connect_sdp_rfcomm(..., activate_profiles=True)`)
+- **`bleep connect` Classic auto-routing** — CLI auto-detects Classic/dual transport and routes to `classic-connect`; `--ble-only` forces BLE GATT path.  `--no-profiles` is forwarded to the auto-routed `classic-connect` invocation
+- **Pre-pair status check** (`--check`) — query `Paired`/`Trusted`/`Connected` state without pairing
+- **`--reset` flag** — force-remove existing bond before re-pairing
+- **`bleep.pairing` shared helpers** — `find_device_path`, `resolve_device_for_pair`, `remove_stale_bond`, `register_pair_agent`, `check_pair_status`, `report_pair_status`, `classic_connect_sdp_rfcomm`
+- **Debug `connect` is BLE-only** — `connect` always performs GATT enumeration; use `cconnect` for Classic (SDP + RFCOMM keepalive fallback)
+- **Debug `cconnect` SDP fallback** — falls back to SDP + RFCOMM keepalive when `Device1.Connect()` fails
 
 ### New in v2.7.1
 

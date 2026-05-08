@@ -50,13 +50,13 @@ This plan outlines the integration of Bluetooth Network (PAN) capability detecti
 
 ## Implementation Plan
 
-### Phase 1: Network Interface Wrapper
+### Phase 1: Network Interface Wrapper ✅ Complete
 
-#### 1.1 Create Network Wrapper Class
+#### 1.1 Network Wrapper Classes
 
-**File**: `bleep/dbuslayer/network.py` (new file)
+**File**: `bleep/dbuslayer/network.py`
 
-Create wrapper class following the pattern of `media.py`:
+Contains `NetworkClient` (wraps `org.bluez.Network1` per-device) and `NetworkServer` (wraps `org.bluez.NetworkServer1` per-adapter), following the pattern of `media.py`:
 
 ```python
 """Network Device interface for the BlueZ stack.
@@ -277,7 +277,15 @@ def find_network_devices() -> Dict[str, Dict[str, Any]]:
     return result
 ```
 
-### Phase 2: Device Capability Detection
+### PAN Client/Server Operations ✅ Complete (v2.7.9)
+
+> **Note (2026-04-01):** PAN was implemented via `classic-pan` CLI / `cpan` debug
+> command rather than through the device-class helpers described below.  See
+> `bleep/ble_ops/classic/pan.py`, `bleep/dbuslayer/network.py`, and
+> `bleep/docs/bl_classic_mode.md` §2.9 for the actual implementation.
+> Phases 2-5 below are retained as optional future enhancements.
+
+### Phase 2: Device Capability Detection — Future Enhancement
 
 #### 2.1 Add Network Helpers to Device Classes
 
@@ -370,7 +378,7 @@ except Exception as e:
     print_and_log(f"[*] Error checking network interface: {e}", LOG__DEBUG)
 ```
 
-### Phase 3: Network Enumeration Functions
+### Phase 3: Network Enumeration Functions — Future Enhancement
 
 #### 3.1 Create Network Operations Module
 
@@ -483,7 +491,7 @@ def enumerate_network_capable_devices(
     return devices
 ```
 
-### Phase 4: CLI Integration
+### Phase 4: CLI Integration — Future Enhancement
 
 #### 4.1 Add Network Enumeration Command
 
@@ -545,7 +553,7 @@ elif args.mode == "network-enum":
             print()
 ```
 
-### Phase 5: Update Device Info Methods
+### Phase 5: Update Device Info Methods — Future Enhancement
 
 #### 5.1 Add Network Info to get_device_info()
 
@@ -646,6 +654,8 @@ bleep network-enum --json
 
 ## References
 
-- **BlueZ Documentation**: `workDir/BlueZDocs/org.bluez.Network.5`
+- **[PAN connection analysis](pan_connection_analysis.md)** — BlueZ source code audit, D-Bus client lifetime findings, BNEP failure analysis, and requirements for a working connection
+- **BlueZ Documentation**: `workDir/BlueZDocs/org.bluez.Network.rst`, `workDir/BlueZDocs/org.bluez.NetworkServer.rst`
+- **BlueZ Source**: `workDir/bluez/profiles/network/connection.c` (client — no disconnect watch), `workDir/bluez/profiles/network/server.c` (server — has disconnect watch)
 - **BlueZ Scripts**: `workDir/BlueZScripts/test-network`, `test-nap`
 - **Existing Patterns**: `bleep/dbuslayer/media.py`, `bleep/dbuslayer/device_le.py`

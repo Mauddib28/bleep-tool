@@ -40,7 +40,8 @@ sudo systemctl enable --now bluetooth-obexd.service
 | `classic-map <MAC> folders\|list\|get\|push\|inbox\|types\|fields\|monitor\|instances [--instance N]` | Browse, manage, and monitor SMS/MMS via MAP (use `--instance` for multi-MAS) |
 | `classic-ftp <MAC> ls\|get\|put\|mkdir\|rm` | Browse and transfer files via OBEX FTP |
 | `classic-pan connect\|disconnect\|status\|serve\|unserve <MAC>` | Personal Area Networking – PAN client & server |
-| `classic-spp register\|unregister\|status [--channel N]` | SPP serial port profile registration |
+| `classic-spp register\|unregister\|status [--channel N] [--auth/--no-auth]` | SPP serial port profile registration |
+| `connect-profile <MAC> --uuid <UUID> --action connect\|disconnect` | Connect/disconnect a specific Bluetooth profile by UUID |
 | `classic-sync <MAC> get\|put [--location int\|sim1]` | IrMC Synchronization – download/upload phonebook |
 | `classic-bip <MAC> props\|get\|thumb <handle>` | Basic Imaging Profile – image properties / download / thumbnail [experimental] |
 | Raw OBEX over RFCOMM (design doc) | ✅ |
@@ -49,10 +50,12 @@ sudo systemctl enable --now bluetooth-obexd.service
 | Debug Mode: `pbap [options]` | Interactive PBAP phonebook dumps from connected Classic devices |
 | Debug Mode: `copen` / `csend` / `crecv` / `craw` | RFCOMM data-exchange commands (open socket, send, receive, interactive session) |
 | Debug Mode: `copp send <file>` / `copp pull` | Object Push Profile – send files or pull business cards |
-| Debug Mode: `cmap folders\|list\|get\|push\|inbox\|types\|fields\|monitor\|instances [--instance N]` | Message Access Profile – browse, manage, and monitor SMS/MMS (multi-MAS) |
+| Debug Mode: `cmap folders\|list\|get\|push\|download-all\|push-all\|inbox\|types\|fields\|monitor\|instances [--instance N]` | Message Access Profile – browse, manage, bulk download/upload, and monitor SMS/MMS (multi-MAS) |
 | Debug Mode: `cftp ls\|cd\|get\|put\|mkdir\|rm\|cp\|mv` | File Transfer Profile – browse and transfer files |
 | Debug Mode: `cpan connect\|disconnect\|status\|server` | Personal Area Networking (PAN) – client & server |
-| Debug Mode: `cspp register\|unregister\|status` | SPP serial port profile – incoming connections feed `csend`/`crecv` |
+| Debug Mode: `cprofiles` | List `Device1.UUIDs` with resolved names |
+| Debug Mode: `cprofile connect\|disconnect <UUID>` | Connect/disconnect a specific profile by UUID |
+| Debug Mode: `cspp register\|unregister\|status [--auth/--no-auth]` | SPP serial port profile – incoming connections feed `csend`/`crecv` |
 | Debug Mode: `csync get\|put [--location int\|sim1]` | IrMC Synchronization – download/upload phonebook |
 | Debug Mode: `cbip props\|get\|thumb <handle>` | Basic Imaging Profile [experimental] |
 
@@ -165,6 +168,81 @@ SDP records were obtained, the command reports success with a warning:
 
 BLEEP first runs `sdptool browse --tree` (fast).  If a PBAP entry is missing or
 no RFCOMM channels appear it automatically falls back to `sdptool records`.
+
+### Vendor-Specific / Proprietary SDP Services
+
+SDP enumeration may discover services that are **not** part of the Bluetooth SIG
+assigned numbers.  These use vendor-specific 128-bit UUIDs and proprietary
+protocol names.  BLEEP discovers and displays them like any other SDP record,
+but it has no profile-specific logic for them — only raw RFCOMM I/O is possible.
+
+#### BT DIAG (Samsung / LG / various OEMs)
+
+| Field | Value |
+|-------|-------|
+| **SDP Service Name** | `BT DIAG` |
+| **UUID** | `0x1101` (Serial Port Profile) |
+| **Transport** | RFCOMM (channel varies per device) |
+| **Vendor** | Samsung, LG, and other Android OEMs |
+| **Purpose** | Bluetooth diagnostic / engineering-mode serial channel.  Uses the standard SPP UUID (`0x1101`) but exposes a vendor-specific AT-command or binary diagnostic interface rather than a generic serial port. |
+| **BLEEP interaction** | Discoverable via `cservices` / `classic-enum`.  Raw data exchange possible via `copen <ch>` / `craw`. |
+
+#### IcService_New (Samsung)
+
+| Field | Value |
+|-------|-------|
+| **SDP Service Name** | `IcService_New` |
+| **UUID** | `a23d00bc-217c-123b-9c00-fc44577136ee` |
+| **Transport** | RFCOMM (channel 5 observed on SM-G891A) |
+| **Profile Descriptors** | None |
+| **Vendor** | Samsung Electronics |
+| **Observed on** | SAMSUNG-SM-G891A (Galaxy S7 Active), Galaxy S8+, Galaxy Tab S7 FE |
+
+**Purpose:**  Samsung-proprietary cross-device interconnect service ("IC" =
+Interconnect).  Part of Samsung's device-to-device continuity framework
+(Samsung Flow, SideSync, Samsung Accessory Framework) that provides a general
+control/data channel between paired Samsung phones and companion devices (PCs,
+tablets, watches).  Likely coordinates:
+- Phone call / SMS relay to paired devices
+- Audio routing coordination
+- Clipboard sync and notification mirroring
+- Samsung Smart Switch / Quick Share bootstrap
+
+**Evidence:**
+- Windows Device Manager creates a device node named `IcService_New` when a
+  Samsung phone pairs via Bluetooth Classic.  Removal of this driver breaks
+  Bluetooth audio streaming between the phone and PC
+  ([Microsoft Q&A #3840559](https://learn.microsoft.com/en-us/answers/questions/3840559/accidentally-deleted-icservice-new-driver-possibly),
+  [Microsoft Q&A #3284030](https://learn.microsoft.com/en-us/answers/questions/3284030/windows-was-unable-to-install-icservice-new-sms-mm)).
+- Service appears alongside `SMS/MMS` (MAP) in SDP, consistent with Samsung's
+  phone-to-PC integration stack.
+- The `_New` suffix suggests a v2 revision of an earlier `IcService`.
+- Not present in the Bluetooth SIG assigned numbers, BlueZ source, or any
+  public Samsung SDK documentation.  Entirely proprietary.
+
+**Live SDP record** (captured from SAMSUNG-SM-G891A / `E4:FA:ED:83:D8:47`):
+```
+Record 13:
+  Name        : IcService_New
+  UUID        : a23d00bc-217c-123b-9c00-fc44577136ee
+  RFCOMM Ch   : 5
+```
+
+**RFCOMM probe results** (BLEEP `crfcomm --probe`):
+```
+  ch  5 (IcService_New): [SILENT]  (4907ms)
+```
+
+**BLEEP interaction:**
+- Discovery: ✅ `cservices` / `classic-enum` correctly discovers and names the
+  service via SDP attribute `0x0100` (ServiceName).
+- UUID recognition: ✅ `a23d00bc-217c-123b-9c00-fc44577136ee` registered in
+  `bleep/bt_ref/constants.py` as `"Samsung IcService_New"`.
+- Raw RFCOMM connect: ⚠️ `copen 5` succeeds only when the phone is awake and
+  unlocked.  Connection refused when phone screen is off.
+- Protocol dissection: ❌ Samsung's proprietary wire protocol is undocumented.
+  Only raw byte send/receive via `csend` / `crecv` / `craw` is possible.
+- Dedicated commands: ❌ No `cicservice` or equivalent command suite exists.
 
 **Connectionless SDP Queries:** SDP enumeration works without requiring a full
 Bluetooth connection. If connection fails, BLEEP will still display SDP results
@@ -388,7 +466,7 @@ BLEEP-DEBUG[14:89:FD:31:8A:7E]> pbap --format vcard30
 - `--repos <list>` – Comma-separated repository list (PB, ICH, OCH, MCH, CCH, SPD, FAV) or ALL (default: PB)
 - `--format <vcard21|vcard30>` – vCard format version (default: vcard21)
 - `--auto-auth` – Register temporary OBEX agent that auto-accepts authentication prompts
-- `--watchdog <seconds>` – Watchdog timeout before aborting stalled transfer (default: 8, 0 to disable)
+- `--watchdog <seconds>` – Watchdog timeout before aborting stalled transfer (default: 30, 0 to disable)
 - `--out <path>` – Output file path (for single repository only; multi-repo uses `/tmp/<mac>_<repo>.vcf`)
 
 **Features:**
@@ -483,18 +561,36 @@ command attempts anyway.
 Browse and manage SMS/MMS messages on a connected Classic device via the OBEX
 Message Access Profile (UUIDs `0x1132` / `0x1134`).
 
+> **Comprehensive reference**: See [MAP bMessage Format Reference](map_bmessage_format.md)
+> for the full bMessage envelope specification, LENGTH calculation rules,
+> nested-envelope (forwarded message) structure, bulk operation capabilities,
+> supported message types, and the test message corpus.
+
 ```bash
 # List message folders
 BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap folders
 
-# List messages in a folder
-BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap list inbox
+# Quick 1-message probe of all folders
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap peek
+
+# List messages in a folder (with optional pagination)
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap list telecom/msg/inbox
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap list telecom/msg/inbox --count 10 --offset 0
 
 # Download a specific message
 BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap get 12345 /tmp/msg.txt
 
-# Push / send a message
+# Push / send a message (must be in bMessage format)
 BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap push /tmp/outgoing.bmsg
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap push /tmp/outgoing.bmsg telecom/msg/draft
+
+# Download all messages from every folder
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap download-all
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap download-all /tmp/dump --folders telecom/msg/inbox,telecom/msg/sent --count 50
+
+# Push all .bmsg files in a directory
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap push-all /tmp/dump/
+BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap push-all /tmp/dump/ telecom/msg/outbox --dry-run
 
 # Trigger inbox synchronisation
 BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap inbox
@@ -510,6 +606,28 @@ BLEEP-DEBUG[14:89:FD:31:8A:7E]> cmap delete 12345
 ```
 
 **Prerequisites:** same as OPP.  MAP service detection is automatic.
+
+#### bMessage Format (Push)
+
+The `cmap push` command requires files in **bMessage format** — a vCard-derived
+envelope with `BEGIN:BMSG`/`END:BMSG`.  Supported message types: `SMS_GSM`,
+`SMS_CDMA`, `EMAIL`, `MMS`, `IM`.  The `LENGTH:` field must match the exact
+byte count from `BEGIN:MSG\n` through `END:MSG\n` (inclusive); a mismatch causes
+most devices to silently discard the message.  BLEEP validates this before push
+and prints a warning with the correct value when mismatched.
+
+Each `PushMessage` call sends **one bMessage file** — there is no batch upload
+in the MAP spec.  To push multiple messages, use sequential
+`push_message()` calls.  See
+[MAP bMessage Format Reference §10](map_bmessage_format.md#10--bmessage-examples-by-type)
+for inline examples of every supported type.
+
+#### Bulk Download
+
+All messages on a device can be downloaded by walking the folder tree, listing
+messages per folder, then calling `Get` on each handle individually.  See
+[MAP bMessage Format Reference §7](map_bmessage_format.md#7--bulk-operations-download-and-upload-all-messages)
+for the full workflow and API usage.
 
 #### MNS Notification Monitoring
 
@@ -660,6 +778,15 @@ python -m bleep.cli classic-pan unserve --role nap
 is available on device objects; `NetworkServer1` is on the local adapter.
 A Linux bridge interface (e.g. `pan0`) may need to be created before serving.
 
+> **Note:** `NetworkClient.connect()` now performs a post-connect verification
+> (500 ms delay + `Connected` property check).  If the BNEP session drops
+> immediately after BlueZ returns, the command raises a descriptive error
+> instead of falsely reporting success.
+>
+> The CLI `classic-pan serve` command now blocks with `signal.pause()` to keep
+> the server registration alive.  Press **Ctrl-C** to cleanly unregister.
+> In debug mode, the `NetworkServer` object is retained on session state.
+
 ### 2.10  `cspp` / `classic-spp` – Serial Port Profile
 
 Register a custom SPP profile via BlueZ `ProfileManager1.RegisterProfile` on
@@ -768,6 +895,39 @@ python -m bleep.cli classic-bip AA:BB:CC:DD:EE:FF thumb 1000001 --output /tmp/th
 target device must be paired, trusted, and must advertise BIP (UUID `0x111A`
 or `0x111B`).
 
+#### Handle discovery
+
+BlueZ's experimental `Image1` interface exposes `Get`, `Properties`, and
+`GetThumbnail` — but **no image-listing method**.  Handles must be obtained
+through external means:
+
+| Method | When it works |
+|--------|---------------|
+| **AVRCP media browsing** | If the device is an A2DP source, cover-art handles are exposed via the `bip-avrcp` OBEX target. |
+| **Sequential probe** | Start from handle `0` or `1000001` and call `classic-bip props <handle>`, incrementing until the device returns an error. |
+| **Cross-profile discovery** | Image attachment handles may appear in MAP message metadata or FTP directory listings. |
+
+Run `classic-bip list` for a quick reminder of these approaches.
+
+### 2.13  SIM Access Profile (SAP) — informational
+
+SDP enumeration of some devices reveals `SIM Access` (UUID `0x112D`).  The
+BlueZ D-Bus API (`org.bluez.SimAccess1`) for this profile is **extremely
+limited**:
+
+| Method / Property | Description |
+|-------------------|-------------|
+| `Disconnect()` | Terminates an existing SAP connection. |
+| `Connected` (read-only) | Boolean indicating whether a SAP connection is active. |
+
+BlueZ exposes the **server** side of SAP — it allows the local host to
+*provide* SIM access to a remote client (e.g., a car kit), not to *consume*
+a remote device's SIM.  Consequently BLEEP **cannot** read SIM data from a
+phone that advertises SAP.
+
+If you need SIM access you must use AT commands over an RFCOMM serial channel
+(e.g., `craw` → `AT+CRSM` on devices that support it).
+
 ---
 
 ## 3  Logging
@@ -796,8 +956,10 @@ Enable verbose CLI flag `-v` to mirror *general* log on stdout.
 | `Failed to connect … Operation timed out` | Device busy or radio glitch | Retry; Classic connect uses 5×2 s back-off |
 | `org.freedesktop.DBus.Error.NoReply` or `Timed out waiting for response` during PBAP | Bluetooth controller stuck in half-open BR/EDR connection (BlueZ bug) | In `bluetoothctl` type `disconnect <MAC>` for the target device, wait 2-3 s, then re-run the command.  Power-cycling the phone is a second fallback. |
 | `OPP CreateSession failed` or `MAP CreateSession failed` | `bluetooth-obexd` not running, or device not paired/trusted | `sudo systemctl start bluetooth-obexd`; pair & trust device first |
+| OPP pull / FTP get / MAP get succeeds but file is empty or remote shows "failure in sending" | **obexd AppArmor confinement** — on Ubuntu, `obexd` runs under AppArmor and may only write to permitted paths (e.g. `~/.cache/obexd/`). If the destination is outside the permitted area, the transfer silently fails. | BLEEP uses a two-stage approach: obexd writes to `~/.cache/obexd/` (staging), then BLEEP moves the file to the final directory (`/tmp/bleep_received/` by default). Override the final directory with `--save-dir` or `BLEEP_RECEIVE_DIR` env var. |
 | `OPP transfer timed out` / `MAP transfer timed out` | Remote device did not complete OBEX transfer in time | Increase timeout, restart remote device, check logs |
 | `csend` / `crecv` → `Send failed` / `Receive failed` | RFCOMM socket disconnected or channel mismatch | Re-open with `copen`; verify channel with `cservices` |
+| `br-connection-profile-unavailable` on `gatt-enum` / `media-enum` for dual-mode audio devices | Host system lacks Bluetooth audio profile handlers (no PulseAudio/PipeWire/BlueALSA) — BlueZ `Device1.Connect()` requires a local handler for at least one remote profile | Install `bluez-alsa-utils` (`sudo apt-get install bluez-alsa-utils`) or ensure an audio server with Bluetooth support is running.  Run `bleep --check-env` to verify.  Confirmed fix on OnePlus 6T and Samsung S7 Active. |
 
 ---
 
@@ -806,7 +968,7 @@ Enable verbose CLI flag `-v` to mirror *general* log on stdout.
 ### Implemented
 * **PBAP** – phone-book dump via BlueZ obexd (CLI and debug mode).
 * **OPP** – file send and business-card pull via BlueZ obexd (debug mode `copp`).
-* **MAP** – folder browse, message list/get/push, inbox update, read/delete flags, multi-instance MAS selection (debug mode `cmap`).
+* **MAP** – folder browse, message list/get/push, bulk download-all/push-all, inbox update, read/delete flags, multi-instance MAS selection (debug mode `cmap`).
 * **FTP** – remote filesystem browse, get/put/mkdir/rm/cp/mv via BlueZ obexd (debug mode `cftp`).
 * **RFCOMM data exchange** – raw send/recv/interactive session over any RFCOMM channel (debug mode `copen`/`csend`/`crecv`/`craw`).
 * **PAN** – Personal Area Networking client and server via `Network1`/`NetworkServer1` (debug mode `cpan`, CLI `classic-pan`).
@@ -830,7 +992,7 @@ Enable verbose CLI flag `-v` to mirror *general* log on stdout.
 
 ---
 
-*Last updated: 2026-03-03 (Raw OBEX & L2CAP design docs, Basic Imaging Profile, IrMC Synchronization, SPP serial port profile, PAN networking, MAP multi-instance MAS selection, MAP MNS monitoring, metadata queries, CLI sub-commands, RFCOMM data exchange, OPP, MAP, FTP, transfer-poller dedup)*
+*Last updated: 2026-04-08 (MAP handle fix, PBAP watchdog 30 s, BIP handle discovery docs, SAP §2.13 docs)*
 
 ---
 
@@ -839,7 +1001,7 @@ Enable verbose CLI flag `-v` to mirror *general* log on stdout.
 
 | ID | Task | Status |
 |----|------|--------|
-| bc-01 | Research BlueZ D-Bus APIs for Classic (discovery, SDP, RFCOMM, PBAP) | ⏱️ pending |
+| bc-01 | Research BlueZ D-Bus APIs for Classic (discovery, SDP, RFCOMM, PBAP) | ✅ completed |
 | bc-02 | Design high-level Classic API surface mirroring BLE helpers | ✅ completed |
 | bc-03 | Implement `dbuslayer.device_classic` wrapper | ✅ completed |
 | bc-04 | Create SDP service-discovery helper (`classic_sdp.py`) | ✅ completed |
@@ -871,7 +1033,7 @@ Enable verbose CLI flag `-v` to mirror *general* log on stdout.
 | bc-36 | MAP multi-instance MAS selection (`--instance` flag, `cmap instances`, SDP discovery) | ✅ completed |
 | bc-37 | PAN constants: `NETWORK_INTERFACE`, `NETWORK_SERVER_INTERFACE`, PAN UUIDs | ✅ completed |
 | bc-38 | PAN D-Bus wrapper `dbuslayer/network.py` (`NetworkClient` + `NetworkServer`) | ✅ completed |
-| bc-39 | PAN operations layer `classic_pan.py` + debug command `cpan` | ✅ completed |
+| bc-39 | PAN operations layer `bleep/ble_ops/classic/pan.py` + debug command `cpan` | ✅ completed |
 | bc-40 | CLI `classic-pan` command (connect/disconnect/status/serve/unserve) | ✅ completed |
 | bc-41 | SPP D-Bus layer `spp_profile.py` (`SppProfile` + `SppManager`) | ✅ completed |
 | bc-42 | SPP debug command `cspp` (register/unregister/status) + CLI `classic-spp` | ✅ completed |
@@ -901,7 +1063,7 @@ Legend: ⏱️ pending 🔄 in-progress ✅ completed
 | RFCOMM data socket (`copen` / `csend` / `crecv`) | ✅ |
 | Interactive RFCOMM session (`craw`) | ✅ |
 | Object Push Profile (`copp send` / `copp pull`) | ✅ |
-| Message Access Profile (`cmap folders\|list\|get\|push\|inbox`) | ✅ |
+| Message Access Profile (`cmap folders\|list\|get\|push\|download-all\|push-all\|inbox`) | ✅ |
 | BLE scan presets (shared CLI `bleep scan --variant`) | ✅ |
 | OBEX FTP (`cftp ls\|cd\|get\|put\|mkdir\|rm\|cp\|mv`) | ✅ |
 | SYNC profile | ✅ |

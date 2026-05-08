@@ -9,10 +9,1667 @@ This page aggregates open tasks referenced across the project so contributors ha
 | Codebase (`bleep/**/*.py`) | Inline `# TODO:` comments | _(grep as needed)_ |
 | `bleep/docs/audio_recon.md` | Audio recon future work (Bonus Objectives) | _2026-02-28_ |
 | `bleep/docs/adapter_config.md` | Adapter configuration reference | _2026-02-28_ |
-| `bleep/ble_ops/amusica.py` | Amusica orchestration (core) | _2026-02-28_ |
+| `bleep/ble_ops/audio/amusica.py` | Amusica orchestration (core) | _2026-02-28_ |
 | `bleep/modes/amusica.py` | Amusica CLI mode | _2026-02-28_ |
 | `bleep/docs/agent_dbus_communication_issue.md` | Agent dispatch fix (debug mode pairing) | _2026-02-28_ |
 | `bleep/docs/mainloop_requirement_analysis.md` | GLib main-thread dispatch requirement | _2026-02-28_ |
+| `bleep/dbuslayer/media.py`, `bleep/ble_ops/audio/audio_codec.py` | Audio transport & GStreamer fixes | _2026-03-19_ |
+| `bleep/dbuslayer/media_stream.py`, `bleep/bt_ref/constants.py`, `bleep/cli.py` | MediaTransport discovery & media-enum enrichment | _2026-03-21_ |
+| `bleep/ble_ops/audio/audio_system.py`, `bleep/cli.py` | System-tool audio play/record (`--system` flag) | _2026-03-21_ |
+| `bleep/modes/exploration.py`, `bleep/core/observations.py`, `bleep/cli.py`, `bleep/ble_ops/classic/connect.py` | Data fidelity remediation (schema v10) | _2026-03-25_ |
+| `workDir/BigMoves/README.v2.8.0` | BLEEP v2.8.0 full augmentation plan (pre-work, main work, bonus, final) | _2026-03-25_ |
+| `bleep/modes/__init__.py`, `bleep/modes/debug_classic_obex.py` | Debug Mode lazy imports, MAP pagination & folder-context UX | _2026-03-30_ |
+| `bleep/docs/map_bmessage_format.md` | MAP bMessage format reference & test corpus (10 validated files) | _2026-03-30_ |
+| `bleep/ble_ops/classic/map.py`, `bleep/modes/debug_classic_obex.py` | MAP bulk download-all / push-all commands + operations-layer API | _2026-03-30_ |
+| `workDir/Pairing/README.pairing-expansion` | Pairing CLI expansion + pre-pair check + shared helpers refactor | _2026-03-31_ |
+| `workDir/bluez/doc/`, `workDir/BlueZDocs/`, `workDir/bluez-tools/`, `workDir/BlueZScripts/` | V2.8.1 BlueZ D-Bus interface gap analysis | _2026-04-02_ |
+| `bleep/cli.py`, `bleep/ble_ops/classic/map.py` | MAP CLI folder enumeration fix + future auto-resolve | _2026-04-15_ |
+| `bleep/dbuslayer/media_stream.py`, `bleep/dbuslayer/media.py`, `bleep/core/preflight.py` | MediaEndpoint1 contention pre-flight (complete) | _2026-04-17_ |
+| `bleep/pairing/__init__.py`, `bleep/ble_ops/audio/audio_tools.py`, `bleep/modes/amusica.py`, `bleep/modes/pair.py`, `bleep/modes/classic_connect.py`, `bleep/cli.py` | Audio profile activation, recording reliability & profile identity fixes (complete) | _2026-04-21_ |
+| `bleep/analysis/aoi_analyser.py`, `bleep/modes/aoi.py`, `bleep/core/observations.py`, `bleep/ble_ops/le/scan.py`, `bleep/cli.py` | AoI service-data normalisation, MAC validation & output fixes (v2.8.4) | _2026-05-07_ |
+| `bleep/modes/aoi.py`, `bleep/analysis/aoi_analyser.py`, `bleep/core/observations.py`, `bleep/cli.py`, `bleep/ble_ops/le/scan.py` | AoI Augmentation — Full Implementation (v2.8.4; schema v11, scan pipeline, SDP, pairing, deep mode) | _2026-05-07_ |
+| `bleep/core/observations.py` | MAC validation — reject incomplete/invalid MACs at DB boundary (v2.8.4) | _2026-05-07_ |
+
+---
+
+## MAC Validation — Reject Incomplete/Invalid MACs (v2.8.4, 2026-05-07) – COMPLETE
+
+**Problem**: The BLEEP database contained invalid MAC entries observed in terminal
+output: `4:A2:F9:BC:8E:95` (short first octet, only 1 hex digit instead of 2) and
+`/ORG/BLUEZ/HCI0/DEV_F4_B6_88_0B_90_22` (raw D-Bus path stored verbatim).  Root
+cause was the `_normalize_mac()` fallback `return mac.upper()` which stored any
+unparseable string without validation.
+
+**Policy**: It is preferable to drop a MAC than to zero-pad or guess.
+
+**Fix**: Changed `_normalize_mac()` return type to `Optional[str]`, returning
+`None` for any input that does not resolve to a strict 6-octet `XX:XX:XX:XX:XX:XX`
+format.  Added `None`-guard early-return in all ~22 public functions in
+`observations.py` that call `_normalize_mac()`.
+
+**Files modified**: `bleep/core/observations.py`,
+`tests/test_aoi_augmentation.py` (8 new rejection tests),
+`tests/test_observations_characteristics.py` (MAC fixture fix),
+`tests/test_observations_media.py` (MAC fixture fix).
+
+**Test results**: 122 AoI tests pass, 299/324 full suite pass (10 pre-existing
+failures unrelated to this change).
+
+---
+
+## AoI Augmentation — Full Implementation (v2.8.4, 2026-05-07) – COMPLETE
+
+**Goal**: Implement the complete AoI augmentation plan including multi-transport
+scan pipeline, device type classification, SDP discovery, pairing probe,
+deep re-enumeration, enhanced analysis methods, v11 schema, and report generation.
+
+**Files modified**:
+
+| File | Change |
+|------|--------|
+| `bleep/modes/aoi.py` | Complete rewrite: removed ~200 lines dead code; added `_validate_mac`, `_classify_device`, `_discover_sdp`, `_probe_pairing`, `_perform_deep_reenumeration`, `_has_auth_annotation`, `_normalise_service_element`, `_scan_target`; wired `--deep`, `--timeout`, `--no-db`, `--connectionless`, `--address` on scan; `db list` action; v11 field merging in db import/sync |
+| `bleep/analysis/aoi_analyser.py` | Added `db_only` param; `_analyse_sdp_records()`, `_analyse_pairing_profile()`, `_analyse_post_pair_delta()` methods; service list normalisation in `analyse_device()`; v11 field merging in `save_device_data()` and `analyse_device()`; safe `.get()` in `_generate_recommendations()`; report generators include SDP/pairing/delta sections; services section handles mixed types |
+| `bleep/core/observations.py` | Schema v11: `pairing_profile`, `sdp_summary`, `post_pair_delta` columns; v10→v11 migration; `store_aoi_analysis()` persists v11 fields; `get_aoi_analysis()` returns v11 fields; `_normalize_mac()` hardened with regex, D-Bus path extraction; `import re` added |
+| `bleep/cli.py` | `import signal` + `SIGPIPE` handler; `"db"` in `known_subcommands` |
+| `bleep/ble_ops/le/scan.py` | `LOG__GENERAL` → `LOG__DEBUG` on `_native_scan` debug print |
+| `tests/test_aoi_augmentation.py` | 58 tests covering all new functionality |
+| `tests/test_device_type_integration.py` | Schema version assertion: 10 → 11 |
+
+**Implementation details**:
+
+- **Scan pipeline**: `_scan_target()` follows classify → GATT → SDP → pair → deep sequence
+- **Device classification**: Uses `DeviceTypeClassifier.classify_with_mode()` from `bleep/analysis/device_type_classifier.py`
+- **SDP discovery**: Calls `discover_services_sdp()` from `bleep/ble_ops/classic/sdp.py` with `connectionless` flag support
+- **Pairing probe**: Uses `system_dbus__bluez_device__classic.pair()` via D-Bus
+- **Deep mode**: Post-pair re-enumeration via `EnumerationController` (LE) and SDP (Classic)
+- **v11 field flow**: `device_data["sdp_summary"]`, `device_data["pairing_profile"]`, `device_data["post_pair_delta"]` → merged into analysis dict → persisted via `store_aoi_analysis()`
+
+---
+
+## AoI Service-Data Normalisation, MAC Validation & Output Fixes (v2.8.4, 2026-05-07) – COMPLETE
+
+**Goal**: Fix six issues discovered during live AoI testing — `unhashable type: 'dict'` crashes in analyze/report, `'dict' has no attribute 'strip'` in db sync/import, debug log leaking to user output, D-Bus object paths stored as MACs, and `BrokenPipeError` on piped output.
+
+**Root cause**: `observations.get_device_detail()` returns `services` as `List[Dict]` (full SQLite rows), while AoI JSON files store `services` as `List[str]` (UUID strings). Code in `analyse_device()`, `db import`, and `db sync` assumed the list-of-strings shape, crashing when DB-loaded data was supplied.
+
+**Files modified**:
+
+| File | Change |
+|------|--------|
+| `bleep/analysis/aoi_analyser.py` | `analyse_device()` list branch normalises dict elements via `entry.get("uuid")` |
+| `bleep/modes/aoi.py` | `db import` (line ~776) and `db sync` Step 2 (line ~880) comprehensions pass through dicts |
+| `bleep/ble_ops/le/scan.py` | Changed `LOG__GENERAL` → `LOG__DEBUG` on `_native_scan` debug print |
+| `bleep/core/observations.py` | `_normalize_mac()` now validates format, extracts MACs from D-Bus paths; `import re` moved to top-level |
+| `bleep/cli.py` | Added `signal.signal(signal.SIGPIPE, signal.SIG_DFL)` in `main()` |
+| `tests/test_aoi_augmentation.py` | +11 tests (3 service normalisation, 8 MAC validation) → 54 total |
+| `tests/test_device_type_integration.py` | Schema version assertion updated 10 → 11 |
+
+**Checklist**:
+- [x] F1: `analyse_device()` list branch handles both UUID strings and DB row dicts
+- [x] F2: `db import` service comprehension normalised
+- [x] F3: `db sync` Step 2 service comprehension normalised
+- [x] F4: `[DEBUG] _native_scan returning` changed from `LOG__GENERAL` to `LOG__DEBUG`
+- [x] F5: `_normalize_mac()` validates MAC format and extracts from D-Bus paths
+- [x] F6: SIGPIPE handler added to `cli.py:main()`
+- [x] Tests: 54/54 AoI tests pass, 192/192 broader tests pass (1 pre-existing preflight failure excluded)
+- [x] Documentation: changelog, todo_tracker, learned-memories updated
+
+---
+
+## Audio profile activation, recording reliability & profile identity fixes (2026-04-21) – COMPLETE
+
+**Goal**: Close the behavioural gaps catalogued in
+`workDir/Audio/README.audio-troubleshooting-once-more` — divergent
+`audio-profiles` output between connect paths, `"Active Profile: off"`
+mis-reporting, `[-] Recording failed` false negatives, HSP capture
+nodes mis-classified as A2DP Source, and inconsistent BlueZ
+`bluez_card.*` presence.
+
+**Five fixes, all covered by `tests/test_audio_regressions.py`**:
+
+| # | Scope | Files | Validation |
+|---|-------|-------|------------|
+| 1 | Opt-in BlueZ profile activation after RFCOMM bring-up; `--no-profiles` CLI flag on `bleep classic-connect` / `bleep connect` / `bleep pair` | `bleep/pairing/__init__.py`, `bleep/modes/pair.py`, `bleep/modes/classic_connect.py`, `bleep/cli.py` | `test_fix1_svc_map_has_audio_uuid_accepts_both_forms`, `test_fix1_activate_profiles_false_skips_device_connect`, `test_fix1_activate_profiles_true_calls_device_connect_only_for_audio` |
+| 2 | `get_profiles_for_card` regex widening + pattern/name normalisation in `identify_bluetooth_profiles_from_alsa` | `bleep/ble_ops/audio/audio_tools.py` | `test_fix2_regex_accepts_hyphenated_profiles`, `test_fix2_pattern_normalisation_matches_hyphen_and_underscore` |
+| 3 | `amusica status` surfaces Active profile explicitly | `bleep/modes/amusica.py` | `test_fix3_amusica_status_prints_active_profile` |
+| 4 | `record_from_source` uses `Popen`+`SIGINT` timebox with WAV-header success guard and stderr DEBUG capture | `bleep/ble_ops/audio/audio_tools.py` | `test_fix4_record_returns_true_on_sigint_with_valid_output`, `test_fix4_record_returns_false_on_empty_output` |
+| 5 | `pw-dump` `api.bluez5.profile` / `codec` / `device.profile.name` extraction; classifier prefers props over node-name | `bleep/ble_ops/audio/audio_tools.py` | `test_fix5_pw_dump_bluez5_props_are_extracted`, `test_fix5_classifier_prefers_bluez5_profile_over_node_name` |
+
+Resolution narrative and manual verification recipe are documented in
+the "Resolution Notes (2026-04-21)" section of
+`workDir/Audio/README.audio-troubleshooting-once-more`.
+Changelog entry: `bleep/docs/changelog.md` → "Audio profile activation,
+recording reliability & profile identity fixes (2026-04-21)".
+
+---
+
+## MediaEndpoint1 Contention Pre-flight (2026-04-17) – COMPLETE
+
+**Goal**: Before `MediaStreamManager._acquire_via_endpoint()` registers a
+BLEEP-owned `MediaEndpoint1` and cycles the device connection, detect whether
+another endpoint provider (BlueALSA, PipeWire bluez5 SPA plugin, or PulseAudio
+`module-bluetooth-discover`) has already claimed the complement role.  When a
+competing endpoint is registered, BlueZ's `a2dp_select_eps` frequently picks
+the pre-existing endpoint during AVDTP re-discovery, so BLEEP's `SetConfiguration`
+callback is never invoked and `wait_for_transport()` times out.
+
+**Symptom**: Terminal logs show:
+
+* BlueZ is happy, device is `Connected=yes`, profile list includes A2DP.
+* `audioplay` hangs for 15 s and emits the timeout raised from
+  `_acquire_via_endpoint`.
+* `bluealsa-cli list-pcms` (or `pw-cli list-objects | grep bluez_output`) shows
+  the complement profile already claimed by another daemon.
+
+**Design outline** (refined 2026-04-17 after the structured-status /
+BlueALSA-correlator diagnostic landed):
+
+Two-layer probe.  BlueZ's `GetManagedObjects()` returns *BlueZ-owned* objects
+only (remote-device SEPs at `/org/bluez/hciN/dev_.../sepN`, transports at
+`.../fdN`); it does **not** republish externally registered `MediaEndpoint1`
+objects.  Those live on the registering client's bus name under whatever path
+the client chose (BLEEP: `/bleep/media/endpoint`; BlueALSA: `/org/bluealsa/…`;
+PipeWire: `/MediaEndpoint/…`).  Enumeration therefore walks D-Bus *names*, not
+BlueZ managed objects.
+
+1. **Primary probe — zero-cost inference.**  Reuse
+   `_check_bluetooth_audio_stack_detailed()` (structured per-backend status)
+   and `AudioToolsHelper.list_bluealsa_pcms()` (MAC-scoped BlueALSA PCMs).
+   Any backend whose `status == "active"` is synthesised as an
+   `EndpointOwner` for each complement UUID that backend is known to register
+   by default (A2DP Source + A2DP Sink + HFP AG + HFP HF for all three
+   backends).  This alone is sufficient to pre-empt the 15 s timeout in every
+   deployment we have observed in terminal logs.
+2. **Deep probe (opt-in, `deep_probe=True`).**  Authoritative enumeration via
+   `org.freedesktop.DBus.ListNames` → per-name `Introspect` for
+   `<interface name="org.bluez.MediaEndpoint1">` → `GetConnectionUnixProcessID`
+   → `/proc/<pid>/comm` / `cmdline`.  Every call goes through
+   `bleep.dbus.timeout_manager.call_method_with_timeout` so the scan cannot
+   hang.  Runs only when the caller explicitly requests it
+   (`audiocfg --endpoints`, `mediaenum --endpoints`) or when the primary probe
+   is ambiguous.
+3. **Classify severity.**
+   * `"block"` — BlueALSA daemon `active` and the complement UUID is one
+     BlueALSA always claims.  BlueZ will race-lose against BlueALSA with very
+     high probability (observed failure mode).
+   * `"warn"` — `_detect_audio_stack_conflicts()` emitted a warning, or the
+     deep probe found ≥1 non-BLEEP competitor.
+   * `"info"` — only BLEEP itself owns the complement UUID.
+   * `"none"` — no audio backends active.
+4. **Runtime gate.**  Insert the primary probe at the top of
+   `MediaStreamManager._acquire_via_endpoint` (after `complement_uuid` is
+   computed, before `BleepMediaEndpoint.register()`).  On `severity == "block"`
+   and without `force_endpoint=True`, raise before registering/cycling (saves
+   15 s + a device disconnect).  On `"warn"`, print and proceed.  The
+   existing `wait_for_transport` timeout message re-injects the report when
+   the primary probe missed the conflict.
+5. **User overrides.**  New `--force-endpoint` flag on `audioplay`,
+   `audiorec` (debug shell + CLI) bypasses the gate.
+6. **Surfaces.**  `audiocfg` prints a new "Endpoint contention" section (fast
+   path by default; `--endpoints` enables the deep probe).  `mediaenum`
+   annotates printed endpoints with owner attribution when `--endpoints` is
+   passed.  `audio-recon` emits a one-line summary.
+7. **Tests.**  Extend `tests/test_preflight.py`: primary probe (monkeypatched
+   backend snapshots), deep probe (monkeypatched `SystemBus` + canned
+   introspection XML for fake bus names), runtime gate (spy on
+   `BleepMediaEndpoint` instantiation), `--force-endpoint` override.
+
+Implementation gate (why this was deferred until now): the structured
+`audiocfg` diagnostic and BlueALSA correlator had to ship first so real
+failure reports could inform the edge cases (multi-adapter hosts, partial
+BlueALSA/PipeWire coexistence).  Those shipped 2026-04-17 and are validated;
+this item may now proceed.
+
+| # | Deliverable | Status | Files |
+|---|-------------|--------|-------|
+| 1 | `EndpointOwner` / `EndpointContentionReport` dataclasses + primary probe | [x] | `bleep/core/preflight.py` |
+| 2 | Deep probe (`ListNames` + `Introspect` + PID attribution, timeout-guarded) | [x] | `bleep/core/preflight.py`, uses `bleep/dbus/timeout_manager.py` |
+| 3 | `MediaStreamManager` pre-flight gate + `force_endpoint` override + amended timeout error | [x] | `bleep/dbuslayer/media_stream.py` |
+| 4 | Debug-shell + CLI surfaces (`audiocfg --endpoints`, `mediaenum --endpoints`, `--force-endpoint`) | [x] | `bleep/modes/debug_media.py`, `bleep/cli.py` |
+| 5 | `audio-recon` one-line contention summary | [x] | `bleep/ble_ops/audio/audio_recon.py` |
+| 6 | Unit tests (primary, deep, runtime gate, override) | [x] | `tests/test_preflight.py` (9 new tests) |
+| 7 | Changelog + this entry status + audio/d-bus doc updates | [x] | `bleep/docs/changelog.md`, `bleep/docs/todo_tracker.md` |
+
+---
+
+## MAP CLI Folder Enumeration Fix (2026-04-15) – COMPLETE
+
+**Goal**: Fix the `classic-map folders` and `classic-map list` CLI commands so they correctly enumerate the full MAP folder hierarchy on devices with deep structures (e.g. `telecom/msg/{inbox,draft}`) and gracefully handle non-leaf folder access.
+
+**Root cause**: The CLI `folders` action called the flat `list_folders()` (single `ListFolders` at the MAP root) instead of the recursive `list_folder_tree()` that already existed and was used by the debug-mode `cmap folders` command.  The CLI `list` action had no recovery logic for "Bad Request" errors from non-leaf folders, unlike its debug-mode counterpart.
+
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `cli.py` `folders` action re-wired to `list_folder_tree()` + `collect_leaf_paths()` with indented tree output | [x] |
+| 2 | `cli.py` `list` action "Bad Request" recovery: enumerate tree, suggest valid leaf paths | [x] |
+| 3 | Future work item for auto-resolve intermediate folders added to todo_tracker | [x] |
+| 4 | Changelog updated with Unreleased entry | [x] |
+
+---
+
+## Classic Connect CLI & Debug Fix (2026-03-31) – COMPLETE
+
+**Goal**: Add a working Bluetooth Classic connection path that bypasses the `Device1.Connect()` profile-handler requirement, both as a new `bleep classic-connect` CLI command and as fixes to the debug mode `connect`/`cconnect` commands.
+
+**Root cause**: BlueZ `Device1.Connect()` only succeeds when a profile handler is registered for at least one of the remote device's services.  For devices exposing raw RFCOMM services without a BlueZ profile handler, it fails with `br-connection-profile-unavailable`.  The working path is SDP discovery + raw RFCOMM socket.
+
+| # | Deliverable | Status |
+|---|-------------|--------|
+| 1 | `classic_connect_sdp_rfcomm()` shared helper in `bleep.pairing` | [x] |
+| 2 | `bleep classic-connect` CLI command (`modes/classic_connect.py` + `cli.py` subparser) | [x] |
+| 3 | Debug `cconnect` — SDP+RFCOMM fallback when `Device1.Connect()` fails | [x] |
+| 4 | Debug `connect` → `_connect_classic` — pass `debug_state` to `_c_enum` | [x] |
+| 5 | `bleep connect` — auto-detect Classic transport and route to classic-connect | [x] |
+| 6 | `connect_and_enumerate__bluetooth__classic` — skip redundant auto-pair for already-paired devices | [x] |
+| 7 | Documentation: changelog, debug_mode, todo_tracker | [x] |
+
+---
+
+## Pairing CLI Expansion (2026-03-31) – COMPLETE
+
+**Goal**: Augment BLEEP pairing capabilities with a first-class `bleep pair` CLI command, pre-pair status checks, forced bond reset, and eliminate duplicated pairing helpers across modules.
+
+**Status**: Complete.
+
+### Deliverables
+
+- [x] **P1** `bleep/pairing/__init__.py` — Shared pairing helpers: `find_device_path`, `resolve_device_for_pair`, `remove_stale_bond`, `register_pair_agent`, `check_pair_status`, `report_pair_status`
+- [x] **P2** `bleep/modes/pair.py` — New CLI handler for `bleep pair` with full flag parity to the debug-mode `pair` command
+- [x] **P3** `bleep/cli.py` — Registered `pair` subparser and dispatch
+- [x] **P4** `bleep/modes/debug_pairing.py` — Refactored to import from `bleep.pairing`; added `--check` and `--reset` flags; pre-pair status check before pairing
+- [x] **P5** `bleep/dbuslayer/device_classic.py` — Added `is_paired()`, `is_trusted()`, `is_bonded()`, `is_connected()` for API parity with LE wrapper
+- [x] **P6** `bleep/dbuslayer/pin_brute.py` — `_remove_stale_bond` delegates to shared `bleep.pairing.remove_stale_bond`
+- [x] **P7** `bleep/ble_ops/classic/connect.py` — `_do_auto_pair` uses shared `register_pair_agent` and `find_device_path`
+- [x] **P8** `bleep/modes/agent.py` — `_get_device_path` delegates to shared `resolve_device_for_pair`
+- [x] **P9** Documentation updated: `changelog.md`, `debug_mode.md`, `pairing_agent.md`, `todo_tracker.md`
+
+---
+
+## MAP bMessage Format Reference & Test Corpus (2026-03-30) – COMPLETE
+
+**Goal**: Document the MAP bMessage envelope specification, validate the LENGTH calculation rules against the live codebase, create a comprehensive test message corpus covering all MAP message types and structural variations, and produce tooling for batch validation and push operations.
+
+**Status**: Complete.
+
+### Deliverables
+
+- [x] **D1** `bleep/docs/map_bmessage_format.md` — Full bMessage format reference with inline examples for all 5 types: envelope structure, LENGTH calculation, nested BENV for forwarded messages, bulk operation analysis, PushMessage args, ListMessages filter fields, implementation code-path table
+- [x] **D2** `bleep/docs/bl_classic_mode.md` §2.9 updated with bMessage format summary, bulk operation notes, cross-reference to new doc
+- [x] **D3** `bleep/docs/README.md` TOC updated with MAP bMessage format reference link
+- [x] **D4** `bleep/docs/changelog.md` Unreleased section updated with format reference entry
+
+### Key findings
+
+- **One file = one message**: `PushMessage` accepts exactly one bMessage file per call; no batch upload in the MAP spec. Multiple `BEGIN:BMSG` blocks in a single file are not valid.
+- **Nested BENV**: Forwarded/attached messages use nested `BEGIN:BENV`/`END:BENV` blocks, each with its own VCARD and BBODY/LENGTH.
+- **LENGTH precision**: The `LENGTH:` field must match the exact byte count from `BEGIN:MSG\r\n` through `END:MSG\r\n` inclusive (CRLF required). Mismatches cause silent device-side rejection despite successful OBEX transfer. BLEEP now auto-normalizes LF→CRLF and recalculates LENGTH before every push.
+- **Bulk download**: Enumerate folders → list messages per folder → get each handle. Scriptable via `bleep.ble_ops.classic.map` API.
+- **PushMessage args**: `Transparent`, `Retry`, `Charset` are defined in the BlueZ API but not currently exposed by BLEEP (empty dict passed).
+
+---
+
+## MAP Bulk Download & Upload Commands (2026-03-30) – COMPLETE
+
+**Goal**: Implement `cmap download-all` and `cmap push-all` debug commands with corresponding operations-layer API (`download_all_messages`, `push_all_messages`), and refactor `_collect_leaf_paths` from the debug layer into the operations layer as a public utility.
+
+**Status**: Complete.
+
+### Deliverables
+
+- [x] **D1** `bleep/ble_ops/classic/map.py` — `collect_leaf_paths()` public utility (moved from debug layer)
+- [x] **D2** `bleep/ble_ops/classic/map.py` — `download_all_messages()` with folder tree walk, per-folder session, pagination support, progress callback
+- [x] **D3** `bleep/ble_ops/classic/map.py` — `push_all_messages()` with bMessage validation, dry-run, continue-on-error, progress callback
+- [x] **D4** `bleep/modes/debug_classic_obex.py` — `cmap download-all [dest] [--folders] [--count N]` sub-command
+- [x] **D5** `bleep/modes/debug_classic_obex.py` — `cmap push-all <dir|glob> [folder] [--dry-run]` sub-command
+- [x] **D6** `bleep/modes/debug_classic_obex.py` — `_collect_leaf_paths` now delegates to `map.collect_leaf_paths`
+- [x] **D7** `bleep/docs/map_bmessage_format.md` §7 updated with debug commands and API examples; §11 table updated
+- [x] **D8** `bleep/docs/bl_classic_mode.md` §2.9 updated with download-all/push-all usage examples
+- [x] **D9** `bleep/docs/changelog.md` Unreleased section updated
+
+### Design decisions
+
+- **One session per folder for download**: `_populate_message_objects` creates D-Bus message objects within the calling session; handles are only valid within that session. Opening one `MapSession` per folder and downloading all messages before moving to the next avoids stale object paths.
+- **One session per push for upload**: Keeps the existing `push_message` session-per-call pattern for maximum device compatibility; OBEX sessions can become stale after a push.
+- **Continue-on-error**: Both bulk operations log per-item failures and continue the batch, matching the `cmap peek` pattern.
+- **`.bmsg` extension**: Downloaded files use `.bmsg` for immediate round-trip compatibility with `push-all`.
+
+---
+
+## MAP bMessage CRLF Normalization & LENGTH Fix (2026-03-30) – COMPLETE
+
+**Goal**: Fix silent push failures caused by bMessage files using LF line endings and LF-based LENGTH values, which are silently rejected by the remote Message Access Server despite OBEX transfer success.
+
+**Status**: Complete.
+
+### Root cause
+
+The MAP specification mandates CRLF (`\r\n`) line endings. Test bMessage files and user-crafted files used bare LF (`\n`), causing the LENGTH field to undercount once the MAS expected CRLF. BlueZ's `obexd` passes file content as-is via `obc_transfer_put` — it does not normalize line endings. The MAS silently discards messages with incorrect LENGTH or non-CRLF formatting even when the OBEX transfer itself succeeds.
+
+### Deliverables
+
+- [x] **D1** `bleep/ble_ops/classic/map.py` — `normalize_bmessage(raw)` helper: converts bare LF→CRLF, recalculates all LENGTH fields (including nested BENV blocks)
+- [x] **D2** `bleep/ble_ops/classic/map.py` — `_normalize_for_push(filepath)` temp-file wrapper integrated into `push_message()`, covering all push paths (single, batch, CLI)
+- [x] **D3** `bleep/modes/debug_classic_obex.py` — `_validate_bmsg_length()` updated to warn about LF-only line endings and inform user about auto-normalization
+- [x] **D4** `bleep/ble_ops/classic/map.py` — `push_all_messages()` dry-run path now reports whether each file will be normalized
+- [x] **D5** `workDir/MAP/map_test_messages/*.bmsg` — All 10 test files converted to CRLF with correct LENGTH values
+- [x] **D6** `bleep/docs/map_bmessage_format.md` §5 corrected: CRLF requirement documented, LF references removed, normalization chain documented
+- [x] **D7** `bleep/docs/changelog.md` updated with fix entries
+
+### Evidence
+
+- Real messages downloaded from Samsung device via `cmap download-all` use CRLF and correct LENGTH (confirmed via hex dump)
+- BlueZ `obexd/client/map.c` and `transfer.c` pass file content without modification to the OBEX layer
+- BlueZ `test/map-client` reference implementation does not normalize line endings
+
+---
+
+## MAP push-all Session Exhaustion Fix (2026-03-30) – COMPLETE
+
+**Goal**: Prevent transient OBEX session-creation timeouts when `cmap push-all` pushes many files in rapid succession.
+
+**Status**: Complete.
+
+### Root cause
+
+Each `push_message()` call creates and tears down a `MapSession` (OBEX session).  When 8+ pushes execute back-to-back with no inter-push delay, `obexd` (or the remote MAS) fails to release the prior session's resources before the next `CreateSession` call, producing `org.bluez.obex.Error.Failed: Timed out waiting for response`.  The BlueZ reference `test/map-client` is interactive (inherent human delay), so this condition never occurs in the reference implementation.
+
+### Deliverables
+
+- [x] **D1** `bleep/ble_ops/classic/map.py` — `push_all_messages()` gains a `delay` parameter (default 1.5s) that inserts a cooldown between consecutive pushes
+- [x] **D2** `bleep/ble_ops/classic/map.py` — Automatic single-retry with 3s backoff on transient session-creation timeouts
+- [x] **D3** `bleep/modes/debug_classic_obex.py` — `cmap push-all` gains `--delay N` flag
+- [x] **D4** `bleep/docs/map_bmessage_format.md` §7 updated with delay/retry documentation
+- [x] **D5** `bleep/docs/changelog.md` updated with fix entry
+
+---
+
+## BLEEP v2.8.0 — Augmentation, Expansion, and Improvement Plan (2026-03-25) – IN PROGRESS
+
+**Goal**: Deliver the v2.8.0 feature set as specified in `workDir/BigMoves/README.v2.8.0`. Work is organised into Pre-Work (v2.7.x finalization), Main Work (ten feature areas), a Bonus objective (audio capture & transcription), and Final Work (documentation, review, changelog).
+
+**Version**: `bleep/__init__.py` at `2.8.0` — all Pre-Work, Main Work (M1–M10), Bonus, and Final Work complete.
+
+**Pre-Work Status**: All P0 tasks completed (2026-03-26). Additionally: backward-compat stubs removed (all imports use canonical subpackage paths), schema version persistence bug fixed.
+
+### Dependency Graph
+
+```
+Pre-Work (P0-1 through P0-9) — all independent, can parallelize
+    │
+    ├── P0-2 (cconnect GLib fix) follows pair --interactive lessons
+    ├── P0-8 (ble_ops reorg) should complete before M1–M10
+    ├── P0-9 (dual scan) — new for v2.8.0
+    │
+    v
+Main Work — with dependencies:
+    M3 (Agent PIN list, downgrade) ← M1 Stage 3 (PIN guessing)
+    M6 (ALSA config) ← M1 Stage 4 (record/play config)
+    M2 (RFCOMM probe, builds on existing SDP)
+    M7.3 (RFCOMM binding) depends on M2 (RFCOMM probe)
+    M5 (Device ID, uses bt_ref/uuids.py internally) — self-contained
+    │
+    v
+Bonus (Audio Capture/Routing) — depends on M6 (capture/ALSA routing only; transcription is self-contained)
+    │
+    v
+Final Work (F1–F3)
+```
+
+**Known test devices for acceptance validation** (from README.v2.8.0):
+- `CC:50:E3:B6:BC:A6` — BLE CTF (no pairing, GATT services/characteristics)
+- `D8:3A:DD:0B:69:B9` — Classic BT (requires PIN "12345", SDP enumeration)
+- `53:4A:52:FE:01:38` — Audio device (media playback control, audio streaming)
+
+---
+
+### P0-1: Code, Variable, and Database Cleanup
+
+**Status**: Done
+
+**Existing structures**:
+- Schema v10 in `bleep/core/observations.py` (line 55, `_SCHEMA_VERSION = 10`)
+- MAC normalization via `_normalize_mac()` → `.upper()` (lines 511–524)
+- v7→v8 migration uppercases MACs across all FK tables (lines 385–404)
+- v8→v9 migration uppercases UUIDs
+- FK protection via `_ensure_device_exists` on most upsert paths
+- `safe_db_operation` retry decorator in `bleep/analysis/aoi_analyser.py` (lines 41–76)
+
+**Remaining gaps to close**:
+- [x] Audit media snapshot paths: added `_ensure_device_exists(cur, row["mac"])` to `snapshot_media_player()` and `snapshot_media_transport()` in `observations.py`
+- [x] Extended CLI MAC normalization in `cli.py main()` to cover `pair`, `trust`, `untrust`, `remove_bond`, `source`, `sink` arguments
+- [x] Add `characteristics`, `descriptors`, `device_type_evidence` to the table list in `maintain_database()` (confirmed present at line ~1306 in `observations.py`)
+- [x] Fix pre-existing issue: `classic-scan` debug branch `d["class"]` → `d["device_class"]` (fixed in P0-1, confirmed in changelog v2.7.40)
+- [x] Fix pre-existing issue: `bleep/modes/scratch.py` `timeout=` → `timeout_connect=` (fixed in P0-1, confirmed in changelog v2.7.40)
+- [x] Ensure no loss of existing functionality after all cleanup
+
+**Expected outcome**: Zero FK constraint failures under normal operation; uniform uppercase MACs from CLI through DB; complete maintenance reporting.
+
+---
+
+### P0-2: `cconnect` Blocking and GLib MainLoop Alignment
+
+**Status**: Done
+
+**Lesson from `pair --interactive`** (established pattern in `bleep/modes/debug_pairing.py` `_cmd_pair_single`):
+1. `stop_glib_mainloop(state)` — free the default `MainContext` from the background daemon thread
+2. Register the pairing agent on the main thread
+3. `PairingAgent.pair_device()` runs a temporary `GLib.MainLoop` on the **main thread** (`bleep/dbuslayer/agent.py` line ~1048), which reliably dispatches `RequestPinCode` / `RequestPasskey` callbacks
+4. `ensure_glib_mainloop(state)` — restart background loop for normal shell operation
+
+**Why backgrounding `cconnect` is wrong**: Documented in `bleep/docs/agent_dbus_communication_issue.md` and `bleep/docs/mainloop_requirement_analysis.md` — `dbus.service.Object` method dispatch does **not** work when the `MainLoop` is only on a background thread. Agent callbacks would fail, breaking any auto-pair step.
+
+**Current problem in `cconnect`** (`bleep/modes/debug_classic.py` line ~81):
+- Calls `connect_and_enumerate__bluetooth__classic` which may internally call `ensure_default_pairing_agent()` + `device.pair()` without stopping the background GLib loop
+- Agent dispatch during auto-pair is therefore unreliable
+- The synchronous blocking of connection + SDP is **acceptable** — it reflects the reality of Classic BT operations
+
+**Plan**:
+- [x] Apply GLib stop/restart **only when pairing is needed**: detect when `connect_and_enumerate__bluetooth__classic` calls `ensure_default_pairing_agent()` / `device.pair()` and wrap that specific section with `stop_glib_mainloop(state)` / `ensure_glib_mainloop(state)`. When the device connects without pairing (no agent dispatch needed), skip the GLib stop/restart to avoid unnecessary churn and potential signal-handling disruption.
+- [x] Investigate whether `classic_connect.py`'s internal auto-pair should use `PairingAgent.pair_device()` (temp main-thread loop) instead of `ClassicDevice.pair()` (blocking `Pair()` D-Bus call) for reliable agent dispatch
+- [x] Add progress messages at each stage of `connect_and_enumerate__bluetooth__classic`:
+  - `[*] Scanning for {mac}... (attempt {n}/{max})`
+  - `[*] Connecting to {mac}...`
+  - `[*] Pairing required — invoking agent...`
+  - `[*] Running SDP discovery...`
+
+**Expected outcome**: `cconnect` auto-pair works as reliably as `pair --interactive`; GLib stop/restart only applied when agent dispatch is needed; user has visibility into progress during synchronous operations.
+
+---
+
+### P0-3: Expand `pbap` Error Handling for "Transport got disconnected"
+
+**Status**: Done
+
+**Current state**: `cmd_pbap` in `bleep/modes/debug_classic.py` (line ~395) and CLI `classic-pbap` in `bleep/cli.py` (line ~1549) call `pbap_dump_async` from `bleep/ble_ops/classic/pbap.py`. Error handling uses `result.get("error")` and `print_detailed_dbus_error` but does not match `org.bluez.obex Error Failed: Transport got disconnected`.
+
+**Plan**:
+- [x] In `bleep/ble_ops/classic/pbap.py`, add specific detection of `"Transport got disconnected"` in the error string
+- [x] Print actionable message: `[!] OBEX transport disconnected — the target device may not have 'Contact Sharing' enabled (check Bluetooth settings on the device).`
+- [x] Mirror the same hint in `cmd_pbap` (debug mode) and CLI `classic-pbap` handler
+
+**Expected outcome**: Users see a clear, actionable message directing them to enable Contact Sharing on the target device.
+
+---
+
+### P0-4: BlueALSA API Call Uniformity (`bluealsa-cli` vs `bluealsactl`)
+
+**Status**: Done
+
+**Current state**: Only `bluealsa-cli` is used — `bleep/core/preflight.py` (`shutil.which("bluealsa-cli")`) and `bleep/ble_ops/audio/audio_tools.py` (`self._bluealsa_cli_path`). Zero occurrences of `bluealsactl`. BlueALSA >= 4.0 renamed `bluealsa-cli` to `bluealsactl`.
+
+**Plan**:
+- [x] In `bleep/ble_ops/audio/audio_tools.py`, make the tool name resolve via fallback chain: `shutil.which("bluealsactl")` first, then `shutil.which("bluealsa-cli")`
+- [x] Update `bleep/core/preflight.py` to check for either binary and report which was found
+- [x] No functional changes to how the tool is invoked (same CLI arguments)
+
+**Expected outcome**: BLEEP works with both older (`bluealsa-cli`) and newer (`bluealsactl`) BlueALSA installations.
+
+---
+
+### P0-5: Consistent CLI Adapter Reporting
+
+**Status**: Done
+
+**Current state** — inconsistent adapter guards:
+- `bleep/cli.py` connect: catches `NotReadyError` → `"[!] Bluetooth adapter not ready"` (line ~617)
+- `bleep/cli.py` classic-scan: checks `adapter.is_ready()` (line ~1192)
+- Debug mode BLE: no explicit adapter guard before opening the shell
+- Debug `cscan`: checks `adapter.is_ready()`
+- Debug `cconnect`: surfaces as failed connect error, not clear adapter message
+
+**Plan**:
+- [x] Create `require_adapter(adapter_name=None)` in `bleep/core/preflight.py` — reuses `adapter.is_ready()`, raises `NotReadyError` with human-readable message
+- [x] Apply at: debug shell startup (`bleep/modes/debug.py` `main()`), `cmd_cconnect`, `cmd_cscan`, and all CLI Bluetooth subcommands in `bleep/cli.py`
+
+**Expected outcome**: Every BLEEP entry point that requires a Bluetooth adapter provides a uniform `[!] Bluetooth adapter not found or not ready` message.
+
+---
+
+### P0-6: BLE Debug Mode `services` Caching
+
+**Status**: Done
+
+**Current state**: `cmd_services` in `bleep/modes/debug_gatt.py` (line ~98) calls `state.current_device.services_resolved()`. If `is_services_resolved()` is `False`, logs and returns `[]` — no retry, no resolve trigger, no in-memory cache for later commands.
+
+**Plan**:
+- [x] In `cmd_services`, if `is_services_resolved()` is `False`, attempt `connect()` if not connected, then poll `ServicesResolved` D-Bus property for up to 10s
+- [x] On success, store the result in `state.current_mapping` for reuse by subsequent commands
+- [x] Add `--refresh` flag to force re-enumeration even when cached mapping exists
+
+**Expected outcome**: `services` resolves proactively, caches in `DebugState`, re-enumerates only on `--refresh`.
+
+---
+
+### P0-7: Classic `cpan status` Freshness
+
+**Status**: Done
+
+**Current state**: `cmd_cpan` `status` in `bleep/modes/debug_classic_profiles.py` (line ~56) calls `pan_status(mac)` from `bleep/ble_ops/classic/pan.py`, which queries D-Bus `org.bluez.Network1` properties.
+
+**Investigation result**: `classic_pan.py` `status()` calls `NetworkClient` which uses `dbus.Interface(..., DBUS_PROPERTIES).Get(...)` per property — these are live D-Bus reads, not a Python-side cache. If staleness is observed, the cause is BlueZ not updating `Network1` properties until an event triggers refresh, not application-side caching.
+
+**Plan**:
+- [x] Replace three separate `Get()` calls with a single `GetAll("org.bluez.Network1")` for atomicity (avoids race between individual property reads)
+- [x] If the issue persists after atomicity fix, document as a BlueZ limitation
+
+**Expected outcome**: `cpan status` uses atomic property read; staleness from BlueZ itself is documented as a known limitation.
+
+---
+
+### P0-8: Re-organize `ble_ops` into `le/`, `classic/`, `common/`, `audio/`
+
+**Status**: Done
+
+**Current state**: `bleep/ble_ops/` contains 32 files mixing LE-specific (`scan.py`, `connect.py`, `reconnect.py`, `brute.py`, `enum_*.py`, `ctf*.py`), Classic-specific (`classic_*.py` — 12 files), shared (`conversion.py`, `uuid_utils.py`, `modalias.py`, `structural.py`), and audio (`amusica.py`, `audio_*.py` — 6 files).
+
+**Plan**:
+```
+bleep/ble_ops/
+├── __init__.py          # re-exports all current public symbols for backward compat
+├── common/
+│   ├── __init__.py
+│   ├── conversion.py
+│   ├── uuid_utils.py
+│   ├── modalias.py
+│   └── structural.py
+├── le/
+│   ├── __init__.py
+│   ├── scan.py, scan_modes.py, connect.py, reconnect.py
+│   ├── brute.py, enum_controller.py, enum_helpers.py
+│   └── ctf.py, ctf_discovery.py
+├── classic/
+│   ├── __init__.py
+│   ├── connect.py, sdp.py, pbap.py, opp.py, ftp.py
+│   ├── map.py, pan.py, spp.py, ping.py, version.py
+│   ├── bip.py, sync.py
+│   └── rfcomm.py          # NEW for M2
+└── audio/
+    ├── __init__.py
+    ├── amusica.py, audio_tools.py, audio_codec.py
+    ├── audio_recon.py, audio_system.py
+    └── audio_profile_correlator.py
+```
+
+**Migration strategy (completed)**:
+- [x] Moved 32 files into `le/`, `classic/`, `common/`, `audio/` subdirectories
+- [x] `bleep/ble_ops/__init__.py` re-exports core public symbols from new locations
+- [x] Updated ~181 import sites across 62 files (`cli.py`, `modes/*.py`, `dbuslayer/*.py`, `analysis/*.py`, `scripts/*.py`, `tests/*.py`, `workDir/Functions/*.py`) to canonical subpackage paths
+- [x] Backward-compat stub modules initially created, then **removed** — all imports now use canonical paths
+- [x] Verified with `python3 -c "from bleep.ble_ops import *"` and compile checks
+- [x] No functional changes — pure restructure
+
+**Outcome**: Clean separation of LE, Classic, shared, and audio operations. All imports use canonical subpackage paths. Old flat paths raise `ModuleNotFoundError`.
+
+---
+
+### P0-9: Dual Device Scan Command (NEW)
+
+**Status**: Done
+
+**Current state**:
+- `brute_scan` in `bleep/ble_ops/le/scan.py` (line ~787): sequential BR/EDR then LE (half timeout each)
+- `scan_audio_targets` in `bleep/ble_ops/audio/amusica.py`: uses `{"Transport": "auto"}` for single-session combined discovery
+- `discover_devices` in `bleep/core/device_management.py`: supports `transport_type="auto"`
+- CLI `bleep scan`: has `--variant` (passive/naggy/pokey/brute) but **no** `--transport` flag
+- Debug mode: `scan`/`scann`/`scanp`/`scanb` (LE-oriented) + `cscan` (Classic-only), no dedicated "both" command
+- When `transport="auto"` in `_native_scan`, no `Transport` key is set in the discovery filter — may inherit stale filter state
+
+**Plan**:
+- [x] Add `--transport {auto,le,bredr}` flag to `bleep scan` in `bleep/cli.py`; default `auto`
+- [x] For `_native_scan` with `transport="auto"`, explicitly set `{"Transport": "auto"}` in the discovery filter to avoid stale-filter dependence
+- [x] Add `dscan [--timeout T]` command to Debug Mode in `bleep/modes/debug_scan.py` — runs `_native_scan(None, timeout, transport="auto")` with explicit filter. Note: this is distinct from `scanb` (brute_scan) which does **sequential** BR/EDR then LE in two phases; `dscan` uses a **single combined discovery session** via `Transport: "auto"`, which is less intrusive and interleaves both transports
+- [x] Tag results with transport type: `[LE]`, `[BR/EDR]`, `[Dual]` per device using existing `get_device_transport()` from `bleep/analysis/device_type_classifier.py`
+
+**Expected outcome**: Users run a single scan that discovers both LE and Classic devices in one session, with results labeled by transport type. `scanb` remains available as the "loud" sequential alternative.
+
+---
+
+### M1: Full Automatic Deployment of `amusica`
+
+**Status**: Done | **Depends on**: M3 (done), M6 (done)
+
+**Existing structures**:
+- `bleep/ble_ops/audio/amusica.py`: `scan_audio_targets()`, `attempt_justworks_connect()`, `assess_targets()`, `summarise_assessment()`
+- `bleep/modes/amusica.py`: CLI subcommands `scan`, `halt`, `inject`, `record`, `control`, `auto`
+- `bleep/ble_ops/audio/audio_tools.py`: `AudioToolsHelper` — backend detection, play/record, BlueALSA PCM listing, `halt_audio_for_device()`
+- `bleep/ble_ops/audio/audio_recon.py`: `run_audio_recon()`
+- `bleep/ble_ops/audio/audio_system.py`: `system_play()`, `system_record()`
+- `bleep/dbuslayer/pin_brute.py`: `PinBruteForcer` with lockout awareness
+- `bleep/ble_ops/audio/amusica_orchestrator.py`: `run_amusica_full_auto()`, `analyze_recordings()`
+
+**Five-stage autonomous pipeline**:
+- [x] **Stage 1 — Scan & Classify**: Uses `scan_audio_targets()` with existing `_device_has_audio_uuids()` filter. Done.
+- [x] **Stage 2 — Connection Test & Triage**: Uses `attempt_justworks_connect()` per target; splits into justworks / auth_required / profile_unavailable / failed. Done.
+- [x] **Stage 3 — Optional PIN Guessing**: Uses `PinBruteForcer.run_pin_brute()` with `COMMON_PINS`. Gated by `--brute` flag. Configurable depth via `--brute-depth`. Done.
+- [x] **Stage 4 — Record & Playback**: Halts existing audio via `halt_audio_for_device()`, runs `run_audio_recon()` per accessible target. Done.
+- [x] **Stage 5 — Post-Test Analysis**: `analyze_recordings(paths)` uses `sox stat` + `soxi -D` for amplitude and duration analysis. Done.
+- [x] New file: `bleep/ble_ops/audio/amusica_orchestrator.py` — `run_amusica_full_auto()`. Done.
+- [x] New CLI subcommand: `bleep amusica auto [--brute] [--brute-depth N] [--timeout T] [--record-dir DIR] [--duration D] [--test-file FILE] [--out JSON]`. Done.
+
+**Augmentations from roadmap review**:
+
+- [x] **M1-aug-a**: `attempt_justworks_connect()` now detects `"profile unavailable"` / `"profileunavailable"` → distinct `"profile_unavailable"` outcome. Done.
+- [x] **M1-aug-b**: `run_audio_recon()` now distinguishes `"no_matching_device"` (MAC filter miss) from `"device_not_available"` (no BT audio at all). Done.
+
+**Expected outcome**: `bleep amusica auto` runs the complete 5-stage pipeline. Results printed as summary table with per-target breakdown. Profile-unavailable failures triaged distinctly from auth-required.
+
+---
+
+### M2: Identification of RFCOMM Channels
+
+**Status**: Done | **Depends on**: P0-8 (done)
+
+**Existing structures**:
+- `bleep/ble_ops/classic/sdp.py`: `discover_services_sdp()` + `build_svc_map()` — full SDP/RFCOMM extraction
+- `bleep/modes/debug_classic.py` `cmd_cservices`: prints structured per-service listing with RFCOMM channels
+- `bleep/modes/debug_classic_rfcomm.py`: `copen`, `csend`, `crecv`, `craw` — raw RFCOMM I/O
+- `bleep/ble_ops/classic/connect.py`: `classic_rfccomm_open()` — raw RFCOMM socket
+- `bleep/dbuslayer/spp_profile.py`: SPP profile registration
+
+**What's genuinely new — terminal/serial probing**:
+- [x] New file: `bleep/ble_ops/classic/rfcomm.py` — `ProbeResult` dataclass + `probe_rfcomm_channel()` + `probe_all_channels()`. Reuses `classic_rfccomm_open()`. Sends `\r\n`, VT100 DA1 `\x1b[c`, passive SSH banner read. Classifies: `terminal`/`ssh`/`serial`/`data`/`closed`/`silent`. Done.
+- [x] New CLI subcommand: `bleep classic-rfcomm <MAC> [--probe] [--timeout N] [--adapter]` — SDP discovery → formatted RFCOMM table → optional per-channel probe. Done.
+- [x] New debug command: `crfcomm [--probe] [--timeout N]` — uses `state.current_mapping`, auto-discovers if empty. Done.
+
+**Expected outcome**: ✅ RFCOMM channels are enumerated (existing), and optionally probed for terminal/serial interfaces (new).
+
+---
+
+### M3: Improved Agent Usage and Capabilities
+
+**Status**: Done
+
+**Existing structures**:
+- `bleep/dbuslayer/agent.py`: `PairingAgent` with `register(capabilities=...)` supporting `NoInputNoOutput`, `DisplayOnly`, `KeyboardOnly`, `KeyboardDisplay`
+- `bleep/dbuslayer/pin_brute.py`: `PinBruteForcer` — full brute-force orchestration with lockout awareness, accepts external `pin_iterator`/`passkey_iterator`
+- `bleep/dbuslayer/agent_io.py`: `BruteForceIOHandler` — feeds candidates to agent callbacks
+- Auth method is implicitly detectable (agent receives `RequestPinCode` vs `RequestPasskey` vs `RequestConfirmation`)
+
+**What's genuinely new**:
+- [x] **Common PIN/PassKey constants** in `bleep/bt_ref/constants.py`: `COMMON_PINS` (14 entries, structured by length: `COMMON_PINS_4` / `COMMON_PINS_6` / `COMMON_PINS_ALPHA`), `COMMON_PASSKEYS` (5 entries), `AGENT_CAPABILITIES` (5 entries). Wired as default iterators in `PinBruteForcer.run_pin_brute()` and `run_passkey_brute()` when no explicit list provided. Done.
+- [x] **Capability downgrade cycling** — `attempt_downgrade_pair(bus, device_path)` in `bleep/dbuslayer/agent.py`. Cycles NoInputNoOutput → DisplayOnly → DisplayYesNo → KeyboardOnly → KeyboardDisplay, records auth method per attempt, stops on first success. Uses `AGENT_CAPABILITIES` constant. Done.
+- [x] **Auth type reporting** — `last_auth_method` attribute on `BlueZAgent` base class, set in all 7 agent methods: `RequestPinCode`, `DisplayPinCode`, `RequestPasskey`, `DisplayPasskey`, `RequestConfirmation`, `RequestAuthorization`, `AuthorizeService`. Exposed via `get_last_auth_type() -> Optional[str]`. Done.
+- [x] **Debug command**: `pair --probe <MAC>` — invokes `attempt_downgrade_pair()`, prints result table, cancels pairing if successful. Done.
+- [x] **PIN/Passkey corrections** (v2.8.0-m6): Reviewed against BlueZ documentation (`org.bluez.Agent.rst`, `mgmt.rst`, `bluez/src/agent.c`, `bluez/emulator/smp.c`). Removed invalid empty-string PIN, added alphanumeric PINs, reordered capabilities for BR/EDR kernel conversion, added `DisplayPinCode` and `RequestAuthorization` auth tracking, documented SSP passkey brute-force infeasibility. Done.
+
+**Expected outcome**: ✅ Agent tries common PINs by default (including alphanumeric), can cycle capabilities for downgrades, and reports the exact auth type for all 7 BlueZ agent methods.
+
+---
+
+### M4: Improved Preliminary Check of Connectivity
+
+**Status**: Done | **Depends on**: P0 (done)
+
+**Existing structures**:
+- `bleep/dbuslayer/device_classic.py` `connect()`: checks `is_connected()` and skips if already connected (line ~155), BUT always calls `Disconnect()` first (line ~177) — contradicts the skip
+- `bleep/dbuslayer/device_le.py`: `is_connected()`, `is_paired()`, `is_trusted()`
+- `bleep/core/preflight.py`: checks tool binaries and BlueZ version — not live adapter state
+- `bleep/dbuslayer/adapter.py`: `is_ready()`, accepts `bluetooth_adapter=` param; no `list_adapters()` API
+- `--adapter` flag on `adapter-config` and `amusica` subcommands, not globally
+- `bleep/core/errors.py`: `map_dbus_error()` — maps D-Bus exceptions to BLEEP exceptions; only handles a subset of BlueZ errors
+- `bleep/core/error_handling.py`: `_DBUS_ERROR_NAME_MAP` / `_DBUS_MESSAGE_MAP` — partial BlueZ error coverage
+- **BlueZ reference**: `workDir/BlueZDocs/errors.txt` defines 34 structured connection errors (17 BR/EDR, 17 LE); `workDir/BlueZDocs/org.bluez.Device.rst` documents `Connect()`, `Pair()`, `Disconnected` signal errors
+
+**What's genuinely new**:
+- [x] **M4-1: `check_device_state(bus, mac)`** in `bleep/core/preflight.py` — `DeviceState` dataclass + `check_device_state()` function queries LE/Classic `get_device_info()`. Done.
+- [x] **M4-2: Fix Disconnect-Before-Connect contradiction** in `device_classic.py` — added `force_disconnect` param (default `False`); only disconnects when explicitly requested. Done.
+- [x] **M4-3: Consistent adapter guard** — `require_adapter()` in `preflight.py` — **Done in P0-5**
+- [x] **M4-4: `list_adapters()`** in `bleep/dbuslayer/adapter.py` — static method walks `Adapter1` paths from `GetManagedObjects()`. Done.
+- [x] **M4-5: Broader `--adapter` flag** on CLI subcommands — added to `scan`, `connect`, `gatt-enum`, `enum-scan`, `classic-scan`, `classic-enum`, `classic-ping`, `explore`, `signal`, `agent`. Done.
+- [x] **M4-6: Connection limit awareness** — `get_connected_devices()` on adapter returns list of connected MACs; `ConnectionLimitError` mapped from BlueZ `"concurrent connection limit"`. BlueZ does not expose a max connection count property — documented as platform limitation. Done.
+
+**Augmentations from roadmap review** (source: `workDir/BigMoves/README.bleep-bleep-mcp-augmentation-roadmap.md` items S2, S8, 3.4):
+
+- [x] **M4-new-a: `skip_pair_fallback` on LE connect** — `skip_pair_fallback: bool = False` parameter added to `connect_and_enumerate__bluetooth__low_energy()`. When `True`, auth exceptions re-raise instead of auto-pairing. Done.
+- [x] **M4-new-b: Comprehensive BlueZ error mapping** — 13 new `RESULT_ERR_*` constants (28–40), 7 new `_DBUS_ERROR_NAME_MAP` entries, 26 new `_DBUS_MESSAGE_MAP` entries (all `br-connection-*` / `le-connection-*`), 8 new exception classes, 10+ new branches in `map_dbus_error()`. Done.
+- [x] **M4-new-c: Human-readable error descriptions + disconnect reason map** — All new error codes added to `error_mapping` dict. `DISCONNECT_REASON_MAP` with 6 BlueZ reason strings added. Done.
+
+**Expected outcome**: ✅ BLEEP never destroys existing connection/pairing unless explicitly requested. Multiple adapters can be listed and selected. Connection limits surfaced via `get_connected_devices()` and `ConnectionLimitError`. All 34 BlueZ connection errors mapped to structured BLEEP exceptions with human-readable descriptions. LE connect supports opt-out of auto-pair fallback.
+
+---
+
+### M5: Improved Device Identification (Using Internal BT SIG Data)
+
+**Status**: Done
+
+**Existing structures**:
+- `bleep/bt_ref/update_ble_uuids.py`: fetches from BT SIG Bitbucket → writes `bleep/bt_ref/uuids.py`
+- `bleep/bt_ref/uuids.py` (auto-generated): `SPEC_ID_NAMES__COMPANY_IDENTS`, `SPEC_ID_NAMES__ADVERTISING_TYPES`, `SPEC_ID_NAMES__APPEARANCE_VALUES`
+- `bleep/bt_ref/bluetooth_uuids.py`: legacy snapshot — **deprecated** with DeprecationWarning as of v2.8.0-m5
+
+**Plan**:
+- [x] **Manufacturer ID → Company Name**: `_resolve_company_name()` in `common/conversion.py` resolves 16-bit company IDs via `SPEC_ID_NAMES__COMPANY_IDENTS`. ManufacturerData display now shows "0x004c (76) — Apple, Inc.". Done.
+- [x] **Fix `common/modalias.py` import**: `decode_pnp_id_vendor()` now imports from `bleep.bt_ref.uuids`. Done.
+- [x] **AD Type name resolution**: `_resolve_ad_type_name()` resolves AD type codes. AdvertisingData display now shows "Type: 0x01 (1) — Flags". Done.
+- [x] **Appearance consolidation**: `_resolve_appearance_sig()` resolves through SIG category/subcategory hierarchy, `decode_appearance()` tries hardcoded map first, then SIG table fallback. Done.
+- [x] **Windows/CDP detection**: Microsoft CDP UUID `0000FE05-...` detected by `LEServiceDataCollector` in `device_type_classifier.py`. Done.
+- [x] **Deprecate `bluetooth_uuids.py`**: All imports redirected to `uuids.py`; DeprecationWarning added to legacy file. Done.
+
+**Augmentations**:
+- [x] **M5-aug-a**: `_determine_device_type()` in `adapter.py` now passes `service_data`, `advertising_data`, `manufacturer_data`, `appearance` to classifier context. Done.
+- [x] **M5-aug-b**: `LEServiceDataCollector` in `device_type_classifier.py` with `_BEACON_SERVICE_DATA_UUIDS` (Find My, EN v1/v2, CDP, NearbySharing). Done.
+- [x] **M5-aug-c**: Vendor UART heuristics via `_VENDOR_UART_UUIDS` (FFE0, FFE1, FFF0, FFF1, Nordic UART) as `WEAK` evidence. Done.
+- [x] **M5-aug-d**: `evidence_source` field on `ClassificationResult` — `"heuristic"` / `"measured_sdp"` / `"measured_gatt"` / `"cached"`. `_determine_evidence_source()` + cached result path. Done.
+- [x] **M5-aug-e**: ServiceData UUID→name already handled by existing `get_name_from_uuid()` in `format_device_info_block()`. Verified. Done.
+
+**Expected outcome**: ✅ All device identification uses self-contained, SIG-updatable data. Classifier receives full advertisement context. Evidence is labeled by source. Known beacons and vendor UARTs are identified.
+
+---
+
+### M6: Augment (Re)Configuration of Linux Host OS Bluetooth File(s)
+
+**Status**: Done
+
+**Existing structures**:
+- `bleep/ble_ops/audio/audio_tools.py` `AudioToolsHelper`: runtime ALSA/BlueALSA detection, enumeration (`aplay -l`/`arecord -l`), PCM listing, play/record helpers — no config file writing
+- `bleep/modes/adapter_config.py`: BlueZ adapter D-Bus + `bluetoothctl mgmt` + `/etc/bluetooth/main.conf` parse — not ALSA configuration
+
+**What's genuinely new**:
+- [x] New module: `bleep/ble_ops/audio/alsa_config.py` — `AsoundEntry`/`TunnelConfig` dataclasses + `read_asound_conf()` parser + `configure_bluealsa_device()` + `remove_bluealsa_device()` + `create_audio_tunnel()` + `backup_and_restore()`. Supports `address 00:00:00:00:00:00` convention. BLEEP-tagged blocks for safe removal. Done.
+- [x] CLI commands: `bleep audio-config show|add|remove|tunnel|backup|restore`. Full subcommand parser with `--path` override and `--type sink|source`. Done.
+
+**Expected outcome**: ✅ BLEEP can programmatically configure the host OS audio stack for Bluetooth audio.
+
+---
+
+### M7: Augment File Sharing
+
+**Status**: Done | **Depends on**: M2 (done)
+
+**Existing structures**:
+- `bleep/dbuslayer/obex_opp.py`, `obex_ftp.py`, `obex_map.py`, `obex_pbap.py`, `obex_sync.py`, `obex_bip.py` — full OBEX suite
+- `bleep/modes/debug_classic_obex.py`: `copp`, `cmap`, `cftp`, `csync`, `cbip` debug commands
+- `bleep/ble_ops/classic/opp.py`, `classic/ftp.py`, `classic/map.py`, etc. — ops wrappers
+- `bleep/bt_ref/constants.py` `UUID_NAMES` dict: custom/non-SIG UUID → name mapping (first lookup in `get_name_from_uuid()`)
+- `bleep/analysis/device_type_classifier.py`: `_BEACON_SERVICE_DATA_UUIDS` includes `a82efa21...` → `"nearby_sharing"` label, `LEServiceDataCollector` matches it
+- `bleep/ble_ops/classic/rfcomm.py`: `probe_rfcomm_channel()`, `probe_all_channels()` (M2)
+- `bleep/ble_ops/classic/connect.py`: `classic_rfccomm_open()` — raw RFCOMM socket
+- `bleep/modes/debug_state.py`: `DebugState` dataclass with `rfcomm_sock` and `rfcomm_bindings` fields
+
+**Known constraint — obexd AppArmor confinement**: On Ubuntu, `obexd` runs under AppArmor and may only write to permitted paths (e.g. `~/.cache/obexd/`). Documented in: todo_tracker R6 (line ~1151), changelog v2.7.20 (line ~1442), `_default_pull_dest()` docstring, `bl_classic_mode.md` troubleshooting table. All obexd receive operations (OPP pull, MAP get, FTP get, BIP get, Sync get) are affected. BLEEP uses a two-stage approach: obexd writes to staging dir, BLEEP moves to final dir.
+
+**D1 — NearbySharing Detection (Phase A only)**:
+- [x] Add `"a82efa21-ae5c-3dde-9bbc-f16da7b16c5a": "Microsoft Nearby Sharing"` to `UUID_NAMES` in `bt_ref/constants.py` (custom UUID — `uuids.py` is auto-generated, must not be hand-edited)
+- [x] In `ble_ops/le/scan.py` `_native_scan`: add `service_data`, `advertising_data`, `manufacturer_data` from `entry` to passive-scan classifier `context`
+- [x] In `ble_ops/le/scan.py` `_base_enum`: add same fields from `device_props` to naggy classifier `context`
+- [x] In `analysis/device_type_classifier.py` `_get_collectors_for_mode("passive")`: add `"le_service_data"` to passive collector allowlist
+- Phase B (full CDPX protocol) deferred — Microsoft proprietary, research-dependent
+
+**D2 — Customizable OBEX File Save Directory (two-stage)**:
+- [x] In `core/config.py`: add `OBEX_STAGING_DIR` (`~/.cache/obexd/`, obexd-safe) and `OBEX_RECEIVE_DIR` (`/tmp/bleep_received/` default, env `BLEEP_RECEIVE_DIR` override)
+- [x] In `modes/debug_classic_obex.py`: update `_default_pull_dest()`, `cmd_cmap` get, `cmd_cftp` get defaults to two-stage; new `_obex_staging_path()` and `_stage_and_move()` helpers
+- [x] In `cli.py`: update OPP pull/exchange, MAP get, FTP get, BIP get/thumb, Sync get to two-stage; add `--save-dir` to `classic-opp`, `classic-map`, `classic-ftp`, `classic-bip`, `classic-sync` subparsers
+
+**D3 — RFCOMM Channel Binding**:
+- [x] In `ble_ops/classic/rfcomm.py`: add `bind_rfcomm_channel()`, `release_rfcomm_channel()`, `list_rfcomm_bindings()` using `rfcomm` userspace utility via `shutil.which` + `subprocess.run`
+- [x] In `modes/debug_state.py`: add `rfcomm_bindings: List[int]` field to `DebugState`
+- [x] In `modes/debug_classic_rfcomm.py`: add `cbind` command (`cbind <channel>`, `cbind release`, `cbind list`)
+- [x] In `cli.py`: add `--bind` and `--device-id` flags to `classic-rfcomm` subcommand
+- [x] In `modes/debug.py`: register `cbind` in command table, add cleanup on shell exit
+
+**Expected outcome**: NearbySharing devices detected and labeled in scans. OBEX downloads use obexd-safe staging with auto-cleanup final dir. Persistent RFCOMM bindings with debug-mode tracking and cleanup.
+
+---
+
+### M8: User Profile Control for Connecting Profiles
+
+**Status**: Done
+
+**Existing structures**:
+- `bleep/modes/debug_classic_profiles.py`: `cpan` (connect/disconnect/status/server) and `cspp` (register/unregister/status) — PAN and SPP only
+- `bleep/dbuslayer/spp_profile.py`: `SppManager`/`SppProfile` with `ProfileManager1.RegisterProfile`
+- `bleep/dbuslayer/device_classic.py`: `ConnectProfile(uuid)` (line ~614)
+- `bleep/bt_ref/utils.py`: `get_name_from_uuid()` for UUID-to-name resolution
+
+**Overlap note**: `cservices` already displays SDP-discovered service UUIDs with names via `get_name_from_uuid()`. The value-add of `cprofiles` is showing the **D-Bus `Device1.UUIDs`** property (the device's full advertised profile set, which may differ from SDP-discovered services) and allowing direct `ConnectProfile` by UUID.
+
+**What's genuinely new**:
+- [x] **Generic profile listing** — new command `cprofiles` in `debug_classic_profiles.py`:
+  Reads `org.bluez.Device1.UUIDs` property (distinct from SDP services shown by `cservices`), cross-references via `get_name_from_uuid()`, displays UUID + Name + connection status
+- [x] **Generic profile connect** — new command `cprofile connect <UUID>`:
+  Calls existing `device.ConnectProfile(uuid)` from `device_classic.py`
+  CLI: `bleep connect-profile <MAC> <UUID> [--disconnect]`
+- [x] **Security on RegisterProfile** — extended `cspp register` with `--auth`/`--no-auth` flags; `spp.py register()` now passes `require_auth` through to `SppManager`
+
+**Expected outcome**: Users list all profiles, connect by UUID, and register profiles with security options.
+
+---
+
+### M9: Custom Callback Functions with User Integration to I/O Operations
+
+**Status**: Done
+
+**Existing structures**:
+- `bleep/signals/router.py`: `register_callback(name, callback)` for signal events
+- `bleep/signals/integration.py`: property/notification read/write hooks
+- `bleep/dbuslayer/agent_io.py`: `ProgrammaticIOHandler` with per-event `callbacks` dict
+- GATT: `characteristic.py` `start_notify(callback)`
+- Reconnection: `reconnect.py` `ReconnectionMonitor(callback=...)`
+- SPP: `spp_profile.py` `on_connect`/`on_disconnect`/`on_release`
+
+**Approach — extend existing signal router, not rebuild**:
+- [x] **Expand signal router triggers**: Added `DEVICE_CONNECT`, `DEVICE_DISCONNECT`, `PAIR_START`, `PAIR_COMPLETE` to `SignalType` enum in `bleep/signals/capture_config.py`
+- [x] **User callback directory**: Loader in `bleep/callbacks/__init__.py` — scans `~/.config/bleep/callbacks/*.py` for subclasses of `BleepCallback`, registers via existing `register_callback()`
+- [x] **Base class** in `bleep/callbacks/base.py`: `name`, `trigger`, `execute(context)`, lifecycle hooks `on_load()`/`on_unload()`
+- [x] **Example callbacks** in `bleep/callbacks/examples/`: `log_all_notifications.py`, `pair_event_logger.py`
+
+**Expected outcome**: Users drop Python files into a callbacks directory; they integrate automatically via the existing signal infrastructure.
+
+---
+
+### M10: Identification and Interactivity of Human Interface Devices (HIDs)
+
+**Status**: Done
+
+**Existing structures**:
+- `bleep/ble_ops/le/scan.py` `_collect_device_props()`: probes `org.bluez.Input1` with `GetAll`, stores under `_Input1`
+- `bleep/ble_ops/common/conversion.py` `format_device_info_block()`: renders `Input → ReconnectMode` only (lines ~769–785)
+- Class-of-Device minor class labels include HID types in `common/conversion.py`
+- HID service UUID `0x1124` in `bt_ref/uuids.py`
+- Appearance values 960+ mapped to HID subtypes in `common/conversion.py`
+
+**What's genuinely new**:
+- [x] **HID classification logic** — `classify_hid()` and `HIDInfo` dataclass added to `bleep/analysis/device_type_classifier.py`: combines appearance (960+ range), CoD peripheral class (0x05), `Input1.ReconnectMode`, HID service UUID. New `HID_CLASSIFICATION` evidence type.
+- [x] **Enhanced display** — `format_device_info_block()` in `common/conversion.py` now shows full HID classification block (type + subclass + reconnect mode) when device is identified as HID
+- [x] **Debug command** — `chid` in new `debug_hid.py`: full HID classification for connected device (LE or Classic)
+- [x] **CLI** — `bleep hid-info <MAC>`: display HID classification and properties
+
+**Expected outcome**: BLEEP identifies HIDs by type (keyboard, mouse, gamepad), displays reconnection behavior, persists HID evidence.
+
+---
+
+### Bonus: Audio Capture and Transcription
+
+**Status**: Done | **Depends on**: M6 (ALSA config)
+
+**Existing structures**:
+- `bleep/ble_ops/audio/audio_system.py`: `system_record()`, `system_play()`
+- `bleep/ble_ops/audio/audio_codec.py`: GStreamer encode/decode
+- `bleep/ble_ops/audio/audio_tools.py`: `AudioToolsHelper` — backend detection, ALSA enumeration, BlueALSA PCMs
+
+**Seven-step pipeline (all new orchestration)**:
+- [x] **Step 1–2**: `_validate_prerequisites()` checks for `arecord`/`sox`; PCM auto-derived from MAC
+- [x] **Step 3–4**: `_capture_audio()` records via `arecord -D bluealsa:DEV=<MAC>,PROFILE=a2dp`
+- [x] **Step 5**: `check_audio_file_has_content()` via sox stat analysis
+- [x] **Step 6**: `transcribe_file()` in new `bleep/ble_ops/audio/audio_transcribe.py` wrapping `whisper` CLI and `vosk` Python API
+- [x] **Step 7**: `run_audio_intercept()` orchestrates full pipeline; returns `AudioInterceptResult`
+- [x] New CLI: `bleep audio-intercept <MAC> [--duration N] [--no-transcribe] [--engine whisper|vosk]`
+
+**Expected outcome**: Audio tap, transcription, and injection pipeline — non-disruptive to original audio stream.
+
+---
+
+### F1: Documentation
+
+**Status**: Done
+
+- [x] Update `bleep/docs/changelog.md` with all v2.8.0 changes (M8, M9, M10, Bonus, P0-1 fixes)
+- [x] Update `bleep/docs/todo_tracker.md` — marked completed items
+- [x] `bleep/__init__.py` version bumped from `"2.8.0-m1"` to `"2.8.0"` (completed in F3)
+
+---
+
+### F2: Code Review
+
+**Status**: Done
+
+- [x] All 14 modified/new files compile clean (`py_compile`)
+- [x] All new files under 300 lines (largest: `debug_classic_profiles.py` at 292 lines)
+- [x] No circular imports verified (`bleep.callbacks.base`, `bleep.signals.capture_config`, `bleep.analysis.device_type_classifier`)
+- [x] No duplicate functionality — M8 reuses existing `ConnectProfile`/`get_name_from_uuid`/`SppManager`; M9 extends existing signal router; M10 composes existing appearance/CoD/UUID data
+- [x] Pre-existing large files (`signals.py`, `cli.py`, `observations.py`, `agent.py`, `conversion.py`) not grown; these are architectural and documented for future F2 consideration
+
+---
+
+### F3: Change Log, TODO Tracking, and Associated Documentation
+
+**Status**: Done
+
+- [x] Structured changelog entries per existing format (v2.8.0 final entry at top of `changelog.md`)
+- [x] TODO tracker updated with completion statuses for all M8, M9, M10, Bonus, P0-1 fixes, F1, F2, F3
+- [x] Version bumped in `bleep/__init__.py` from `"2.8.0-m1"` to `"2.8.0"`
+- [x] All dates consistent: 2026-03-27
+
+---
+
+### Future Work: Expand BT SIG Assigned Numbers Coverage
+
+**Status**: Pending (post-v2.8.0)
+
+The `bleep/bt_ref/update_ble_uuids.py` script currently fetches 12 YAML tables from the Bluetooth SIG public repository (`bitbucket.org/bluetooth-SIG/public`). Additional tables exist that would improve BLEEP's ability to recognize and identify Bluetooth devices and their capabilities/limitations.
+
+**Candidate tables for incorporation** (under `assigned_numbers/`):
+- [ ] `service_discovery/attribute_ids/*.yaml` — SDP Attribute ID definitions (e.g., `universal_attributes.yaml`, `browse_group.yaml`, `device_id.yaml`, `hid.yaml`, `imaging.yaml`, `pbap.yaml`, etc.) — would enrich SDP record interpretation in `bleep/ble_ops/classic/sdp.py`
+- [ ] `core/core_version.yaml` — Bluetooth Core Specification version numbers → human-readable version strings
+- [ ] `core/fhs.yaml` — Frequency Hopping Sequence parameters
+- [ ] `mesh/*.yaml` — Bluetooth Mesh assigned numbers (if mesh support is added)
+- [ ] Any newly published tables as the SIG repository evolves
+
+**Implementation approach**: Modify `_FILES` dict in `update_ble_uuids.py` to include new YAML paths. Add corresponding `SPEC_ID_NAMES__*` output dicts to `uuids.py`. Wire new dicts into `get_name_from_uuid()` in `bt_ref/utils.py` and any relevant formatting/classification code. All changes flow through the existing auto-generation pipeline — no manual edits to `uuids.py`.
+
+**Principle**: `uuids.py` must only be modified via `update_ble_uuids.py`. Custom/non-SIG UUIDs (BLE CTF, vendor-specific, etc.) belong in `UUID_NAMES` in `bt_ref/constants.py`.
+
+---
+
+---
+
+> **Note (2026-03-26)**: File paths in the historical COMPLETE sections below reflect the `bleep/ble_ops/` layout at the time of completion. The P0-8 restructure (v2.7.40) moved all `ble_ops` modules into `le/`, `classic/`, `common/`, and `audio/` subpackages. See the P0-8 section and changelog v2.7.40 for the mapping.
+
+---
+
+## Data Fidelity Remediation — Schema v10 (2026-03-25) – COMPLETE
+
+**Goal**: Ensure all BLEEP CLI commands persist accurate and complete device/service/characteristic data to the observation database, closing gaps identified through systematic comparison against the BlueZ D-Bus API documentation.
+
+### Phase 1 — High Severity (silent data loss or missing persistence)
+
+- [x] **Gap 1** `bleep/modes/exploration.py` — `print_service_info` now always reads all readable characteristic values and collects all descriptor data regardless of display verbosity or the 20-characteristic threshold; display is still gated, but data collection is unconditional
+- [x] **Gap 7** `bleep/cli.py` (`connect`) — `connect` command now persists device metadata and GATT enumeration data to the observation DB via `_collect_device_props` + `_persist_mapping` after successful connection
+- [x] **Gap 8** `bleep/cli.py` (`classic-scan`) — discovered Classic devices are now persisted via `upsert_device` with name, RSSI, device class, address type, and device type
+- [x] **Gap 9** `bleep/cli.py` (`classic-enum`) + `bleep/ble_ops/classic_connect.py` — `classic-enum` now fetches `org.bluez.Device1` properties (plus Battery1/Input1 auxiliaries), prints a Device Information block (parity with BLE gatt-enum/enum-scan), and persists full device metadata; `classic_connect.py` now calls `upsert_device` with full device info before persisting classic services
+
+### Phase 2 — Medium Severity (incomplete metadata or missed enrichment)
+
+- [x] **Gap 3** `bleep/modes/exploration.py` — `save_to_database` now accepts and persists `device_props` from D-Bus (RSSI, address type, device class, appearance, manufacturer data)
+- [x] **Gap 4** `bleep/modes/exploration.py` — permission maps are now included in `upsert_characteristics` calls
+- [x] **Gap 6** `bleep/modes/exploration.py` — every readable characteristic value is now also inserted into `char_history` with `source="explore"` for audit trail
+- [x] **Gap 10** `bleep/core/observations.py` — `upsert_services` ON CONFLICT clause now updates `handle_start`, `handle_end`, and `name` via `COALESCE` so subsequent scans fill in previously-NULL values
+- [x] **Gap 11** `bleep/modes/exploration.py` — device type is now determined by `DeviceTypeClassifier.classify_with_mode()` instead of hardcoded `"le"`, with fallback
+
+### Phase 3 — Schema v10 Migration
+
+- [x] **`bleep/core/observations.py`** — Schema v10 migration:
+  - `devices` table: added `tx_power`, `modalias`, `icon`, `service_data`, `advertising_data` columns
+  - `services` table: added `is_primary`, `includes` columns
+  - `characteristics` table: added `mtu` column
+  - New `descriptors` table: `(id, characteristic_id, uuid, handle, flags, value, last_read)` with UNIQUE on `(characteristic_id, uuid)`
+  - New public APIs: `get_characteristic_id()`, `upsert_descriptors()`
+  - `_DEVICE_COLS` frozenset updated with all new column names
+  - Idempotent migration using per-column `ALTER TABLE ADD COLUMN` with safe `try/except`
+
+### Verification
+
+- [x] All four modified files pass `python3 -m py_compile` without errors
+- [x] All four modified files pass IDE linter checks with zero diagnostics
+- [x] All existing callers of `save_to_database`, `upsert_services`, `upsert_device`, `connect_and_enumerate__bluetooth__low_energy` confirmed compatible (new parameters use defaults, no signature breaks)
+- [x] `_persist_mapping` and `_collect_device_props` confirmed importable as module-level functions from `bleep.ble_ops.scan`
+- [x] `format_device_info_block`, `device_address_to_path`, `BLUEZ_NAMESPACE`, `ADAPTER_NAME` imports confirmed correct
+- [x] `classic_connect.py` `get_device_info()` return dict confirmed to include all referenced keys
+
+### Phase 4 — Schema v10 Full Utilisation (2026-03-25) – COMPLETE
+
+**Goal**: Ensure every v10 column is actively written by all relevant CLI code paths, fix broken persistence logic, and add descriptor persistence everywhere.
+
+- [x] **P1-a** `upsert_services()` — now writes `is_primary` (bool→int) and `includes` (list→JSON) in INSERT and ON CONFLICT COALESCE
+- [x] **P1-b** `upsert_characteristics()` — now writes `mtu` in INSERT and ON CONFLICT COALESCE
+- [x] **P2-scan** `bleep/ble_ops/scan.py` `_native_scan` — enriched `upsert_device` calls with `tx_power`, `appearance`, `modalias`, `icon`, `manufacturer_data`, `service_data`, `advertising_data` from adapter discovery data
+- [x] **P2-base** `bleep/ble_ops/scan.py` `_base_enum` — uses shared `_enrich_device_info_from_props()` for v10 device columns from D-Bus Device1 properties
+- [x] **P2-cli** `bleep/cli.py` `connect` — uses `_enrich_device_info_from_props()` instead of manual extraction
+- [x] **P2-explore** `bleep/modes/exploration.py` — delegates to `_enrich_device_info_from_props()` for v10 enrichment
+- [x] **P2-classic** `bleep/ble_ops/classic_connect.py` + `bleep/cli.py` classic-scan/enum — classic paths now persist `tx_power`, `appearance`, `modalias`, `icon` where available; classic-enum uses `_enrich_device_info_from_props()`
+- [x] **P3** `_persist_mapping()` — now persists descriptors (from both `"Descriptors"` and `"descriptors"` keys), threads `is_primary`/`includes` from svc_data, threads `mtu` from char_data
+- [x] **P4** `bleep/cli.py` gatt-enum — replaced inline DB persistence with delegation to `_persist_mapping()`, fixing the `"chars"` vs `"Characteristics"` key mismatch in `--deep` mode
+- [x] **P5-gatt** `bleep/cli.py` gatt-enum — added `upsert_device()` with full v10 metadata before GATT persistence
+- [x] **P5-media** `bleep/cli.py` media-enum — added `upsert_device()` with v10 metadata
+- [x] **P6** `bleep/analysis/aoi_analyser.py` — fixed broken `services_mapping` iteration (was `for uuid, handle` on a svc_uuid→dict structure); now correctly extracts chars from `"chars"`/`"Characteristics"` sub-dicts; persists descriptors
+- [x] **P7** Documentation updates: `observation_db.md` (v10 row), `observation_db_schema.md` (v10 API table), `device_type_classification.md` (removed stale migration notes)
+- [x] **P8** `get_device_detail()` — now includes `"descriptors"` key with all descriptor rows; `export_device_data()` inherits this automatically
+- [x] **Shared helper** `_enrich_device_info_from_props()` — new function in `scan.py` centralises extraction of v10 device columns from D-Bus CamelCase property dicts; used by all BLE enumeration code paths
+- [x] `bleep/dbuslayer/device_le.py` — shallow-mode `services_resolved()` now includes `Primary`/`Includes` keys in svc_entry for parity with deep mode
+
+### Pre-existing Issues Noted (not caused by this work) — FIXED in P0-1 (v2.7.40)
+
+- ~~`bleep/cli.py` classic-scan debug branch references `d["class"]` but `get_discovered_devices()` uses key `"device_class"` — debug-only class display is ineffective (pre-existing)~~ — Fixed in P0-1
+- ~~`bleep/modes/scratch.py` passes `timeout=` kwarg to `connect_and_enumerate__bluetooth__low_energy` which expects `timeout_connect=` — pre-existing `TypeError` at runtime (orthogonal)~~ — Fixed in P0-1
+
+---
+
+## System-Tool Operation Mode for audio-play / audio-record (2026-03-21) – COMPLETE
+
+**Goal**: Add an operation mode for `audio-play` and `audio-record` that leverages existing system audio tools (e.g. `paplay`, `parecord`, `aplay`, `arecord`, `pw-play`, `pw-record`) rather than acquiring D-Bus `MediaTransport1` file descriptors directly.  This mirrors how `audio-recon` already interacts with Target Devices using local subprocess tools, sidestepping BlueZ transport ownership entirely.
+
+### Motivation
+- `audio-recon` successfully plays and records audio through `paplay`/`parecord`/`aplay` because PulseAudio/PipeWire already owns the transport — no `Acquire()` needed.
+- The direct D-Bus `MediaTransport1.Acquire()` path requires either stopping the audio daemon (`--direct`) or cycling the A2DP profile (endpoint registration mode), both of which are disruptive.
+- A system-tool mode works seamlessly alongside PulseAudio/PipeWire with zero host disruption, making it the least invasive option for environments where the audio daemon is running.
+
+### Implementation
+- [x] `bleep/ble_ops/audio_system.py` — New module: `system_play()` and `system_record()` resolve device MAC → sink/source ID using the same backend-branched enumeration as `audio-recon` (PA card-centric, PW native node ID, BlueALSA PCM), then delegate to `AudioToolsHelper`
+- [x] `bleep/cli.py` — `--system` flag on `audio-play` and `audio-record` argument parsers; when set, bypasses `MediaStreamManager` and calls `system_play()` / `system_record()` directly
+- [x] Existing D-Bus direct (`--direct`) and endpoint-registration (default) modes maintained as alternatives
+
+### Verification
+- [ ] `audio-play --system <MAC> <file>`: resolves sink, plays via system tool
+- [ ] `audio-record --system <MAC> <output>`: resolves source, records via system tool
+- [ ] Works when PipeWire/PulseAudio is running without disruption
+- [ ] Error message with guidance when no sink/source found for the MAC
+
+---
+
+## Fix Endpoint-Based Transport Acquisition (2026-03-21) – INCOMPLETE
+
+**Goal**: Fix the endpoint-based acquisition path from v2.7.35 that registered a `BleepMediaEndpoint` but never received `SetConfiguration` / `SelectConfiguration` callbacks, resulting in "BlueZ did not assign a transport within the timeout."
+
+### Root Cause
+- `RegisterEndpoint()` only adds a local SEP to BlueZ's endpoint pool — it does **not** trigger AVDTP negotiation
+- BlueZ selects endpoints exclusively during `ConnectProfile` (`source.c:source_connect` → `a2dp_discover` → `a2dp_select_eps`)
+- `ConnectProfile` is a no-op if the A2DP profile is already connected (`source.c:286-290` returns `-EALREADY`)
+- The v2.7.35 implementation registered the endpoint on an already-connected device and waited — BlueZ had no reason to call back
+- Additionally, D-Bus callbacks were never dispatched because the singleton `dbus.SystemBus()` was not wired to a GLib mainloop
+
+### Fixes Applied
+- [x] **F1** `bleep/dbuslayer/media.py` — `BleepMediaEndpoint` uses a **private** D-Bus system bus with explicit `DBusGMainLoop` integration for reliable callback dispatch
+- [x] **F2** `bleep/dbuslayer/media.py` — GLib `MainLoop` lifecycle encapsulated inside `BleepMediaEndpoint` (`register()` starts, `unregister()` stops)
+- [x] **F3** `bleep/dbuslayer/media.py` — Fixed `SetConfiguration` D-Bus signature from `oay` to `oa{sv}` (properties dict per BlueZ `media-api.txt`)
+- [x] **F4** `bleep/dbuslayer/media_stream.py` — Replaced `_cycle_a2dp_profile()` with `_cycle_device_connection()` using full `Device1.Disconnect()` → poll `Connected` → `Device1.Connect()`. Profile-level cycling (`DisconnectProfile` + `ConnectProfile`) was insufficient: the AVDTP session (`source->session`) persists across the cycle, causing `source_connect()` to return `-EALREADY` without running `a2dp_discover`. btmon confirmed only AVDTP Suspend was sent (no Discover/SetConfiguration). Full device disconnect tears down the ACL link, destroying all AVDTP sessions, so the reconnect triggers fresh discovery including the BLEEP endpoint
+- [x] **F5** `bleep/dbuslayer/media_stream.py` — Removed unused `threading`/`GLib` imports; mainloop management moved to `BleepMediaEndpoint`
+
+### Outstanding Issues
+- After all attempted fixes (F1–F4), the endpoint-based path still fails: "BlueZ did not assign a transport within the timeout"
+- `DisconnectProfile` + `ConnectProfile` only produced AVDTP Suspend, not full re-negotiation (btmon confirmed)
+- Full `Device1.Disconnect()` + `Device1.Connect()` also failed to trigger `SelectConfiguration`/`SetConfiguration` on the BLEEP endpoint
+- Likely causes under investigation:
+  - PipeWire/PulseAudio may race to reconnect and consume all remote SEPs before BLEEP's endpoint is selected
+  - BlueZ's endpoint selection order may prefer the audio daemon's pre-existing endpoints
+  - The endpoint registration path may require BLEEP to be the **only** registered endpoint (audio daemon fully stopped) to guarantee SEP assignment
+- **Path forward**: This approach requires deeper investigation into BlueZ endpoint selection ordering and PipeWire/PulseAudio endpoint contention. Deferred in favour of the `--system` flag approach which works **with** the audio daemon rather than competing against it.
+
+### Verification (NOT PASSED)
+- [ ] `audio-play` with endpoint registration: endpoint registered → device cycled → `SelectConfiguration` called → `SetConfiguration` called → transport acquired → audio plays
+- [ ] `audio-play --direct`: legacy direct acquisition still works when audio daemon is stopped
+- [ ] `media-enum`: continues to display endpoints and transports correctly
+
+---
+
+## BLEEP-Owned MediaEndpoint Registration & Dual Acquisition Modes (2026-03-20) – PARTIAL
+
+**Goal**: Resolve `Acquire()` → `NotAuthorized` failures caused by PulseAudio/PipeWire already owning the transport. Implement BLEEP-owned endpoint registration so BLEEP gets its own transport, and add a `--direct` flag for constrained environments.
+
+**Status**: Phase 1 (error guidance) and Phase 3 (CLI flags, code structure) complete. Phase 2 (endpoint registration acquiring a transport) does not function when PipeWire/PulseAudio is running — see "Fix Endpoint-Based Transport Acquisition" above. The `--direct` mode works when the audio daemon is stopped. The endpoint registration default mode requires further investigation.
+
+### Root Cause
+- BlueZ `transport.c:acquire()` (line 798) returns `NotAuthorized` when `transport->owner != NULL`
+- PulseAudio/PipeWire automatically register endpoints and acquire all A2DP transports
+- BLEEP's `Acquire()` fails because the transport is already owned
+- BlueZ `media.c:set_configuration()` (line 548-550) enforces one transport per (endpoint, device) pair — unused remote SEPs are available for BLEEP to claim via its own registered endpoint
+
+### Phase 1: NotAuthorized error guidance
+- [x] **P1** `bleep/dbuslayer/media_stream.py` — `_print_not_authorized_guidance()` detects transport state and prints actionable remediation (daemon stop commands, `--direct` flag hint)
+- [x] **P1b** `bleep/dbuslayer/media_stream.py` — Exception handling in `_acquire_direct()` now specifically detects `NotAuthorizedError`
+
+### Phase 2: BleepMediaEndpoint registration
+- [x] **P2a** `bleep/dbuslayer/media.py` — New `BleepMediaEndpoint(dbus.service.Object)` implementing `org.bluez.MediaEndpoint1` server role: `SetConfiguration`, `SelectConfiguration`, `ClearConfiguration`, `Release`
+- [x] **P2b** `bleep/dbuslayer/media.py` — `register()` / `unregister()` / `wait_for_transport()` lifecycle methods; `threading.Event` for synchronous wait
+- [x] **P2c** `bleep/bt_ref/constants.py` — Added `SBC_CAPABILITIES` and `SBC_DEFAULT_CONFIGURATION` constants
+- [x] **P2d** `bleep/dbuslayer/media_stream.py` — `_acquire_via_endpoint()` registers endpoint, waits for `SetConfiguration` callback, acquires BLEEP-owned transport
+- [x] **P2e** `bleep/dbuslayer/media_stream.py` — GLib main loop management (`_start_mainloop` / `_stop_mainloop`) on daemon thread for D-Bus callbacks
+- [x] **P2f** `bleep/dbuslayer/media_stream.py` — `release_transport()` now also unregisters endpoint and stops main loop
+
+### Phase 3: CLI `--direct` flag
+- [x] **P3a** `bleep/cli.py` — Added `--direct` flag to `audio-play` and `audio-record` argument parsers
+- [x] **P3b** `bleep/cli.py` — Handler passes `direct=` to `MediaStreamManager` constructor
+
+### Verification
+- [x] All modified files pass linter checks with no errors introduced
+
+---
+
+## Fix Silent Exception Swallowing in Transport Discovery (2026-03-20) – COMPLETE
+
+**Goal**: Fix the persisting *"MediaTransport not found"* error from v2.7.33. The three-phase discovery was correct in design but failed at runtime because Phase 1 constructed D-Bus proxy objects (`MediaEndpoint(ep_path)`) just to read their UUID, and a bare `except Exception: continue` silently swallowed the resulting D-Bus errors — causing Phase 1 to always fail and fall through to Phase 3's diagnostic dump.
+
+### Root Cause
+- `_find_transport_by_endpoint_path()` called `MediaEndpoint(ep_path)` inside a `try/except Exception: continue` block
+- D-Bus proxy construction failed (e.g. interface not available, object path timing) and the exception was silently swallowed
+- Phase 2 (complement UUID fallback) also constructed `MediaTransport` proxies for UUID matching, subject to the same issue
+- Diagnostic messages were logged at `LOG__DEBUG`, invisible to the user at normal log levels
+
+### Fix: Proxy-free UUID extraction from `GetManagedObjects()`
+- [x] **T1** `bleep/dbuslayer/media_stream.py` — New `_collect_media_objects()` method reads endpoint/transport UUIDs directly from `GetManagedObjects()` return data as `(path, uuid)` tuples — zero D-Bus proxy construction for discovery
+- [x] **T2** `bleep/dbuslayer/media_stream.py` — Rewrote `_find_transport_by_endpoint_path()` and `_find_transport_by_uuid()` to iterate `(path, uuid)` tuples; proxy construction only happens for the final matched transport path
+- [x] **T3** `bleep/dbuslayer/media_stream.py` — All exception handlers and discovery-status messages elevated from `LOG__DEBUG` to `LOG__USER` for visibility
+- [x] **T4** `bleep/dbuslayer/media_stream.py` — Improved `acquire_transport()` error message with endpoint UUID, profile name, expected transport role, and `media-enum` hint
+- [x] **T5** `bleep/dbuslayer/media.py` — Added `get_managed_objects` to `__all__` exports
+- [x] **T6** Removed `MediaEndpoint` and `find_media_devices` imports from `media_stream.py` (no longer needed)
+
+### Verification
+- [x] All modified files pass linter checks with no errors introduced
+
+---
+
+## Fix MediaTransport Discovery & Enrich media-enum Output (2026-03-20) – COMPLETE
+
+**Goal**: Fix `audio-play` / `audio-record` *"MediaTransport not found"* error caused by `_get_transport()` comparing a transport's local-role UUID against the remote endpoint UUID. These are always complementary per AVDTP spec (remote A2DP Sink `0x110b` ↔ local A2DP Source transport `0x110a`), so the old direct-match logic always failed. Also enrich `media-enum` output so the endpoint ↔ transport UUID relationship is visible to the user.
+
+### Root Cause Analysis
+- BlueZ `transport.c:get_uuid()` returns `media_endpoint_get_uuid(transport->endpoint)` — the **local** endpoint's UUID
+- BlueZ `avdtp.c:avdtp_find_remote_sep()` enforces `sep->type != lsep->info.type` — complementary roles only
+- BlueZ `a2dp.c:a2dp_select_eps()` selects local sources for remote sinks and vice versa
+- BlueZ places transports as children of remote endpoint paths: `sep1/fd0` under `sep1`
+
+### Fix 1: Path-based transport discovery in `_get_transport()`
+- [x] **T1a** `bleep/dbuslayer/media_stream.py` — Replaced UUID-matching with three-phase discovery: (1) path-based endpoint→transport association, (2) complement UUID fallback, (3) diagnostic dump
+- [x] **T1b** `bleep/dbuslayer/media_stream.py` — Extracted `_find_device_path()`, `_find_transport_by_endpoint_path()`, `_find_transport_by_uuid()`, `_log_available_transports()` helper methods
+- [x] **T1c** `bleep/dbuslayer/media_stream.py` — Updated module docstring and class docstring to explain endpoint ↔ transport UUID relationship
+
+### Fix 2: Add `PROFILE_UUID_COMPLEMENTS` mapping
+- [x] **T2** `bleep/bt_ref/constants.py` — Added advisory complement mapping for A2DP, HFP, HSP, AVRCP with documentation referencing BlueZ source evidence
+
+### Fix 3: Enrich `media-enum` output
+- [x] **T3a** `bleep/cli.py` — Transport output now includes `uuid`, `uuid_name`, `codec`, `codec_name`, `configuration`, `parent_endpoint`, `role`
+- [x] **T3b** `bleep/cli.py` — Endpoint output now includes `uuid_name`, `codec_name`, `capabilities`, `delay_reporting`, `expected_transport_uuid`, `expected_transport_role`, `role`
+
+### Fix 4: Docstring updates
+- [x] **T4a** `bleep/modes/audio.py` — `play_audio_file()` docstring clarified: `profile_uuid` = remote endpoint role
+- [x] **T4b** `bleep/modes/audio.py` — `record_audio()` docstring clarified: `profile_uuid` = remote endpoint role
+
+### Verification
+- [x] All modified files pass linter checks with no errors introduced
+- [x] Changes verified against BlueZ source: `workDir/bluez/profiles/audio/transport.c`, `avdtp.c`, `a2dp.c`, `bap.c`
+
+---
+
+## Audio Transport & GStreamer Import Fixes (2026-03-19) – COMPLETE
+
+**Goal**: Fix bugs preventing `audio-play` and `audio-record` commands from functioning. Root cause analysis showed that `audio-recon` works because it uses subprocess calls (`paplay`/`parecord`/`aplay`), while `audio-play`/`audio-record` use D-Bus `MediaTransport1.Acquire()` and GStreamer pipelines — both of which had bugs.
+
+### Fix 1: `dbus.UnixFd` handling in `MediaTransport.acquire()`
+- [x] **F1** `bleep/dbuslayer/media.py` — BlueZ `Acquire()` returns `dbus.UnixFd` for the file descriptor; `int(fd)` fails. Changed to `fd.take()` with `isinstance` guard, following `workDir/BlueZScripts/simple-asha` line 163.
+
+### Fix 2: Missing D-Bus type conversions in `dbus_to_python()`
+- [x] **F2a** `bleep/bt_ref/utils.py` — Added `dbus.UInt64` → `int()` conversion
+- [x] **F2b** `bleep/bt_ref/utils.py` — Added `dbus.UInt32` → `int()` conversion
+- [x] **F2c** `bleep/bt_ref/utils.py` — Added `dbus.types.UnixFd` → `.take()` conversion
+
+### Fix 3: GStreamer import without version pin in `audio_codec.py`
+- [x] **F3a** `bleep/ble_ops/audio_codec.py` — Added `gi.require_version("Gst", "1.0")` and `gi.require_version("GLib", "2.0")` before import, following `workDir/BlueZScripts/simple-asha` lines 12-16
+- [x] **F3b** `bleep/ble_ops/audio_codec.py` — Consolidated `GLib` import to module level alongside `Gst`
+- [x] **F3c** `bleep/ble_ops/audio_codec.py` — Removed two redundant inner `from gi.repository import GLib` statements (previously at lines 222 and 412)
+
+### Fix 4: GStreamer import without version pin in `preflight.py`
+- [x] **F4** `bleep/core/preflight.py` — Added `gi.require_version("Gst", "1.0")` before import in `_check_audio_tools()`
+
+### Verification
+- [x] All four files pass linter checks with no errors introduced
+- [x] All changes verified against BlueZ reference: `workDir/BlueZScripts/simple-asha`, `workDir/BlueZDocs/org.bluez.MediaTransport.rst`
+
+---
+
+## Documentation Audit & Corrections (2026-03-19) – COMPLETE
+
+**Goal**: Cross-reference all `bleep/docs/` files against the current codebase to identify and fix outdated references, incorrect CLI commands, wrong imports, and missing documentation links.
+
+- [x] **D1** `media_mode.md` — Fixed CLI command reference (`media list/control/monitor` → `media-enum`/`media-ctrl`)
+- [x] **D2** `observation_db_usage_scenarios.md` — Fixed wrong import path, parameter names, and return type for scan API
+- [x] **D3** `debug_mode.md` — Removed nonexistent `python -m bleep.cli debug` CLI access path
+- [x] **D4** `network_capability_plan.md` / `network_capability_summary.md` — Updated `Network` class → `NetworkClient`/`NetworkServer`
+- [x] **D5** `ble_scan_modes.md` — Consolidated duplicate "Last updated" dates
+- [x] **D6** `README.md` — Added missing links for ~20 documentation files; reorganised into categorised sections
+- [x] **D7** `bleep/docs/__init__.py` — Expanded `_DOCS` mapping from 7 to 40+ entries for `pydoc` access
+
+---
+
+## Device-Level Info in CLI Enumeration Output (2026-03-19) – COMPLETE
+
+**Goal**: Display Device1 D-Bus properties (ManufacturerData, ServiceData, TxPower, Class, Appearance, Modalias, UUIDs, etc.) in CLI enumeration commands (`gatt-enum`, `enum-scan`) and improve hex/ASCII formatting with U+FFFD for non-printable bytes.
+
+### Area A – Formatting Utilities (conversion.py)
+- [x] **A1** Added `format_hex_ascii()` — renders raw bytes as separate `Hex:` / `ASCII:` lines with U+FFFD for non-printable
+- [x] **A2** Added `format_device_info_block()` — renders Device1 properties in labelled info block (ManufacturerData key as hex+decimal, value as Hex/ASCII; ServiceData UUID with resolved name; Class decoded via `format_device_class`; Appearance decoded via `decode_appearance`)
+- [x] **A3** Updated `format_gatt_tree()` — added `device_props` parameter; prepends Device Information block when provided
+- [x] **A4** Updated characteristic/descriptor ASCII display — now derives ASCII from raw bytes with U+FFFD, always shows both Hex and ASCII when raw is available
+
+### Area B – Data Collection (adapter.py, scan.py)
+- [x] **B1** `adapter.py` — `get_discovered_devices()` now extracts `ManufacturerData`, `ServiceData`, `TxPower`, `Appearance`, `Modalias`, `Paired`, `Trusted`, `Blocked` with D-Bus-to-Python type conversion
+- [x] **B2** `scan.py` — Added `_collect_device_props()` helper using `Properties.GetAll("org.bluez.Device1")`
+- [x] **B3** `scan.py` — `_base_enum()` returns device_props as 5th tuple element; all enum wrappers (`passive_enum`, `naggy_enum`, `pokey_enum`, `brute_enum`) propagate `device_props` in result dicts
+
+### Area C – CLI Integration (cli.py)
+- [x] **C1** `gatt-enum` handler passes `device_props` (via `_collect_device_props`) to `format_gatt_tree()`
+- [x] **C2** `enum-scan` handler passes `device_props` from enum result dict to `format_gatt_tree()`
+
+---
+
+## Comprehensive BlueZ Property Coverage (2026-03-19) – COMPLETE
+
+**Goal**: Close D-Bus property coverage gaps across all BlueZ interfaces (Device1, GattService1, GattCharacteristic1, GattDescriptor1, Battery1, Input1, Adapter1) by capturing and displaying all specification-defined properties that BLEEP encounters.
+
+### Phase 1 – GATT Tree Display Enhancements
+- [x] **1a** `characteristic.py` — Capture `MTU` and `Notifying` from `GattCharacteristic1` D-Bus properties
+- [x] **1b** `conversion.py` — Display `MTU` and `Notifying` in `format_gatt_tree()` characteristic output
+- [x] **1c** `conversion.py` — Display descriptor `Flags` and `Handle` in `format_gatt_tree()` descriptor output
+- [x] **1d** `conversion.py` — Display service `Primary`/`Secondary`, `Handle`, and `Includes` in `format_gatt_tree()` service output
+- [x] **1e** `service.py` — Capture `Includes` property from `GattService1`; `device_le.py` — Add `Primary`, `Handle`, `Includes` to deep-mode service mapping
+
+### Phase 2 – Battery1 and Input1 Interfaces
+- [x] **2a** `scan.py` — `_collect_device_props()` now probes `org.bluez.Battery1` and `org.bluez.Input1` on the device path
+- [x] **2b** `conversion.py` — `format_device_info_block()` displays Battery1 `Percentage` and `Source`
+- [x] **2c** `scan.py` — Input1 properties collected alongside Battery1
+- [x] **2d** `conversion.py` — `format_device_info_block()` displays Input1 `ReconnectMode` with human-readable policy explanation (`none`/`host`/`device`/`any`)
+
+### Phase 3 – Device1 Display Improvements
+- [x] **3a** `conversion.py` — `format_device_info_block()` now handles `Bonded`, `WakeAllowed`, `Icon`, `AdvertisingFlags` (hex/ASCII), and `AdvertisingData` (type-keyed hex/ASCII)
+- [x] **3b** `adapter.py` — `get_discovered_devices()` now includes `bonded`, `wake_allowed`, `icon`, `advertising_flags`, `advertising_data`
+
+### Phase 4 – Adapter1 Enhancements
+- [x] **4a** `adapter_config.py` — `_DBUS_PROPERTY_MAP` expanded with `power-state`, `manufacturer`, `version`, `experimental-features`
+- [x] **4b** `adapter_config.py` — `adapter-config show` display order includes `PowerState`, `Manufacturer`, `Version`, `ExperimentalFeatures` (listed individually)
+
+### Documentation
+- [x] **D1** Created `bleep/docs/bluez_interface_properties.md` — comprehensive property reference with security/significance notes for all captured BlueZ interfaces
+- [x] **D2** Updated `bleep/docs/gatt_enumeration.md` — reflects enriched GATT tree output
+- [x] **D3** Updated `bleep/docs/adapter_config.md` — expanded property table with new Adapter1 properties
+- [x] **D4** Updated `bleep/docs/changelog.md` — v2.7.30 entry
+- [x] **D5** Updated `bleep/docs/todo_tracker.md` — this section
+
+---
+
+## Future Work — Codebase-Wide UUID Uppercase Normalization
+
+- [ ] **UUID-1** Audit and normalize all UUID usage across the entire BLEEP codebase to uppercase (not just the database persistence layer). This includes D-Bus layer retrieval, in-memory mapping keys, CLI output formatting, and any comparison logic that may be case-sensitive.
+- [ ] **UUID-2** When normalizing UUIDs at the D-Bus/retrieval layer, verify that `upsert_services()` return-key behavior is still correct. Currently the returned dict is keyed by the *original* (caller-supplied) UUID to preserve backward compatibility; if all callers start passing uppercase UUIDs, this preservation becomes a no-op but must not break any key lookups downstream.
+
+---
+
+## BLEEP Usability Improvement (2026-03-17) – COMPLETE
+
+**Goal**: Fix database FK errors causing data loss, make non-deep GATT enumeration actually read values, clean up debug output spam, and present enumeration results in a human-readable tree format.
+
+### Area A – Database Tracking Fixes
+- [x] **A1** `observations.py` — Added `_ensure_device_exists(cur, mac)` helper that performs `INSERT OR IGNORE` to guarantee parent device rows exist before any child-table insert
+- [x] **A2** `observations.py` — Integrated `_ensure_device_exists` into 8 child-table methods: `insert_adv`, `upsert_services`, `upsert_classic_services`, `insert_char_history`, `upsert_sdp_record`, `upsert_pbap_metadata`, `store_aoi_analysis`, `store_device_type_evidence`
+- [x] **A3** `observations.py` — Added `_DB_CONN.rollback()` to `_db_cursor()` except block to prevent partial writes
+- [x] **A4** `observations.py` — Replaced all ~15 raw `print(f"[DEBUG]...", file=sys.stderr)` calls in `store_signal_capture()` with `print_and_log(message, LOG__DEBUG)`
+
+### Area B – GATT Enumeration & CLI Output
+- [x] **B1** `characteristic.py` — Added `read_value_with_fallback()` implementing three-tier read strategy: `ReadValue({"offset":0})` → `ReadValue({})` → `Properties.Get("Value")`; treats `b"\x00"` as valid data
+- [x] **B2** `characteristic.py` — Updated `safe_read_with_retry()` to call `read_value_with_fallback()` instead of `read_value()`
+- [x] **B3** `device_le.py` — Refactored `_deep_enumerate_gatt()` into `_enumerate_gatt_values(deep: bool)`: deep=True uses retried reads with uppercase mapping format; deep=False performs single reads into existing lowercase mapping
+- [x] **B3a** `device_le.py` — Extracted error classification into `_classify_read_errors()` static method and `_apply_error_classification()` instance method (shared between deep and non-deep paths)
+- [x] **B3b** `device_le.py` — `services_resolved()` now always calls `_enumerate_gatt_values(deep=deep)` after structure discovery, ensuring values are read even without `--deep`
+- [x] **B3c** `device_le.py` — Guarded `_properties_changed` signal handler with `if not self._services:` to prevent redundant re-enumeration
+- [x] **B4** `device_le.py` — Added `read_characteristic_with_fallback()` wrapper method
+- [x] **B5** `brute.py` — Changed `brute_read_all()` to call `device.read_characteristic_with_fallback()` instead of `device.read_characteristic()`
+- [x] **B6** `scan.py` — Updated `naggy_enum()` to: (1) update mapping with most recent multi-read value, (2) detect value changes across rounds into `changed_chars` set, (3) return full result dict including mapping and changed_chars
+- [x] **B7** `descriptor.py` — Fixed `b"\x00"` fabrication: changed fallback conditions from `result == b"\x00"` to `not result`, changed final return from `result or b"\x00"` to `result if result is not None else b""`
+- [x] **B8** `conversion.py` — Added `format_gatt_tree()` producing human-readable tree output with service/characteristic/descriptor hierarchy, hex/ASCII values, UUID name resolution, mine/permission map summaries, and changed-value indicators
+- [x] **B9** `cli.py` — Replaced raw JSON `_dump()` output for `gatt-enum` and `enum-scan` with `format_gatt_tree()`
+- [x] **B10** `cli.py` — Replaced all raw `print(f"[DEBUG]...", file=sys.stderr)` calls with `print_and_log(message, LOG__DEBUG)`
+
+---
+
+## Codebase Cleanup & Preparation for v2.8.0 (2026-03-10) – COMPLETE
+
+**Goal**: Review, de-duplicate, and clean up the BLEEP codebase prior to v2.8.0 expansion.  Enforce MAC address uniformity (uppercase), harden the database schema, fix exception handling, and guard placeholder module imports.
+
+**Status**: Complete.
+
+- [x] **Phase 1A** `observations.py` — `_normalize_mac()` changed from `.lower()` to `.upper()`
+- [x] **Phase 1B** `observations.py` — Added `_normalize_mac()` calls to `upsert_classic_services`, `upsert_pbap_metadata`, `snapshot_media_player`, `snapshot_media_transport`
+- [x] **Phase 1C** Multiple files — Converted all `.lower()` on MAC variables to `.upper()` across 17 files
+- [x] **Phase 1D** `media_stream.py` — Fixed colon-vs-underscore MAC comparison bug
+- [x] **Phase 1E** Audio subsystem — Harmonized `_norm()`, `extract_mac_from_alsa_device()`, and all MAC comparisons/filenames to uppercase
+- [x] **Phase 1F** `observations.py` — Added schema migration v7→v8 converting all existing MACs to uppercase
+- [x] **Phase 2A** `observations.py` — Removed duplicate `sdp_records` table definition from `_SCHEMA_SQL`
+- [x] **Phase 2B** `observations.py` — Fixed `upsert_sdp_record()` to use `json_dumps()`, `upsert_characteristics()` BLOB type handling and `permission_map` storage, `upsert_device()` column whitelist, `explain_query()` single-SELECT restriction, `get_devices()` DISTINCT fix, `maintain_database()` table list completeness
+- [x] **Phase 3A** `mesh/__init__.py` — Guarded `agent`/`provisioning` imports with `try/except ImportError`
+- [x] **Phase 3B** `gatt/__init__.py` — Guarded `service`/`characteristic`/`descriptor` imports with `try/except ImportError`
+- [x] **Phase 3C** `dbus/__init__.py` — Removed phantom `adapter`/`gatt` from `__all__`, added `connection_pool`
+- [x] **Phase 4A** 9 files — Narrowed 14 bare `except:` blocks to specific exception types
+- [x] **Phase 4B** 5 files — Added `LOG__DEBUG` logging to critical `except Exception: pass` blocks
+- [x] **Phase 5** Full codebase — Gap analysis sweep caught 12 additional MAC `.lower()` sites
+- [x] **Phase 6** Documentation — changelog, todo_tracker, version bump to v2.7.27
+
+---
+
+## Debug Mode: Lazy Imports, MAP Pagination & Folder-Context UX (2026-03-30) – COMPLETE
+
+**Goal**: Eliminate the ``RuntimeWarning`` when launching Debug Mode via ``python -m bleep.modes.debug``, add user-controlled MAP message pagination to prevent BlueZ obexd timeouts on large folders, add a quick folder-probe command, and improve error guidance when ``cmap get`` targets a handle from a different folder context.
+
+**Status**: Complete.  All fixes verified via live device testing against SAMSUNG-SM-G891A (E4:FA:ED:83:D8:47).
+
+- [x] **(A)** `bleep/modes/__init__.py` — Replaced eager ``import_module`` calls with PEP 562 ``__getattr__``-based lazy imports.  Submodules are now imported on first attribute access, preventing ``runpy`` from finding them pre-loaded in ``sys.modules`` and emitting the ``RuntimeWarning``.
+- [x] **(B)** `bleep/modes/debug_classic_obex.py` — Added ``cmap peek`` sub-command: enumerates all leaf folders via ``_collect_leaf_paths()``, then calls ``list_messages()`` with ``MaxCount=1`` for each.  Prints a one-line summary per folder and a final accessible/total tally.  Confirms folder reachability in seconds without triggering full-listing overhead.
+- [x] **(C)** `bleep/modes/debug_classic_obex.py` — Added ``--count N`` and ``--offset M`` optional arguments to ``cmap list``.  Parsed inline and passed as ``MaxCount`` / ``Offset`` D-Bus filters to ``list_messages()``.  Output label reflects active pagination (``[count=N]`` / ``[offset=M, count=N]``).  Without flags, existing default behaviour (obexd ``MaxListCount=1024``) is preserved.
+- [x] **(D)** `bleep/modes/debug_classic_obex.py` — Enhanced ``cmap get`` error handler: when ``UnknownObject`` or ``does not exist`` is detected, prints the current ``_last_map_folder`` and advises the user to re-run ``cmap list <correct_folder>`` before retrying.
+- [x] **(E)** Updated ``cmap`` help text to document ``peek``, ``--count``, ``--offset``, and the folder-context caveat.
+
+### Root Cause
+
+- **(A)** ``bleep/modes/__init__.py`` eagerly called ``import_module()`` for every submodule at package scope.  When invoked via ``python -m bleep.modes.debug``, Python's ``runpy`` imports the package first (triggering the eager imports and placing ``bleep.modes.debug`` into ``sys.modules``), then attempts to execute it as ``__main__`` — finding it already present, which produces the ``RuntimeWarning``.
+- **(B/C)** BlueZ obexd's ``ListMessages`` implementation (``obexd/client/map.c``) defaults to ``MaxListCount=1024``, buffers the entire MAP XML listing in memory, parses it synchronously, and registers a D-Bus ``Message1`` object for each entry before returning the reply.  On a device with a large inbox, this synchronous processing can exceed D-Bus and OBEX timeouts, causing a perceived freeze.
+- **(D)** ``get_message()`` constructs a D-Bus object path using the handle and the *current* OBEX session folder.  If the user lists folder A, then lists folder B, then tries to ``cmap get`` a handle from folder A, the OBEX session is re-established against folder B and the handle's D-Bus object does not exist — producing ``UnknownObject``.
+
+### Evidence
+
+- BlueZ ``obexd/client/map.c`` line 59: ``#define DEFAULT_COUNT 1024`` — default ``MaxListCount``.
+- BlueZ ``obexd/client/map.c`` lines 1335-1391: ``message_listing_cb()`` — full XML buffered and parsed synchronously.
+- BlueZ ``gobex/gobex.c`` line 25: ``#define G_OBEX_DEFAULT_TIMEOUT 10`` — 10s inter-packet timeout.
+- ``bleep/dbuslayer/obex_map.py`` line 239: D-Bus object path ``f"{self._session_path}/message{handle}"`` — handle resolved against current session folder.
+
+---
+
+## Debug Mode UX: Mines Command, Help Grouping & Unified Info Display (2026-03-10) – COMPLETE
+
+**Goal**: Expose enumeration mine/permission mappings to the user in Debug Mode, reorganise the help menu for clarity, and unify `info` output between BLE and Classic devices.
+
+**Status**: Complete.
+
+- [x] **M1** `debug_scan.py` — `cmd_mines()`: human-readable display of `current_mine_map` / `current_perm_map` grouped by object type and issue; optionally shows `get_landmine_report()` / `get_security_report()` when device is connected
+- [x] **M2** `debug.py` — `mines` added to dispatch table and import list
+- [x] **M3** `debug.py` — `_cmd_help()` rewritten with purpose-based groups; `detailed off` shows compact command names per group, `detailed on` shows full usage + description
+- [x] **M4** `debug_connect.py` — `cmd_info()` refactored: `_info_ble()`, `_info_classic()`, `_info_from_dbus_path()` all use `_print_unified_props()` and `_format_bool()`; Title Case labels, aligned columns, booleans shown as `True (1)` / `False (0)`; raw device data never altered
+- [x] **M5** `debug_connect.py` — All `(*)` clarifiers in Classic `info` gated on `detailed_view`: boolean `(N)` suffix, Device Class decode, profile UUID names, `(BR/EDR)` type label; `(use 'cservices' to list)` stays unconditional
+- [x] **M6** `debug_scan.py` — Enum summary labels changed from `mine=`/`perm=` to `landmines=`/`permissions=`; counts now reflect total UUIDs via `_count_map_uuids()` instead of category bucket count
+
+---
+
+## MAP Fixes, Timeouts, Property Access, Handle Context, Push Validation & Error Hints (2026-03-10) – COMPLETE
+
+**Goal**: Fix MAP interactivity bugs in BLEEP Debug Mode — service detection, folder semantics, D-Bus data handling, error handling, debug logging, recursive folder enumeration, redundant SDP scans, sdptool XML parsing, message handle lifecycle, bMessage validation, CreateSession D-Bus signature, D-Bus property access for message flags, bMessage LENGTH validation, D-Bus method call timeouts, and actionable error hints for Service Unavailable / NoReply / device sleep.
+
+**Status**: Complete.  All fixes implemented and verified via live device testing (five rounds).
+
+- **(A) Service detection miss**: `detect_map_service()` only matched UUID substrings and `"message"`/`"map"` in service-map keys, but `build_svc_map` keys the MAP service as `"SMS/MMS"` (from the SDP Service Name).  **Fixed**: added `"sms"` and `"mms"` key patterns, consistent with all sibling `detect_*_service` functions.
+- **(B) Double-folder bug**: `list_messages()` called `set_folder(folder)` then `list_messages(folder)` — resolving as `folder/folder`.  **Fixed**: now calls `list_messages("")` after navigating.
+- **(C) Root/dot rejection**: `cmap list` at root and `cmap list .` both failed with opaque OBEX errors.  **Fixed**: root is rejected early with an actionable hint; `.`/`..` are caught with a clear message.
+- **(D) SupportedTypes crash**: `get_supported_types()` crashed on BlueZ 5.64 which doesn't expose the property.  **Fixed**: catches `DBusException`, logs to `LOG__DEBUG`, returns empty list.
+- **(E) Redundant SDP scans**: every `cmap instances` triggered a fresh `sdptool` call.  **Fixed**: accepts optional `service_map` from `state.current_mapping`.
+- **(F) sdptool XML empty records**: `_parse_xml_record()` used `elem.text` which fails for sdptool's `<text value="..."/>` format.  **Fixed**: new `_xml_elem_value()` helper checks both formats.
+
+### Root Cause
+
+- [x] **R1** `classic_map.py` — `detect_map_service()` key patterns did not cover `"SMS/MMS"` service name
+- [x] **R2** `classic_map.py` — `list_messages()` passed `folder` to both `set_folder()` and `list_messages()`, doubling the path
+- [x] **R3** `obex_map.py` — `get_supported_types()` had no error handling for missing properties
+- [x] **R4** `classic_map.py` — `list_mas_instances()` always ran fresh SDP discovery
+- [x] **R5** `classic_sdp.py` — `_parse_xml_record()` only handled text-content XML, not value-attribute XML
+
+### Implementation
+
+- [x] **I1** `classic_map.py` — `detect_map_service()`: added `"sms"` and `"mms"` to key matching
+- [x] **I2** `classic_map.py` — `list_messages()`: sanitize `.`/`..`, fix double-folder, always `list_messages("")`
+- [x] **I3** `debug_classic_obex.py` — `cmap list`: reject empty folder at UX layer with hint
+- [x] **I4** `debug_classic_obex.py` — `_print_obex_error_hints()`: MAP-specific branches (bad request, not found, no such property, unknown object)
+- [x] **I5** `debug_classic_obex.py` — all `cmd_cmap` error paths: `operation="map"`, `format_dbus_error()`
+- [x] **I6** `obex_map.py` — `get_supported_types()`: try/except with `LOG__DEBUG` logging
+- [x] **I7** `debug_classic_obex.py` — `cmap props`: validate handle is alphanumeric
+- [x] **I8** `classic_map.py` — `list_mas_instances()`: optional `service_map` parameter for cached lookup
+- [x] **I9** `debug_classic_obex.py` — `cmap instances`: passes `state.current_mapping`
+- [x] **I10** `classic_sdp.py` — `_xml_elem_value()`, `_xml_findtext()`, `_parse_xml_record()` rewritten
+
+### Round 2 — D-Bus Iteration Fix, Tree Enumeration & Debug Logging
+
+- [x] **R6** `obex_map.py` — `list_messages()` iterated `dbus.Dictionary` directly instead of `.items()`, causing `ValueError: too many values to unpack`
+- [x] **R7** `debug_classic_obex.py` — `ValueError` and other exceptions in `cmd_cmap` were not logged to `LOG__DEBUG`
+- [x] **R8** `classic_map.py` — `.`/`..` validation in `list_messages()` conflated with genuine D-Bus errors
+
+### Round 2 — Implementation
+
+- [x] **I11** `obex_map.py` — `list_messages()`: use `.items()` with defensive type checking for `dbus.Dictionary` vs `dbus.Array`
+- [x] **I12** `obex_map.py` — `list_messages()`: add `LOG__DEBUG` logging of raw return type/length before unpacking
+- [x] **I13** `obex_map.py` — `walk_folder_tree()`: recursive `SetFolder` + `ListFolders` tree walk with `max_depth` guard
+- [x] **I14** `classic_map.py` — `list_folder_tree()`: high-level wrapper with BLEEP logging
+- [x] **I15** `classic_map.py` — `list_messages()`: removed `.`/`..` validation (moved to command layer)
+- [x] **I16** `debug_classic_obex.py` — `cmap folders`: full tree display via `_print_folder_tree()`
+- [x] **I17** `debug_classic_obex.py` — `cmap list`: `.`/`..` validation before `try` block; `_suggest_map_leaf_folders()` on "bad request"
+- [x] **I18** `debug_classic_obex.py` — all `cmd_cmap` `except` clauses: `print_and_log(..., LOG__DEBUG)`
+
+### Round 3 — Handle Context, Push Validation, Error Hints & CreateSession Signature
+
+- [x] **R9** `obex_map.py` — `CreateSession` passed plain `dict` which `dbus-python` inferred as `a{ss}` instead of required `a{sv}`
+- [x] **R10** `obex_map.py` — message D-Bus objects are ephemeral and session-scoped; handle-based methods created fresh sessions that did not contain the message objects
+- [x] **R11** `debug_classic_obex.py` — handle-based commands (`get`, `props`, `read`, `delete`) did not provide folder context to populate message objects
+- [x] **R12** `debug_classic_obex.py` — `cmap push` accepted plain-text files without warning about bMessage format requirement
+- [x] **R13** `debug_classic_obex.py` — `_print_obex_error_hints()` matched `"not implemented"` and `"unknownmethod"` errors with the generic `"obex"` catch-all
+
+### Round 3 — Implementation
+
+- [x] **I19** `obex_map.py` — `CreateSession`: wrap `session_args` in `dbus.Dictionary(..., signature="sv")`
+- [x] **I20** `obex_map.py` — `_populate_message_objects(folder)`: navigate + `ListMessages("")` to materialise handles
+- [x] **I21** `obex_map.py` — `get_message()`, `get_message_properties()`, `set_message_read()`, `set_message_deleted()`: accept `folder` kwarg, call `_populate_message_objects` when provided
+- [x] **I22** `classic_map.py` — `get_message()`: pass `folder` kwarg through to `MapSession.get_message()`
+- [x] **I23** `debug_classic_obex.py` — `_last_map_folder` + `_require_map_folder()`: track folder context from `cmap list`
+- [x] **I24** `debug_classic_obex.py` — `cmap get/props/read/delete`: use `_require_map_folder()` before handle access
+- [x] **I25** `debug_classic_obex.py` — `cmap push`: warn when file lacks `BEGIN:BMSG` header
+- [x] **I26** `debug_classic_obex.py` — `_print_obex_error_hints()`: specific branches for `"not implemented"` and `"unknownmethod"` before generic `"obex"` check
+- [x] **I27** `debug_classic_obex.py` — updated `cmap` help text: folder-context dependency, bMessage format note
+
+### Round 4 — D-Bus Property Access Fix & Push LENGTH Validation
+
+- [x] **R14** `obex_map.py` — `set_message_read()` and `set_message_deleted()` called `Message1.SetProperty()` which does not exist in BlueZ's GDBus implementation; `Read` and `Deleted` are standard D-Bus properties accessed via `Properties.Set()`
+- [x] **R15** `debug_classic_obex.py` — `cmap push` did not validate the `LENGTH:` field in bMessage files, allowing silently malformed pushes when users edit downloaded messages without updating the byte count
+
+### Round 4 — Implementation
+
+- [x] **I28** `obex_map.py` — `set_message_read()`: use `dbus.Interface(obj, DBUS_PROPERTIES).Set(_OBEX_MSG_IFACE, "Read", dbus.Boolean(read, variant_level=1))`
+- [x] **I29** `obex_map.py` — `set_message_deleted()`: same pattern with `"Deleted"` property
+- [x] **I30** `debug_classic_obex.py` — `_validate_bmsg_length()`: parse `LENGTH:` field, compute actual `BEGIN:MSG` … `END:MSG` byte size, warn on mismatch with correct value
+
+### Round 5 — D-Bus Timeout Fix, Error Hints & UX Improvements
+
+- [x] **R16** `obex_map.py` — D-Bus method calls (`ListMessages`, `ListFolders`, `UpdateInbox`, `ListFilterFields`, `_populate_message_objects`) used the dbus-python default timeout (~25 s), causing `NoReply` errors for large inbox folders (100+ messages)
+- [x] **R17** `debug_classic_obex.py` — `_print_obex_error_hints()` had no branch for `"service unavailable"` (OBEX 0x53), falling through to the generic `"obex"` catch-all with misleading advice
+- [x] **R18** `debug_classic_obex.py` — `_print_obex_error_hints()` had no branch for `"noreply"` D-Bus timeout errors
+- [x] **R19** `debug_classic_obex.py` — `cmap read` did not warn when targeting non-inbox folders where `readStatus` changes are semantically rejected
+- [x] **R20** `debug_classic_obex.py` — OBEX timeout hint did not mention device sleep/lock state as the most common cause
+- [x] **R21** `debug_classic_obex.py` — `cmap` help text did not distinguish `get` (download contents) from `read` (toggle status flag)
+
+### Round 5 — Implementation
+
+- [x] **I31** `obex_map.py` — `list_folders()`: pass `timeout=self._timeout`
+- [x] **I32** `obex_map.py` — `list_messages()`: pass `timeout=self._timeout * 4` (120 s default) for large-folder support
+- [x] **I33** `obex_map.py` — `_populate_message_objects()`: pass `timeout=self._timeout * 4`
+- [x] **I34** `obex_map.py` — `update_inbox()`: pass `timeout=self._timeout`
+- [x] **I35** `obex_map.py` — `list_filter_fields()`: pass `timeout=self._timeout`
+- [x] **I36** `debug_classic_obex.py` — `_print_obex_error_hints()`: new `"service unavailable"` branch with MAP folder guidance
+- [x] **I37** `debug_classic_obex.py` — `_print_obex_error_hints()`: new `"noreply"` branch with large-folder guidance
+- [x] **I38** `debug_classic_obex.py` — `cmap read`: proactive warning when folder context is not `inbox`
+- [x] **I39** `debug_classic_obex.py` — OBEX timeout hint updated: mentions device sleep/lock as primary cause
+- [x] **I40** `debug_classic_obex.py` — `cmap` help text: clarified `get` = download contents, `read` = toggle flag; added device wake tip
+
+### Documentation
+
+- [x] **D1** `changelog.md`: v2.7.22 (round 1-2); v2.7.23 (round 3); v2.7.24 (round 4); v2.7.25 (round 5)
+- [x] **D2** `todo_tracker.md`: this section (updated with round 5)
+- [x] **D3** `__init__.py`: version bumped to 2.7.25
+- [x] **D4** `learned-memories.mdc`: MAP technical decisions (updated with round 5)
+
+### Live-Device Testing Verification (Samsung SM-G891A, E4:FA:ED:83:D8:47)
+
+All `cmap` commands verified against a Samsung SM-G891A (Android) target device.
+
+| Command | Status | Notes |
+|---------|--------|-------|
+| `cmap folders` | **PASS** | Full tree enumerated: telecom/msg/{inbox,outbox,sent,deleted,draft} |
+| `cmap list telecom/msg/inbox` | **PASS** | Returns 100 messages; may time out on first attempt if device is asleep — succeeds on retry once device is awake |
+| `cmap list telecom/msg/outbox` | **PASS** | Returns 14 messages |
+| `cmap list telecom/msg/deleted` | **PASS** | Returns 4 messages |
+| `cmap list telecom/msg/draft` | **PASS** | Returns 1 message |
+| `cmap list telecom/msg/sent` | **INTERMITTENT** | Times out when device is asleep; expected to succeed once device is awake (large folder) |
+| `cmap get <handle>` | **PASS** | Downloads full bMessage to file and displays contents (prior rounds) |
+| `cmap push <file>` | **PASS** | Succeeds with correctly formatted bMessage (LENGTH field must match); prior rounds |
+| `cmap inbox` | **PASS** | Triggers inbox update (prior rounds) |
+| `cmap props <handle>` | **PASS** | Returns message properties (prior rounds) |
+| `cmap read <handle> true` | **PASS** | Successfully marks inbox message as read |
+| `cmap read <handle> false` | **PASS** | Successfully marks inbox message as unread; confirmed via subsequent `cmap list` showing `[ ]` |
+| `cmap read <handle>` (outbox) | **EXPECTED FAIL** | Device rejects readStatus on outbox messages with `Service Unavailable` (device-side semantic restriction) |
+| `cmap delete <handle>` | **PASS** | Successfully marks message as deleted (prior rounds) |
+| `cmap types` | **PASS** | Returns supported types or degrades gracefully (prior rounds) |
+| `cmap instances` | **PASS** | Lists MAS instances from SDP (prior rounds) |
+
+**Key observations from testing:**
+- Device sleep/lock is the primary cause of OBEX-level timeouts (`Timed out waiting for response`), not D-Bus timeouts.  Once the phone is awake, requests succeed quickly.
+- `readStatus` changes are only accepted for inbox messages; outbox/sent/draft/deleted folders return `Service Unavailable` — this is a device-side semantic restriction, not a BLEEP bug.
+- `cmap read` toggles the read/unread status flag; `cmap get` downloads and displays full message contents — naming clarified in help text.
+- The D-Bus timeout fix (Round 5) prevents `NoReply` errors for large folders; OBEX-level timeouts from the device itself cannot be addressed in code.
+
+---
+
+## OPP Fast-Completion Race Fix (2026-03-09) – COMPLETE
+
+**Goal**: Fix false-failure reporting for OPP transfers that complete faster than the poller can read them, and provide clear diagnostics for unsupported operations.
+
+**Status**: Complete.  All fixes implemented and verified via live device testing against SCH-U365.
+
+- **(D) False send failure**: `copp send /tmp/test.vcf` delivered the file successfully (phone received and stored it), but BLEEP reported failure because obexd removed the Transfer1 object before `poll_obex_transfer()`'s first `props.Get()` call.  The v2.7.20 fix treated ALL removed-object cases as failures — wrong for fast-completing sends.  **Fixed**: now correctly reports `[+] OPP send complete: ?/107 bytes transferred`.
+- **(E) Pull works**: Contrary to earlier hypothesis, `copp pull` **does** work against the SCH-U365.  The fast-completion race was masking success.  The file is now validated (existence + non-zero size) and reported with byte count.  **Fixed**: now reports `[+] Business card saved → <path> (<N> bytes)`.
+- **(F) ExchangeBusinessCards unimplemented**: obexd 5.64 does not implement `ObjectPush1.ExchangeBusinessCards` — returns `org.bluez.obex.Error.Failed: Not Implemented`.  **Fixed**: clean error message with actionable guidance.  Acknowledged as implemented (acceptable behavior).
+
+**Design note**: BlueZ reference code (`opp-client`, `obexctl`) relies solely on Transfer1 `Status` for success detection and does not check file existence or size.  However, `obexd/client/transfer.c` removes the file on failed GET transfers, making file existence a reliable success indicator.  BLEEP goes beyond the reference by validating file existence + non-zero size for all completion paths.
+
+### Root Cause
+
+- [x] **R7** `_obex_common.py` — `poll_obex_transfer()` raised `RuntimeError` on all `DBusException(UnknownObject)` cases, including successful fast-completing transfers where obexd removed the Transfer1 object after completion.  Callers could not distinguish fast success from genuine failure.
+- [x] **R8** `obex_opp.py` — `opp_send_file()` propagated the poller's `RuntimeError` without checking whether the send actually succeeded (it did — the phone received the file).
+- [x] **R9** `obex_opp.py` — `opp_pull_business_card()` similarly propagated the error without checking if the dest file was written (it was — pull does work on SCH-U365).
+- [x] **R10** `obex_opp.py` — `opp_exchange_business_cards()` did not detect the "Not Implemented" D-Bus error, producing a generic error message instead of actionable guidance.
+
+### Implementation
+
+- [x] **I11** `_obex_common.py` — `poll_obex_transfer()` returns `{"status": "removed"}` instead of raising when the transfer object is gone.  Callers verify the actual outcome.
+- [x] **I12** `obex_opp.py` — `opp_send_file()` treats "removed" as fast completion (send succeeded).
+- [x] **I13** `obex_opp.py` — `opp_pull_business_card()` validates dest file (existence + non-zero size) for all completion paths — both normal "complete" and fast-race "removed".  Raises clear error when no file was written.
+- [x] **I14** `obex_opp.py` — `opp_exchange_business_cards()` detects "Not Implemented" and raises a clear message directing users to use separate send/pull.
+- [x] **I15** `debug_classic_obex.py` — `_print_obex_error_hints()` updated with specific hints for pull-unsupported and exchange-unimplemented errors.
+- [x] **I16** `debug_classic_obex.py`, `cli.py`, `classic_opp.py` — Pull success messages now include file size in bytes.
+
+### Verification
+
+- [x] `copp send /tmp/test.vcf` — reports `[+] OPP send complete: ?/107 bytes transferred` (file delivered)
+- [x] `copp pull` — reports `[+] Business card saved → ~/.cache/obexd/…_card.vcf` (file received, SCH-U365 name card)
+- [x] `copp exchange` — reports `OPP ExchangeBusinessCards is not supported by this version of obexd` (acknowledged as acceptable)
+
+### Documentation
+
+- [x] **D4** `changelog.md`: v2.7.21 entry (updated with verified results)
+- [x] **D5** `todo_tracker.md`: this section
+- [x] **D6** `__init__.py`: version bumped to 2.7.21
+
+---
+
+## OPP OBEX Polishing (2026-03-09) – COMPLETE
+
+**Goal**: Resolve remaining OPP failures observed against the SCH-U365 (`14:89:FD:31:8A:7E`), including a transfer-object race condition, empty SDP records preventing Channel hints, and a potential obexd file-write path restriction.  Add `ExchangeBusinessCards` support and improve OPP diagnostics.
+
+**Status**: Complete.  Superseded by "OPP Fast-Completion Race Fix" above which corrects false failure reporting for fast-completing transfers.
+
+- **(A) SDP parsing failure**: `cservices` returned 5 records with all fields empty (`handle_None`, no RFCOMM channels) even though BlueZ's `UUIDs` D-Bus property correctly listed OPP (`0x1105`).  A fallback targeted `sdptool search` now discovers the OPP RFCOMM channel when full SDP parsing fails.
+- **(B) Transfer-object race condition**: When the SCH-U365 accepted the OBEX connection but failed the vCard transfer immediately (phone showed "sending" then "failure in sending"), obexd tore down the `Transfer1` object before `poll_obex_transfer()` could read its `Status` property.  The raw `DBusException(UnknownObject)` propagated unhandled to the user.  The poller now catches this and raises a descriptive `RuntimeError`.
+- **(C) Dest path restriction**: Default `copp pull` destination was `/tmp/`, which may be outside obexd's permitted write area on Ubuntu (AppArmor).  Changed to `~/.cache/obexd/`.
+
+**Observation**: Despite the host OS reporting "no supported services" to the target device during generic Bluetooth connection, BLEEP's targeted OPP operations via obexd *do* reach the phone — the device prompts the user to accept and attempts the transfer.  This confirms that profile-level operations can succeed even when the host's SDP presentation appears incompatible, making OPP operations always worth attempting.
+
+### Root Cause (updated from v2.7.19)
+
+- [x] **R1** (v2.7.19) `obex_opp.py` CreateSession without Channel hint → obexd SDP timeout. *Fixed in v2.7.19.*
+- [x] **R2** (v2.7.19) `obex_opp.py` session-object access not wrapped in try/except. *Fixed in v2.7.19.*
+- [x] **R3** (v2.7.19) `classic_pbap.py` redundant local import → NameError in watchdog. *Fixed in v2.7.19.*
+- [x] **R4** `_obex_common.py` `poll_obex_transfer()` does not handle `DBusException` when the transfer object is torn down by obexd before the poller reads `Status` — the raw `UnknownObject` error propagates to the user instead of a descriptive `RuntimeError`.
+- [x] **R5** `debug_classic_obex.py` `_extract_opp_channel()` returns `None` when SDP parsing produces empty records (`handle_None`); no fallback to targeted `sdptool search` exists, so `CreateSession` goes without a Channel hint.
+- [x] **R6** Default `copp pull` destination (`/tmp/`) may be outside obexd's AppArmor-permitted write area on Ubuntu, causing obexd to abort the incoming vCard transfer (phone shows "failure in sending").
+
+### Implementation
+
+- [x] **I1** (v2.7.19) Channel passthrough + session exception wrapping in `obex_opp.py`.
+- [x] **I2** (v2.7.19) Channel threading in `classic_opp.py`.
+- [x] **I3** (v2.7.19) Channel extraction + error hints in `debug_classic_obex.py`.
+- [x] **I4** (v2.7.19) PBAP local-import fix in `classic_pbap.py`.
+- [x] **I5** `_obex_common.py` — Wrap `props.Get()` in `poll_obex_transfer()` with `try/except dbus.exceptions.DBusException`; treat torn-down transfer as a failed transfer with descriptive error.
+- [x] **I6** `obex_opp.py` — Add explicit 90 s D-Bus method-call timeout to `SendFile`, `PullBusinessCard`, and `ExchangeBusinessCards` to prevent indefinite blocking.
+- [x] **I7** `obex_opp.py` — Add `opp_exchange_business_cards()` wrapping `ObjectPush1.ExchangeBusinessCards` per `org.bluez.obex.ObjectPush(5)`.
+- [x] **I8** `classic_opp.py` — Add `exchange_business_cards()` operations wrapper.
+- [x] **I9** `classic_sdp.py` — Add `discover_service_channel(mac, uuid_short)` for targeted single-service SDP lookup via `sdptool search --bdaddr`.
+- [x] **I10** `debug_classic_obex.py` — `_resolve_opp_channel()` tries `_extract_opp_channel()` first, falls back to `discover_service_channel()`. Default pull dest changed to `~/.cache/obexd/`. `copp exchange` subcommand added. `_print_obex_error_hints()` enhanced with `operation` parameter and transfer-teardown guidance. Usage text documents OPP listing limitation.
+
+### Verification
+
+- [x] Channel passthrough confirmed: phone prompts user to accept OPP connection (v2.7.19)
+- [x] Session exception handling confirmed: `UnknownObject` no longer escapes as raw `DBusException` (v2.7.19)
+- [x] PBAP `_watchdog_cb` NameError confirmed fixed (v2.7.19)
+- [x] Transfer-object race condition handled: `poll_obex_transfer` catches `DBusException` and raises descriptive `RuntimeError`
+- [x] `copp send` — file delivered to SCH-U365 (reported as failure in v2.7.20 due to race — fixed in v2.7.21)
+- [x] `copp pull` — successfully retrieves SCH-U365 name card (earlier failure was due to race, not device limitation — fixed in v2.7.21)
+- [x] `copp exchange` — confirmed obexd 5.64 does not implement `ExchangeBusinessCards` (acknowledged as acceptable)
+
+### Documentation
+
+- [x] **D1** `changelog.md`: v2.7.20 entry
+- [x] **D2** `todo_tracker.md`: this section (updated from v2.7.19 PARTIAL)
+- [x] **D3** `__init__.py`: version bumped to 2.7.20
+
+---
+
+## OPP OBEX Timeout & Exception Handling Fix (2026-03-09) – COMPLETE
+
+**Goal**: Fix Object Push Profile (OPP) operations failing with `connect_cb: Timed out waiting for response` against paired Classic devices (observed on SCH-U365 / `14:89:FD:31:8A:7E`), an unhandled `DBusException` in `obex_opp.py`, and a `NameError` in `classic_pbap.py`'s watchdog callback.
+
+**Status**: Complete.  Superseded by "OPP OBEX Polishing" above which addresses remaining transfer-level failures.
+
+### Root Cause
+
+- [x] **R1** `obex_opp.py` calls `CreateSession(mac, {"Target": "OPP"})` without a `Channel` hint, forcing obexd to redo SDP — on older devices this redundant SDP lookup during an active RFCOMM keep-alive can stall or resolve incorrectly, causing a 20 s OBEX CONNECT timeout even though the channel is already known from `cconnect` enumeration.
+- [x] **R2** `obex_opp.py` lines 123-124: `bus.get_object()` and `dbus.Interface()` after `CreateSession` are not wrapped in `try/except`, so a partially-torn-down session object raises a raw `DBusException` (`UnknownObject`) that escapes to the user instead of a clean `RuntimeError`.
+- [x] **R3** `classic_pbap.py` `pbap_dump_async()`: redundant `from bleep.core.log import print_and_log` at lines 328 and 343 (inside conditional/except blocks) cause Python to mark `print_and_log` as a local variable of the enclosing function; when those branches don't execute (the common path), the `_watchdog_cb` closure gets `NameError: cannot access free variable`.
+
+### Implementation
+
+- [x] **I1** `bleep/dbuslayer/obex_opp.py` — Add optional `channel: int | None` parameter to `opp_send_file()` and `opp_pull_business_card()`; when provided, include `dbus.Byte(channel)` as `"Channel"` in `CreateSession` options. Wrap `bus.get_object()` + `dbus.Interface()` in `try/except DBusException`.
+- [x] **I2** `bleep/ble_ops/classic_opp.py` — Thread `channel: int | None` through `send_file()` and `pull_business_card()` to the dbuslayer functions.
+- [x] **I3** `bleep/modes/debug_classic_obex.py` — Extract OPP RFCOMM channel from `state.current_mapping` and pass to `send_file()`/`pull_business_card()`. Extend `_print_obex_error_hints()` to cover timeout scenarios with actionable guidance.
+- [x] **I4** `bleep/ble_ops/classic_pbap.py` — Remove redundant local `from bleep.core.log import` statements at lines 328 and 343; module-level import at line 33 suffices.
+
+### Verification
+
+- [x] Channel passthrough confirmed: phone now prompts user to accept OPP connection (was previously timing out silently)
+- [x] Exception handling confirmed: `UnknownObject` no longer escapes as raw `DBusException`
+- [x] PBAP `_watchdog_cb` NameError confirmed fixed
+
+### Documentation
+
+- [x] **D1** `changelog.md`: v2.7.19 entry
+- [x] **D2** `todo_tracker.md`: this section
+- [x] **D3** `__init__.py`: version bumped to 2.7.19
+
+---
+
+## Audio Tools & Profile Correlator Bug Fixes (2026-03-05) – IMPLEMENTED
+
+**Goal**: Fix 7 bugs across audio tools, profile correlator, and audio recon that prevent BLEEP from accurately enumerating Bluetooth audio cards, profiles, and interfaces.  Connected BlueZ devices visible via `pacmd list-cards` were not recognised by `audio-profiles` or fully enumerated by `audio-recon`.
+
+### Change 1: `get_profiles_for_card()` regex excludes digits
+- [x] **C1** Fix `[a-z_]+` → `[a-z0-9_]+` so profile names with digits (e.g. `a2dp_sink`) are matched
+- **File**: `bleep/ble_ops/audio_tools.py`
+
+### Change 2: `_extract_interfaces_from_block()` pacmd parsing regex
+- [x] **C2** Replace `\d+\.\s+(\S+)` with pattern matching actual pacmd format `name/#index: description`
+- **File**: `bleep/ble_ops/audio_tools.py`
+
+### Change 3: `_extract_interfaces_from_block()` role_key derivation
+- [x] **C3** Fix `section_key.rstrip("s")` producing `"source"/"sink"` instead of `"sources"/"sinks"` expected by `_role_for_interface_name()`
+- **File**: `bleep/ble_ops/audio_tools.py`
+
+### Change 4–5: `list_audio_sinks()` / `list_audio_sources()` multi-tool enumeration
+- [x] **C4** For `"pipewire"` backend, try PipeWire-native (`pw-dump`) then also `pactl` (PA compat), merging and deduplicating results
+- [x] **C5** Mirror Change 4 for `list_audio_sources()`
+- **File**: `bleep/ble_ops/audio_tools.py`
+
+### Change 6: `identify_bluetooth_profiles_from_alsa()` card-level augmentation
+- [x] **C6** Supplement sink/source enumeration with `get_bluez_cards()` + `get_profiles_for_card()` to discover ALL available profiles regardless of active profile
+- **File**: `bleep/ble_ops/audio_tools.py`
+
+### Change 7: MAC comparison bug in `AudioProfileCorrelator`
+- [x] **C7** Fix `mac_address.lower().replace(":", "_")` → `mac_address.lower()` at 3 locations
+- **File**: `bleep/ble_ops/audio_profile_correlator.py`
+
+### Change 8: Profile restore in `_recon_pulseaudio`
+- [x] **C8a** Add `get_active_profile_for_card()` method to `AudioToolsHelper`
+- [x] **C8b** Save original active profile before cycling, restore after
+- **Files**: `bleep/ble_ops/audio_tools.py`, `bleep/ble_ops/audio_recon.py`
+
+### Verification
+- [x] Tested against live device `D8:3A:DD:0B:69:B9` — `audio-profiles`, `audio-profiles --device`, and `audio-recon --device` all return complete results
+- [x] Profile restore confirmed: active profile `handsfree_head_unit` preserved after `audio-recon` cycling
 
 ---
 
@@ -1670,7 +3327,7 @@ Address two issues identified after initial implementation:
     - [x] Migration history documented in `observation_db_schema.md`
   * Device type classification improvements:
     - [x] **Dual Device Detection Framework (Completed)** – Comprehensive evidence-based classification system:
-      - [x] Plan created for modular, expandable dual device detection framework (`bleep/docs/DUAL_DEVICE_DETECTION_PLAN.md`)
+      - [x] Plan created for modular, expandable dual device detection framework (superseded by `bleep/docs/device_type_classification.md`)
       - [x] Design includes database-first performance optimization with signature caching
       - [x] Design includes mode-aware classification (passive/naggy/pokey/bruteforce)
       - [x] Design includes code reuse leveraging existing SDP, GATT, and database functions
@@ -1950,6 +3607,11 @@ are in `workDir/BlueZDocs/org.bluez.obex.*.rst` and reference scripts in
   - `classic_sdp.py` — D-Bus path no longer requires RFCOMM channel to accept results
   - All inline `svc_map` builders (`classic_connect.py`, `debug_classic.py`, `debug_classic_rfcomm.py`, `debug_pairing.py`, `cli.py`) replaced with shared `build_svc_map()`
 
+- [x] bc-54 MediaPlayer optional property handling (v2.7.17):
+  - `dbuslayer/media.py` — `_get_property()` distinguishes optional vs required props per BlueZ spec
+  - `dbuslayer/media.py` — `get_name()` delegates to `_get_property()` for consistent handling
+  - `core/observations.py` — `snapshot_media_player()` uses `GetAll` instead of individual getters
+
 *(collapse / expand sections as items are completed)* 
 
 ## User Mode Implementation Tasks
@@ -1972,6 +3634,783 @@ are in `workDir/BlueZDocs/org.bluez.obex.*.rst` and reference scripts in
 - [x] **Testing**
   - [x] Create test suite for UI functionality
   - [x] Validate against multiple device types
+
+## Codebase Gap Analysis & Remediation Plan (2026-04-01) – IN PROGRESS
+
+**Origin**: Exhaustive review of the entire `bleep/` codebase (163 Python modules, 58 documentation files), cross-referenced against `bleep/docs/changelog.md`, this tracker, and `workDir/BigMoves/README.bleep-bleep-mcp-augmentation-roadmap.md`. This section captures all discovered gaps, shortcomings, incomplete work, and documentation errors with a phased remediation plan.
+
+**Methodology**: Static analysis of all `bleep/**/*.py` modules, grep for TODO/FIXME/HACK/PLACEHOLDER markers, comparison of `__all__` exports against actual imports, test coverage mapping (163 modules vs `tests/` import references), deprecated API usage audit, and documentation-to-code consistency checks.
+
+---
+
+### Category 1: Active Bugs and Broken References
+
+#### G-1.1 `modes/test.py` calls non-existent adapter API
+
+**Finding**: `bleep/modes/test.py` lines 478, 499, 509 call `self.adapter.is_powered()` and `self.adapter.is_discovering()`. The adapter class (`dbuslayer/adapter.py`) only exposes `get_powered()` and `get_discovering()` — the `is_*` names were removed during the v2.7+ API cleanup.
+
+**Impact**: `bleep test` crashes with `AttributeError` whenever it reaches the adapter property check or discovery test.
+
+**Reasoning**: This is a straightforward rename oversight. The rest of the codebase was migrated, but `modes/test.py` was missed. Grep confirms these are the **only** three occurrences of the old names across the entire `bleep/` tree.
+
+**Fix**: Replace `is_powered()` → `get_powered()` and `is_discovering()` → `get_discovering()` in `modes/test.py`.
+
+- [x] **G-1.1** Fix stale `is_powered()`/`is_discovering()` calls in `modes/test.py`
+
+#### G-1.2 `identify_uuid()` space-padding in `uuid_utils.py`
+
+**Finding**: `bleep/ble_ops/common/uuid_utils.py` line 84 adds `target.ljust(32, " ")` to `canonical_targets`, injecting space-padded strings into a set meant for hex comparison.
+
+**Impact**: This padded form will never match any real UUID (hex strings don't contain spaces). It wastes a set entry on every call and could cause confusion if anyone iterates `canonical_targets` for display or logging. The actual matching still works because other branches add the correct hex forms.
+
+**Reasoning**: Likely a debugging artifact or misguided attempt to normalize length. The set already receives correct-length hex forms from the 16-bit, 32-bit, and 128-bit branches. The space-padded entry serves no purpose.
+
+**Fix**: Remove the `canonical_targets.add(target.ljust(32, " "))` line.
+
+- [x] **G-1.2** Remove space-padding in `identify_uuid()` (`ble_ops/common/uuid_utils.py`)
+
+#### G-1.3 `dbuslayer/__init__.py` `__all__` lists unexported names
+
+**Finding**: `bleep/dbuslayer/__init__.py` `__all__` lists `bluez_monitor`, `recovery`, `agent_io`, `pairing_state`, `bond_storage` but the file only imports `system_dbus__bluez_adapter`, `system_dbus__bluez_signals`, `system_dbus__bluez_generic_agent`, `system_dbus__bluez_agent_user_interface`, `Characteristic`, `Descriptor`. The five listed-but-not-imported names have no `__getattr__` lazy loader — only `system_dbus__bluez_device__low_energy` does.
+
+**Impact**: `from bleep.dbuslayer import *` silently fails to export those five modules. Direct `from bleep.dbuslayer import bluez_monitor` raises `ImportError`. Code that uses the fully-qualified path (`from bleep.dbuslayer.bluez_monitor import ...`) works fine.
+
+**Reasoning**: `__all__` was expanded to document intended scope without wiring up the imports. This is misleading to anyone inspecting the package API.
+
+**Fix**: Either add `__getattr__` lazy loaders for the five modules (matching the `device_le` pattern) or remove them from `__all__`.
+
+- [x] **G-1.3** Fix `dbuslayer/__init__.py` `__all__` vs actual imports
+
+#### G-1.4 `__main__.py` missing for `python -m bleep`
+
+**Finding**: `bleep/docs/cli_usage.md` line 25 explicitly notes: "The documentation previously showed `python -m bleep`, but this won't work because the package doesn't have a `__main__.py` file." The standard Python convention (`python -m <package>`) does not work.
+
+**Impact**: User friction. `python -m bleep.cli` works, but `python -m bleep` is the expected pattern (matching `python -m pytest`, `python -m pip`, etc.).
+
+**Reasoning**: A `__main__.py` containing `from bleep.cli import main; import sys; sys.exit(main())` would make `python -m bleep` behave identically to `python -m bleep.cli`. When no subcommand is given, `args.mode` is `None`, which falls through to the `else` branch at `cli.py:2572` and launches the interactive REPL — same as today. All flags and subcommands work identically since both paths invoke the same `main()`. The `bleep/__init__.py` side-effects (signal patching, log init) are triggered either way because importing the package always runs `__init__.py`.
+
+**Fix**: Create `bleep/__main__.py` (3 lines). Update `cli_usage.md` to remove the caveat note.
+
+- [x] **G-1.4** Add `bleep/__main__.py` for `python -m bleep` support
+- [x] **G-1.4b** Update `cli_usage.md` to remove the "won't work" caveat
+
+#### G-1.5 Orphaned bytecode without source
+
+**Finding**: `bleep/callbacks/examples/__pycache__/auto_pair_accept.cpython-311.pyc` exists with no corresponding `auto_pair_accept.py` source file.
+
+**Impact**: None at runtime (Python won't load `.pyc` without being asked), but it pollutes the tree and suggests a deleted file that was never cleaned up.
+
+**Fix**: Delete the orphaned `.pyc` file.
+
+- [x] **G-1.5** Delete orphaned `auto_pair_accept.cpython-311.pyc`
+
+---
+
+### Category 2: Incomplete Features (Explicitly Marked Elsewhere, Consolidated Here)
+
+#### G-2.1 Endpoint-based transport acquisition — INCOMPLETE
+
+**Cross-ref**: "Fix Endpoint-Based Transport Acquisition (2026-03-21) – INCOMPLETE" section in this tracker (line ~827).
+
+**Finding**: `BleepMediaEndpoint` registration (Phase 2) does not function when PipeWire/PulseAudio is running. BlueZ never calls `SelectConfiguration`/`SetConfiguration` because the audio daemon claims all SEPs first. The `--direct` mode works only when the audio daemon is stopped.
+
+**Impact**: `audio-play` without `--direct` or `--system` is non-functional in common desktop configurations.
+
+**Reasoning**: This is an architectural contention issue between BLEEP and the system audio daemon. Deferred in favor of `--system` flag approach that works *with* the daemon. Further investigation into BlueZ endpoint selection ordering and PipeWire endpoint contention is needed. May require BLEEP to be the only registered endpoint.
+
+**Status**: Deferred — documented here for tracking.
+
+#### G-2.2 `audio_codec.py` GStreamer appsrc recording placeholder
+
+**Finding**: `bleep/ble_ops/audio/audio_codec.py` lines 445-451 contain a placeholder comment block for the recording path that reads from a transport FD and feeds data to GStreamer's `appsrc`. No actual implementation exists.
+
+**Impact**: Recording via the codec pipeline (non-system-tool path) is non-functional.
+
+**Reasoning**: This requires GStreamer `appsrc` integration with `push_buffer()` and proper EOS handling. The `--system` recording path via `arecord`/`parecord` works as an alternative.
+
+#### G-2.3 `service.py` signal handling ✅ Complete
+
+**Finding**: `bleep/dbuslayer/service.py` previously had log-only signal placeholders.
+
+- [x] `Service._props_changed` now updates local state (`primary`, `includes`, `handle`) on `GattService1` `PropertiesChanged`
+- [x] `Service.on_property_changed()` callback registration for callers
+- [x] `signals.py` routes `GATT_SERVICE_INTERFACE` property changes to the owning Service object
+- [x] Module docstring updated (no longer "placeholder")
+- [x] 6 mock-based tests for signal dispatch path
+
+#### G-2.4 `device_le.py` legacy compatibility stubs
+
+**Finding**: Lines 1668-1691 in `bleep/dbuslayer/device_le.py` contain Phase-4 legacy stubs including an empty `register()` method and connection signalling no-ops. The `interfaces_added` callback (line 2077) only logs, doesn't update caches.
+
+**Impact**: External callers expecting monolith-era device registration or real-time interface tracking get silent no-ops.
+
+---
+
+### Category 3: Empty/Placeholder Packages
+
+#### G-3.1 `bleep/gatt/` — Future migration namespace
+
+**Finding**: Contains only `__init__.py` with guarded imports of `service`, `characteristic`, `descriptor` that all resolve to `None` because no `.py` modules exist in this directory. The real implementations remain in `bleep/dbuslayer/`.
+
+**Reasoning**: Declared as a future migration target. No runtime impact, but the package's existence may mislead developers into thinking GATT wrappers live here.
+
+**Decision needed**: Migrate the implementations here, or remove the package and document `bleep.dbuslayer` as the canonical home.
+
+- [x] **G-3.1** ~~Decide on `bleep/gatt/`~~ — **Decision: keep as future migration target.** When GATT wrappers are mature enough to decouple from `dbuslayer/`, move `service.py`, `characteristic.py`, `descriptor.py` here. No action needed now.
+
+#### G-3.2 `bleep/mesh/` — Partially implemented
+
+**Finding**: `agent` and `provisioning` modules listed in `__all__` don't exist (import-guarded to `None`). Only `proxy_solicitation` is a real module.
+
+**Reasoning**: Mesh support is early-stage. The package should exist but `__all__` should only list what's real.
+
+- [x] **G-3.2** Restructured `bleep/mesh/__init__.py` — `__all__` now lists only `proxy` (the real module); planned `agent`/`provisioning` documented in docstring only
+
+#### G-3.3 `bleep/protocols/` — Design docs only
+
+**Finding**: Package docstring states "Contains design documentation only. Implementation is planned for a future version." Only `l2cap_design.md` and `obex_design.md` exist — no Python code.
+
+**Reasoning**: Acceptable for design-phase packages, but should be noted in `docs/README.md` to avoid confusion.
+
+- [x] **G-3.3** Note `protocols/` as design-only in docs index
+
+---
+
+### Category 4: Deprecated/Legacy Code
+
+#### G-4.1 `bluetooth_uuids.py` still imported by bleep-mcp (BC-003)
+
+**Finding**: Module emits `DeprecationWarning` on import, directing to `bleep.bt_ref.uuids`. No internal `bleep/` code imports it, but `bleep-mcp/bleep_mcp/resources/reference_data.py` has 3 import sites that still use it.
+
+**Reasoning**: Coordination item between `bleep/` and `bleep-mcp/`. Once `bleep.bt_ref.uuids` has full export parity, the MCP imports should migrate.
+
+**Cross-ref**: BC-003 in `workDir/BigMoves/README.bleep-bleep-mcp-augmentation-roadmap.md`.
+
+- [x] **G-4.1** Verify `bleep.bt_ref.uuids` export parity then migrate bleep-mcp imports (BC-003) — imports migrated, `bluetooth_uuids.py` deleted
+
+#### G-4.2 `compat.py` — deprecated, zero internal callers
+
+**Finding**: Entire module warns on import. No `bleep/` code imports it. Exists only for hypothetical external scripts.
+
+- [x] **G-4.2** `compat.py` removed in v2.8.1 (was marked for deletion since v2.6)
+
+#### G-4.3 Legacy shim modules (`bluetooth_utils.py`, `bluetooth_constants.py`, `bluetooth_exceptions.py`)
+
+**Finding**: Three one-line `from .X import *` files in `bt_ref/`. No internal importers.
+
+- [x] **G-4.3** `bluetooth_utils.py`, `bluetooth_constants.py`, `bluetooth_exceptions.py` shims removed in v2.8.1
+
+#### G-4.4 Duplicate D-Bus error mapping (B5 consolidation)
+
+**Finding**: `core/error_handling.py` lines 55-61 document three overlapping error mapping systems: `decode_dbus_error()`, `evaluate__dbus_error()`, and `BlueZErrorHandler.ERROR_MESSAGES`. Plus `bt_ref/error_map.py` has its own table marked "DEPRECATED as primary source of truth."
+
+**Impact**: Tables may diverge, producing inconsistent error codes/messages depending on which path handles the error.
+
+**Reasoning**: The B5 consolidation TODO is open and well-documented in-code. The work is to refactor callers of the deprecated paths to use `decode_dbus_error()` as the single source of truth, then remove the duplicates.
+
+- [x] **G-4.4** Complete B5 D-Bus error mapping consolidation — `evaluate__dbus_error` now delegates to `decode_dbus_error()`, `bt_ref/error_map.map_dbus_error` renamed to `classify_dbus_error` (alias kept), `DBUS_ERROR_MAP` aligned with canonical decoder, cross-system consistency tests added
+
+---
+
+### Category 5: Test Coverage Gaps
+
+#### G-5.1 Majority of modules lack direct test coverage
+
+**Finding**: Of 163 Python modules, only ~30 are directly referenced by any test file in `tests/`. The gap includes entire subsystems:
+
+| Subsystem | Key untested modules |
+|-----------|---------------------|
+| `ble_ops/audio/` | All 10 modules (amusica, audio_recon, audio_codec, audio_system, etc.) |
+| `ble_ops/classic/` | map, pbap, sdp, opp, ftp, pan, spp, rfcomm, ping, version (only `connect` is referenced) |
+| `ble_ops/common/` | `uuid_utils`, `modalias`, `structural` |
+| `dbuslayer/` | device_le, device_classic, device, manager, service, media_stream, media_browse, all obex_*, bond_storage, pin_brute, etc. |
+| `core/` | config, preflight, metrics, utils |
+| `callbacks/` | All |
+| `signals/` | capture_config, router, integration, cli |
+| `modes/` | All 30+ mode files except aoi, debug, media (partial) |
+
+**Reasoning**: Many of these modules require D-Bus/BlueZ at runtime, which makes pure unit testing hard. However, mock-based unit tests for the non-D-Bus logic (parsing, formatting, data structures, error handling) are feasible and valuable.
+
+**Note**: Some modules get indirect coverage through CLI integration tests (`test_classic_cli.py` runs `bleep` as a subprocess), but this is brittle and doesn't validate internal logic paths.
+
+- [x] **G-5.1a** Created `tests/conftest.py` with `MockAdapter`, `MockDeviceInfo`, `dbus_stub`, and `glib_stub` fixtures
+- [x] **G-5.1b** 23 tests for `uuid_utils.py` — `identify_uuid` (16/32/128-bit, BT SIG vs custom, edge cases) and `match_uuid` (exact, partial, case-insensitive, empty)
+- [x] **G-5.1c** 18 tests for `core/preflight.py` — `DeviceState`, `PreflightReport`, `check_device_state`, `require_adapter`, `_check_bluetooth_tools`, `_check_bluez_version`, `_check_bluetooth_config`, `run_preflight_checks` caching
+- [x] **G-5.1d** 14 tests for `ble_ops/classic/map.py` — `normalize_bmessage` (LF→CRLF, LENGTH recalc, multi-block, edge cases) and `_normalize_for_push` (temp-file round-trip)
+- [x] **G-5.1e** 12 tests for `callbacks/base.py` — ABC enforcement, `execute` dispatch, `on_load`/`on_unload` lifecycle, class attribute defaults
+- [x] **G-5.1f** 18 tests for `analysis/sdp_analyzer.py` — empty records, protocol detection (RFCOMM/L2CAP/OBEX/BNEP), profile analysis, version inference with confidence, anomaly detection, report generation
+- [x] **G-5.1g** 14 mock-based tests for `dbuslayer/service.py` + `device_classic.py` — `Service.__init__`/`get_handle`/`discover_characteristics`, `device_classic` state queries/pair/connect with D-Bus mocks
+
+---
+
+### Category 6: Documentation Gaps and Errors
+
+#### G-6.1 `cli_usage.md` — `python -m bleep` caveat
+
+**Cross-ref**: G-1.4 above. Once `__main__.py` is added, update the docs.
+
+#### G-6.2 `bl_classic_mode.md` bc-01 tracker stale
+
+**Finding**: Section 6 "Temporary Classic-Feature TODO Tracker" shows bc-01 as "pending" while most other items are completed. Appears to be outdated.
+
+- [x] **G-6.2** Marked bc-01 as ✅ completed in `bl_classic_mode.md` (research fully realized in implementation)
+
+#### G-6.3 `network_capability_plan.md` / `network_capability_summary.md` drift
+
+**Finding**: These design docs describe Phases 2-5 as "Planned" but `bl_classic_mode.md` already documents working `classic-pan`. The plan docs may be partially superseded.
+
+- [x] **G-6.3** Updated `network_capability_plan.md` and `network_capability_summary.md` — Phase 1 + 1b (classic-pan) complete; Phases 2-5 marked as future enhancements; manual verification with real PAN device recommended
+
+#### G-6.4 `mainloop_architecture.md` — "Design document, not yet implemented"
+
+**Finding**: Line 4 states "Status: Design document — not yet implemented." This is accurate but the doc doesn't cross-reference the FW items (FW1/F1/F3) that track the actual work.
+
+- [x] **G-6.4** Added "Related Work Items" table to `mainloop_architecture.md` cross-referencing FW1, F1, F3 from todo_tracker
+
+#### G-6.5 `observation_db_schema.md` — `protocol_descriptors` "Reserved for future use"
+
+**Finding**: Column exists in schema v10, documented as reserved. `observations.py` has the column in CREATE TABLE and migration SQL, but sets it to `None` in most code paths. Some population logic exists at lines 1035-1068 but appears to be partial.
+
+- [x] **G-6.5** Populated `protocol_descriptors` from SDP attribute 0x0004 — all three parsers (D-Bus XML, sdptool XML, sdptool text) now extract full ProtocolDescriptorList
+
+---
+
+### Category 7: Roadmap Items (from augmentation-roadmap.md, not tracked elsewhere)
+
+These items from `workDir/BigMoves/README.bleep-bleep-mcp-augmentation-roadmap.md` are **not yet tracked** in this file. Added here for completeness:
+
+- [x] **G-7.1** (S4) `_classify_le()` and `_classify_dual()` now consume `LE_ADVERTISING_DATA` evidence at STRONG weight — scan-only devices with beacon/CDP/service-data heuristics classify as `le` instead of `unknown`
+- [x] **G-7.2** (S5) Vendor UART UUIDs (`FFE0`, `FFE1`, `FFF0`, `FFF1`, Nordic UART) elevated from WEAK to STRONG evidence; reasoning output updated
+- [x] **G-7.3** (S9) `upsert_device()` now tracks `rssi_min`/`rssi_max` via `MIN()`/`MAX()` SQL; scan path seeds both values; manufacturer data selects longest payload instead of first entry
+- [ ] **G-7.4** (B1-B4) Blind spots: advertised UUIDs treated as ground truth for Classic/LE split; cached classification not flagged; Find My / `fcf1` beacons ignored for `type`
+- [ ] **G-7.5** (3.1) Advertisement dissection — parse `ServiceData` and `ManufacturerData` into structured fields
+- [x] **G-7.6** (BC-001) Extracted shared `BT_SIG_BASE_UUID` / `BT_SIG_BASE_UUID_NODASH` into `bt_ref/constants.py`; `uuid_utils.py` and `uuid_translator.py` now import from the canonical source (also fixed pre-existing truncation bug in `BASE_UUID__BLUETOOTH`)
+
+**Note**: BC-001 numeric values are currently correct and aligned between the two files. The risk is duplication drift, not a current bug.
+
+---
+
+### Remediation Phases
+
+#### Phase 1: Critical Fixes (Immediate — ~30 minutes)
+
+Quick wins that fix actual runtime bugs and standard Python packaging.
+
+| # | Item | Effort | Files |
+|---|------|--------|-------|
+| 1 | G-1.1: Fix `is_powered()`/`is_discovering()` in `modes/test.py` | 10 min | `modes/test.py` |
+| 2 | G-1.2: Remove `ljust` space-padding in `uuid_utils.py` | 5 min | `ble_ops/common/uuid_utils.py` |
+| 3 | G-1.3: Fix `dbuslayer/__init__.py` `__all__` vs imports | 15 min | `dbuslayer/__init__.py` |
+| 4 | G-1.4: Add `bleep/__main__.py` + update `cli_usage.md` | 5 min | New: `__main__.py`, `docs/cli_usage.md` |
+| 5 | G-1.5: Delete orphaned `.pyc` | 1 min | `callbacks/examples/__pycache__/` |
+
+#### Phase 2: Consolidation and Cleanup ✅ Complete (2026-04-01)
+
+Tech debt that compounds if left unaddressed.
+
+| # | Item | Effort | Status |
+|---|------|--------|--------|
+| 6 | G-4.4: B5 D-Bus error mapping consolidation | 2-3 hr | Deferred to Phase 4 — multiple overlapping tables with subtle semantic differences require dedicated analysis |
+| 7 | G-7.6: Extract shared BT SIG base UUID constant | 30 min | ✅ Done |
+| 8 | G-6.2, G-6.3, G-6.4: Update stale doc status markers | 1 hr | ✅ Done |
+| 9 | G-5.1a: Create `tests/conftest.py` with shared fixtures | 2 hr | Deferred to Phase 3 (test expansion) |
+| 10 | G-4.2, G-4.3: Deprecated shims deleted in v2.8.1 | 1 hr | ✅ Done |
+| 11 | G-3.2: Structure `mesh/` for proper future development | 10 min | ✅ Done |
+
+#### Phase 3: Test Coverage Expansion ✅ Complete (2026-04-01)
+
+Prioritized by likelihood of catching real bugs.  112 tests total, all passing (<1s).
+
+| # | Item | Priority | Status |
+|---|------|----------|--------|
+| Prereq | G-5.1a: `tests/conftest.py` with shared fixtures | — | ✅ Done |
+| 12 | G-5.1b: Unit tests for `uuid_utils.py` (23 tests) | High | ✅ Done |
+| 13 | G-5.1c: Unit tests for `core/preflight.py` (18 tests) | High | ✅ Done |
+| 14 | G-5.1f: Unit tests for `analysis/sdp_analyzer.py` (18 tests) | Medium | ✅ Done |
+| 15 | G-5.1d: Unit tests for `ble_ops/classic/map.py` (14 tests) | Medium | ✅ Done |
+| 16 | G-5.1e: Unit tests for `callbacks/base.py` (12 tests) | Medium | ✅ Done |
+| 17 | G-5.1g: Mock tests for `dbuslayer/service.py`, `device_classic.py` (14 tests) | Medium | ✅ Done |
+
+#### Phase 4: Feature Completion & Error Consolidation ✅ Complete (2026-04-01)
+
+Four bounded items addressing error-handling fragility, live GATT observation, device classification, and data quality.  279 tests total, all passing.
+
+| # | Item | Complexity | Status |
+|---|------|-----------|--------|
+| 6 | G-4.4: B5 D-Bus error mapping consolidation (deferred from Phase 2) | 2-3 hr | ✅ Done |
+| 20 | G-2.3: `service.py` signal handling — propagate GATT property changes | Medium | ✅ Done |
+| 21 | G-7.1, G-7.2: Device type classifier enrichment (`ServiceData`/`AdvertisingData` + vendor UUID heuristics) | Medium | ✅ Done |
+| 22 | G-7.3: DB row enrichment from scan data (RSSI min/max tracking, best-manufacturer selection) | Small | ✅ Done |
+
+**Deferred to future sprint / v2.9 milestone:**
+
+| # | Item | Reason |
+|---|------|--------|
+| 18 | G-2.1: Endpoint transport acquisition (PipeWire contention) | Large scope; `--system` audio workaround covers all current use cases |
+| 19 | G-2.2: `audio_codec.py` appsrc recording | Depends on G-2.1 transport acquisition |
+| 23 | G-7.5: Advertisement dissection tool | Large standalone feature, high maintenance burden |
+| 28 | G-3.1-M: Migrate GATT wrappers (`service.py`, `characteristic.py`, `descriptor.py`) from `dbuslayer/` into `bleep/gatt/` | Blocked until GATT wrappers are mature enough to decouple from D-Bus layer; see G-3.1 decision |
+
+#### Phase 5: Package Hygiene and Documentation ✅ Complete (2026-04-01)
+
+All four items resolved: deprecated UUID file deleted, protocol descriptors populated from SDP, docs updated.
+
+| # | Item | Status |
+|---|------|--------|
+| 24 | G-3.1: `bleep/gatt/` — decision: keep as future migration target (no action now) | ✅ Done |
+| 25 | G-3.3: Note `protocols/` as design-only in docs README | ✅ Done |
+| 26 | G-4.1: `bluetooth_uuids.py` deprecated — bleep-mcp imports migrated to `bt_ref.uuids`, file deleted | ✅ Done |
+| 27 | G-6.5: `protocol_descriptors` column now populated from SDP ProtocolDescriptorList (all 3 parsers) | ✅ Done |
+| 29 | v2.8.1 deprecated module removal: `compat.py`, `bluetooth_exceptions.py`, `bluetooth_constants.py`, `bluetooth_utils.py` deleted; `bt_ref/__init__.py` legacy block removed; docstring references updated | ✅ Done |
+| 30 | Documentation drift: `map.py` docstring, `mainloop_architecture.md` status, `media_mode.md` flags/examples, `aoi.py` TODO stub | ✅ Done |
+| 31 | Media enumeration expansion: non-verbose player output, AVRCP labels, `--verbose` object tree, `--browse` flag, `media_mode.md` sync | ✅ Done |
+| 32 | Bluetooth Mesh skeleton: full `bleep/mesh/` package (constants, errors, network, node, management, application, element, provisioner, provision_agent); `proxy_solicitation.py` API corrected | ✅ Done |
+
+---
+
+## V2.8.1 BlueZ D-Bus Interface Gap Analysis (2026-04-02) – IN PROGRESS
+
+**Origin**: Systematic comparison of every `org.bluez.*` D-Bus interface documented in `workDir/BlueZDocs/*.rst`, `workDir/bluez/doc/*.txt`, and `workDir/bluez-tools/contrib/bluez-api-5.20-fixed/*.txt` against the BLEEP v2.8.1 codebase (`bleep/**/*.py`). Goal: ensure BLEEP achieves **complete** enumeration, capture, and interaction coverage of all BlueZ-exposed Bluetooth capabilities.
+
+**Methodology**: For each BlueZ D-Bus interface, every property, method, and signal was checked for presence in BLEEP code (not just constants, but actual read/write/call usage). Items marked PARTIAL have interface name constants defined in `bt_ref/constants.py` but no functional implementation.
+
+**Reference documents** (for manual verification):
+- Adapter: `workDir/BlueZDocs/org.bluez.Adapter.rst`
+- Device: `workDir/BlueZDocs/org.bluez.Device.rst`
+- GATT: `workDir/BlueZDocs/org.bluez.GattCharacteristic.rst`, `org.bluez.GattManager.rst`, `org.bluez.GattProfile.rst`
+- Agent: `workDir/BlueZDocs/org.bluez.Agent.rst`, `org.bluez.AgentManager.rst`
+- LE Advertising: `workDir/BlueZDocs/org.bluez.LEAdvertisement.rst`, `org.bluez.LEAdvertisingManager.rst`
+- Battery: `workDir/BlueZDocs/org.bluez.Battery.rst`, `org.bluez.BatteryProvider.rst`, `org.bluez.BatteryProviderManager.rst`
+- Media: `workDir/BlueZDocs/org.bluez.Media.rst`, `org.bluez.MediaPlayer.rst`, `org.bluez.MediaTransport.rst`, `org.bluez.MediaEndpoint.rst`, `org.bluez.MediaFolder.rst`, `org.bluez.MediaItem.rst`, `org.bluez.MediaAssistant.rst`
+- Network: `workDir/BlueZDocs/org.bluez.Network.rst`, `org.bluez.NetworkServer.rst`
+- Profile: `workDir/BlueZDocs/org.bluez.Profile.rst`, `org.bluez.ProfileManager.rst`
+- Input: `workDir/BlueZDocs/org.bluez.Input.rst`
+- Adv Monitor: `workDir/BlueZDocs/org.bluez.AdvertisementMonitor.rst`, `org.bluez.AdvertisementMonitorManager.rst`
+- Admin Policy: `workDir/BlueZDocs/org.bluez.AdminPolicySet.rst`, `org.bluez.AdminPolicyStatus.rst`
+- Device Sets: `workDir/BlueZDocs/org.bluez.DeviceSet.rst`
+- Bearer Split: `workDir/BlueZDocs/org.bluez.Bearer.LE.rst`, `org.bluez.Bearer.BREDR.rst`
+- Health: `workDir/bluez/doc/health-api.txt`
+- SAP: `workDir/bluez/doc/sap-api.txt`
+- Thermometer: `workDir/bluez/doc/thermometer-api.txt`
+- Mesh: `workDir/bluez/doc/mesh-api.txt`
+
+---
+
+### Gap Summary Table
+
+| # | Gap ID | Interface / Area | Gap Description | Severity | BLEEP Status |
+|---|--------|-----------------|-----------------|----------|-------------|
+| 1 | BZ-1 | `GattCharacteristic1` | `AcquireWrite()` / `AcquireNotify()` not implemented | High | Missing |
+| 2 | BZ-2 | `GattCharacteristic1` | `WriteAcquired` / `NotifyAcquired` properties — constants only, not read from D-Bus | Medium | Partial |
+| 3 | BZ-3 | `GattCharacteristic1` | `Confirm()` method (server-side indication ack) not implemented | Low | Missing |
+| 4 | BZ-4 | `GattManager1` | `RegisterApplication()` / `UnregisterApplication()` — GATT server not implemented | High | Partial (constant only) |
+| 5 | BZ-5 | `GattProfile1` | Interface not implemented (GATT profile registration) | Low | Missing |
+| 6 | BZ-6 | `LEAdvertisingManager1` | `RegisterAdvertisement()` / `UnregisterAdvertisement()` + capability queries | High | **DONE** (Sprint 2) |
+| 7 | BZ-7 | `LEAdvertisement1` | Advertisement object (Type, ServiceUUIDs, ManufacturerData, etc.) + CLI | High | **DONE** (Sprint 2) |
+| 8 | BZ-8 | `Device1` | `Disconnected` signal (reason + message payload) not subscribed to | Medium | Missing |
+| 9 | BZ-9 | `BatteryProvider1` | Battery provider registration not implemented | Low | Missing |
+| 10 | BZ-10 | `BatteryProviderManager1` | `RegisterBatteryProvider()` / `UnregisterBatteryProvider()` not implemented | Low | Missing |
+| 11 | BZ-11 | `AdvertisementMonitor1` | Advertisement monitoring (pattern-based passive scanning) not implemented | High | Missing |
+| 12 | BZ-12 | `AdvertisementMonitorManager1` | `RegisterMonitor()` / `UnregisterMonitor()` not implemented | High | Missing |
+| 13 | BZ-13 | `AdminPolicySet1` | `SetServiceAllowList()` not implemented | Low | Missing |
+| 14 | BZ-14 | `AdminPolicyStatus1` | `ServiceAllowList` / `IsAffectedByPolicy` properties not read | Low | Missing |
+| 15 | BZ-15 | `DeviceSet1` | Interface methods (`Connect()`, `Disconnect()`) and properties not implemented | Medium | Missing (Device1 `Sets` property IS read) |
+| 16 | BZ-16 | `Bearer.LE1` / `Bearer.BREDR1` | Bearer-split interfaces not implemented | Low | Missing (experimental) |
+| 17 | BZ-17 | `HealthManager1` / `HealthDevice1` / `HealthChannel1` | Bluetooth Health Profile (HDP) not implemented | Low | Missing |
+| 18 | BZ-18 | `SimAccess1` | SIM Access Profile not implemented | Low | Missing |
+| 19 | BZ-19 | `MediaAssistant1` | Broadcast Audio Assistant not implemented | Low | Missing (experimental) |
+| 20 | BZ-20 | `Thermometer1` / `ThermometerManager1` | Thermometer profile D-Bus API not implemented | Low | Missing (deprecated) |
+| 21 | BZ-21 | `HeartRate1` / `HeartRateManager1` | Heart Rate profile D-Bus API not implemented | Low | Missing (deprecated) |
+| 22 | BZ-22 | `CyclingSpeed1` / `CyclingSpeedManager1` | Cycling Speed profile D-Bus API not implemented | Low | Missing (deprecated) |
+| 23 | BZ-23 | `ProximityMonitor1` / `ProximityReporter1` | Proximity profile D-Bus API not implemented | Low | Missing (deprecated) |
+| 24 | BZ-24 | Mesh `ProvisionAgent1` | All OOB hooks raise `NotImplementedError` | Medium | Partial (skeleton only) |
+| 25 | BZ-25 | Mesh `Provisioner1` | `RequestReprovData`, `ReprovComplete`, `ReprovFailed` not implemented | Low | Partial |
+
+---
+
+### Detailed Gap Descriptions
+
+#### BZ-1: GATT AcquireWrite / AcquireNotify (HIGH)
+
+**BlueZ API** (`workDir/BlueZDocs/org.bluez.GattCharacteristic.rst`):
+- `AcquireWrite(dict options)` → `(fd, uint16 mtu)` — Returns a file descriptor for streaming writes, bypassing per-packet D-Bus overhead
+- `AcquireNotify(dict options)` → `(fd, uint16 mtu)` — Returns a file descriptor for streaming notification reception
+
+**BLEEP status**: `dbuslayer/characteristic.py` lines 3-6 explicitly note these are "for later." No implementation exists. BLEEP uses `ReadValue`/`WriteValue` and `StartNotify`/`StopNotify` exclusively.
+
+**Impact**: High-throughput BLE data streams (sensor feeds, firmware updates, audio-over-GATT) suffer D-Bus round-trip latency on every packet. The fd-based path eliminates this overhead entirely.
+
+**Implementation plan**:
+- [x] **BZ-1a** Add `acquire_write(dict options) → (fd, mtu)` to `dbuslayer/characteristic.py`
+    - Calls `GattCharacteristic1.AcquireWrite({})` on the D-Bus interface
+    - Returns the Unix FD and negotiated MTU
+    - Tracks `WriteAcquired` property to prevent double-acquire
+    - Handles `NotPermitted` / `NotSupported` gracefully (fall back to `WriteValue`)
+- [x] **BZ-1b** Add `acquire_notify(dict options) → (fd, mtu)` to `dbuslayer/characteristic.py`
+    - Calls `GattCharacteristic1.AcquireNotify({})` on the D-Bus interface
+    - Returns the Unix FD and negotiated MTU
+    - Tracks `NotifyAcquired` property
+    - Falls back to `StartNotify` path on `DBusException`
+- [x] **BZ-1c** Add `write_value_fd()` and `read_notify_fd()` streaming helpers with auto-acquire + fallback
+- [x] **BZ-1d** Add `release_acquired()` cleanup method to close fds
+- [ ] **BZ-1e** Wire up to CLI: `--stream` flag on `read`/`write` debug commands
+- [ ] **BZ-1f** Tests: mock-based unit tests for acquire/fallback logic
+
+#### BZ-2: WriteAcquired / NotifyAcquired Property Read (MEDIUM)
+
+**BlueZ API**: `WriteAcquired` (boolean, readonly) and `NotifyAcquired` (boolean, readonly) on `GattCharacteristic1` indicate whether an fd-based acquisition is active.
+
+**BLEEP status**: Property names exist in `bt_ref/constants.py` (line 235-236), `core/config.py` (lines 80-81, 154-155), and `ble_ops/common/structural.py` (lines 38-39) as schema fields. However, `dbuslayer/characteristic.py` does NOT read these from D-Bus — they are never populated at runtime.
+
+**Fix**: Read from D-Bus `GetAll` in characteristic init, same pattern as `MTU`/`Notifying`.
+
+- [x] **BZ-2a** Read `WriteAcquired` and `NotifyAcquired` from D-Bus in `Characteristic.__init__` and expose as properties
+- [x] **BZ-2b** Include in enumeration output (`conversion.py` characteristic display)
+- [x] **BZ-2c** Populate from live Characteristic in `device_le.py` enumeration mapping
+
+#### BZ-3: GATT Confirm Method (LOW)
+
+**BlueZ API**: `Confirm()` — Server-only method to confirm an indication has been received. Only relevant when BLEEP acts as a GATT server.
+
+**BLEEP status**: Missing. Only needed when GATT server (BZ-4) is implemented.
+
+- [ ] **BZ-3a** Add `Confirm()` method to characteristic wrapper (gate behind GATT server feature flag)
+
+#### BZ-4: GATT Server via GattManager1 (HIGH)
+
+**BlueZ API** (`workDir/BlueZDocs/org.bluez.GattManager.rst`):
+- `RegisterApplication(object application, dict options)` — Register a D-Bus GATT application exposing services/characteristics
+- `UnregisterApplication(object application)` — Unregister
+
+**BLEEP status**: `bt_ref/constants.py` line 23 defines `GATT_MANAGER_INTERFACE = "org.bluez.GattManager1"` but no code calls `RegisterApplication` or `UnregisterApplication`. BLEEP is currently GATT client-only.
+
+**Impact**: Cannot emulate BLE peripherals, create honeypot services, or run CTF challenge servers. This is a significant gap for security research and testing.
+
+**Implementation plan**:
+- [ ] **BZ-4a** Create `dbuslayer/gatt_server.py` with `GattApplication`, `GattServiceSkeleton`, `GattCharacteristicSkeleton`, `GattDescriptorSkeleton` classes implementing `org.freedesktop.DBus.ObjectManager`
+- [ ] **BZ-4b** Add `register_application()` / `unregister_application()` methods calling `GattManager1` on adapter path
+- [ ] **BZ-4c** Wire BZ-3 `Confirm()` for indication-based characteristics
+- [ ] **BZ-4d** Create `modes/gatt_server.py` CLI mode and `bleep gatt-server` subcommand
+- [ ] **BZ-4e** Example: simple GATT server with read/write/notify characteristics
+- [ ] **BZ-4f** Documentation and tests
+
+#### BZ-5: GattProfile1 Interface (LOW)
+
+**BlueZ API** (`workDir/BlueZDocs/org.bluez.GattProfile.rst`): Allows registering interest in specific GATT services for auto-connect.
+
+**BLEEP status**: Missing. Lower priority since BLEEP handles connections explicitly.
+
+- [ ] **BZ-5a** Implement `GattProfile1` registration for auto-reconnect scenarios
+
+#### BZ-6 / BZ-7: LE Advertising Manager and Advertisement (HIGH)
+
+**BlueZ API** (`workDir/BlueZDocs/org.bluez.LEAdvertisingManager.rst`, `org.bluez.LEAdvertisement.rst`):
+- `RegisterAdvertisement(object, dict)` / `UnregisterAdvertisement(object)` on `LEAdvertisingManager1`
+- `LEAdvertisement1` properties: `Type` (broadcast/peripheral), `ServiceUUIDs`, `ManufacturerData`, `SolicitUUIDs`, `ServiceData`, `Data`, `Discoverable`, `DiscoverableTimeout`, `Includes`, `LocalName`, `Appearance`, `Duration`, `Timeout`, `SecondaryChannel`, `MinInterval`, `MaxInterval`, `TxPower`
+- Manager properties: `ActiveInstances`, `SupportedInstances`, `SupportedIncludes`, `SupportedSecondaryChannels`, `SupportedCapabilities`, `SupportedFeatures`
+
+**BLEEP status**: `bt_ref/constants.py` lines 29-30 define `ADVERTISEMENT_INTERFACE` and `ADVERTISING_MANAGER_INTERFACE` but no implementation exists. BLEEP cannot broadcast LE advertisements.
+
+**Impact**: Critical for peripheral emulation, beacon testing, honeypot creation, and BLE security research.
+
+**Implementation plan**:
+- [x] **BZ-6a** `dbuslayer/le_advertising.py` — `LEAdvertisement` D-Bus object with full `LEAdvertisement1` property set via `GetAll`; `Release()` callback
+- [x] **BZ-6b** `LEAdvertisingManager.register()` / `.unregister()` with async reply/error + 5s timeout
+- [x] **BZ-6c** Capability property readers: `SupportedInstances`, `ActiveInstances`, `SupportedIncludes`, `SupportedSecondaryChannels`, `SupportedFeatures`, `SupportedCapabilities`
+- [x] **BZ-7a** `modes/advertise.py` CLI mode — `bleep advertise caps` + `bleep advertise start`
+- [x] **BZ-7b** Broadcast + peripheral types; configurable UUIDs, manufacturer data, service data, name, appearance, TX power, intervals, secondary channel, discoverable, includes
+- [x] **BZ-7c** Documentation: `docs/le_advertising.md`
+- [ ] **BZ-7d** Tests: mock-based unit tests
+
+#### BZ-8: Device1 Disconnected Signal (MEDIUM)
+
+**BlueZ API** (`workDir/BlueZDocs/org.bluez.Device.rst`): `Disconnected(string reason, string message)` signal with reason codes (`org.bluez.Reason.ConnectionTimeout`, `ConnectionTerminatedByLocalHost`, etc.).
+
+**BLEEP status**: `core/error_handling.py` lines 139-147 define `DISCONNECT_REASON_MAP` for all reason codes but it is NOT wired to actual signal subscription. Connection drops are detected only via `PropertiesChanged` on `Connected` property, losing the structured reason/message payload.
+
+**Impact**: Cannot distinguish *why* a disconnect occurred (timeout vs. user-initiated vs. remote-initiated vs. link loss). This information is valuable for reliability analysis and automated reconnection logic.
+
+- [x] **BZ-8a** Subscribe to `Disconnected` signal on Device1 objects in `dbuslayer/signals.py` via `_attach_bus_listeners`
+- [x] **BZ-8b** Wire `DISCONNECT_REASON_MAP` in `error_handling.py` to parse the signal payload in `_device_disconnected` handler
+- [x] **BZ-8c** Enrich `_device_connection_states` dict with `disconnect_reason`, `disconnect_message`, `disconnect_human` fields
+- [x] **BZ-8d** Add `get_disconnect_reason(device_path)` public API for querying last disconnect reason
+- [x] **BZ-8e** Forward to registered device instance via `on_disconnected(reason, message)` callback
+- [ ] **BZ-8f** Surface disconnect reason in CLI output and debug mode (deferred to Sprint 5)
+
+#### BZ-9 / BZ-10: Battery Provider (LOW)
+
+**BlueZ API** (`workDir/BlueZDocs/org.bluez.BatteryProvider.rst`, `org.bluez.BatteryProviderManager.rst`): Allows external applications to provide battery level information to BlueZ for devices that report battery via non-standard mechanisms.
+
+**BLEEP status**: Missing. BLEEP reads `Battery1.Percentage` (consumer side) but cannot register as a battery provider.
+
+**Impact**: Low — primarily useful for custom device drivers, not typical security research.
+
+- [ ] **BZ-9a** Implement `BatteryProvider1` object and `BatteryProviderManager1.RegisterBatteryProvider()` in `dbuslayer/`
+- [ ] **BZ-10a** Wire to CLI for devices with custom battery reporting
+
+#### BZ-11 / BZ-12: Advertisement Monitor (HIGH)
+
+**BlueZ API** (`workDir/BlueZDocs/org.bluez.AdvertisementMonitor.rst`, `org.bluez.AdvertisementMonitorManager.rst`):
+- `RegisterMonitor(object)` / `UnregisterMonitor(object)` on `AdvertisementMonitorManager1`
+- Monitor properties: `Type` (or_patterns), `RSSILowThreshold`, `RSSIHighThreshold`, `RSSILowTimeout`, `RSSIHighTimeout`, `RSSISamplingPeriod`, `Patterns`
+- Callbacks: `Activate()`, `Release()`, `DeviceFound(object)`, `DeviceLost(object)`
+
+**BLEEP status**: Completely missing. No constants, no implementation.
+
+**Impact**: Advertisement monitoring is the kernel-offloaded alternative to `SetDiscoveryFilter`. It allows pattern-based passive scanning with RSSI thresholds and device found/lost callbacks — critical for long-running surveillance, presence detection, and asset tracking scenarios. Without this, BLEEP must keep full discovery running and filter in userspace.
+
+**Implementation plan**:
+- [ ] **BZ-11a** Create `dbuslayer/adv_monitor.py` with `AdvertisementMonitor` D-Bus skeleton (ObjectManager + per-monitor objects)
+- [ ] **BZ-11b** Implement pattern configuration (AD type + offset + content matching)
+- [ ] **BZ-11c** Implement RSSI threshold and sampling period configuration
+- [ ] **BZ-12a** Add `register_monitor()` / `unregister_monitor()` via `AdvertisementMonitorManager1`
+- [ ] **BZ-12b** Wire `DeviceFound` / `DeviceLost` callbacks to observation pipeline
+- [ ] **BZ-12c** Create `modes/monitor.py` or extend scan modes with `--monitor` flag
+- [ ] **BZ-12d** Documentation and tests
+- [ ] **BZ-12e** Reference: `workDir/BlueZScripts/example-adv-monitor` for implementation pattern
+
+#### BZ-13 / BZ-14: Admin Policy (LOW)
+
+**BlueZ API** (`workDir/BlueZDocs/org.bluez.AdminPolicySet.rst`, `org.bluez.AdminPolicyStatus.rst`): Experimental interface for restricting which services are allowed on the adapter/device level.
+
+**BLEEP status**: Missing.
+
+**Impact**: Low — enterprise/MDM use case. However, reading `IsAffectedByPolicy` on devices could explain mysterious connection failures.
+
+- [ ] **BZ-13a** Add `AdminPolicySet1.SetServiceAllowList()` support in adapter wrapper
+- [ ] **BZ-14a** Read `AdminPolicyStatus1.IsAffectedByPolicy` in device property enumeration
+- [ ] **BZ-14b** Surface policy-affected status in scan/enum output
+
+#### BZ-15: DeviceSet1 Interface (MEDIUM)
+
+**BlueZ API** (`workDir/BlueZDocs/org.bluez.DeviceSet.rst`): Experimental. `Connect()`, `Disconnect()` on a set of coordinated devices (e.g., TWS earbuds). Properties: `Adapter`, `AutoConnect`, `Devices`, `Size`.
+
+**BLEEP status**: BLEEP reads the Device1 `Sets` property via `device_le.get_device_sets()` (line 814-821) but does NOT interact with the `DeviceSet1` interface itself.
+
+- [ ] **BZ-15a** Create `dbuslayer/device_set.py` to wrap `DeviceSet1` interface
+- [ ] **BZ-15b** Add `connect_set()` / `disconnect_set()` methods
+- [ ] **BZ-15c** Enumerate device sets in scan/enum output
+- [ ] **BZ-15d** Surface in CLI (e.g., `bleep device-sets` command)
+
+#### BZ-16: Bearer Split Interfaces (LOW)
+
+**BlueZ API** (`workDir/BlueZDocs/org.bluez.Bearer.LE.rst`, `org.bluez.Bearer.BREDR.rst`): Experimental. Per-bearer `Connect()`/`Disconnect()` and `Disconnected` signal with independent `Paired`/`Bonded`/`Connected` properties.
+
+**BLEEP status**: Missing. `device_le.py` reads Device1 `PreferredBearer` property but does not use the per-bearer interface objects.
+
+- [ ] **BZ-16a** Detect and enumerate `Bearer.LE1` / `Bearer.BREDR1` child interfaces on device objects
+- [ ] **BZ-16b** Add per-bearer connect/disconnect to debug mode
+
+#### BZ-17: Health Device Profile (LOW)
+
+**BlueZ API** (`workDir/bluez/doc/health-api.txt`): `HealthManager1`, `HealthDevice1`, `HealthChannel1` for IEEE 11073 health devices.
+
+**BLEEP status**: Missing. Only UUID/appearance classification strings reference "health."
+
+**Impact**: Low — HDP is rarely used in practice, superseded by GATT-based health profiles.
+
+- [ ] **BZ-17a** Stub `dbuslayer/health.py` for HDP if demand arises (low priority)
+
+#### BZ-18: SIM Access Profile (LOW)
+
+**BlueZ API** (`workDir/bluez/doc/sap-api.txt`): `SimAccess1.Disconnect()` + `Connected` property.
+
+**BLEEP status**: Documented only — BlueZ's SAP is server-side (provides SIM to remote
+clients, not the other way around).  BLEEP cannot read a phone's SIM via SAP.  See
+`bleep/docs/bl_classic_mode.md` §2.13 for full explanation.
+
+**Impact**: Low — niche automotive/hands-free SIM sharing; BlueZ API is too limited
+for client-side SIM reading.
+
+- [x] **BZ-18a** Documented SAP limitations in `bl_classic_mode.md` §2.13 (no stub needed)
+
+#### BZ-19: MediaAssistant1 — Broadcast Audio Assistant (LOW)
+
+**BlueZ API** (`workDir/BlueZDocs/org.bluez.MediaAssistant.rst`): Experimental. `Push(dict)` method + `State`/`Metadata`/`QoS` properties for LE Audio Broadcast Assistant role.
+
+**BLEEP status**: Missing.
+
+**Impact**: Low — LE Audio is bleeding-edge; only relevant for Auracast/broadcast audio scenarios.
+
+- [ ] **BZ-19a** Add `MediaAssistant1` wrapper when LE Audio support matures in BlueZ
+
+#### BZ-20 through BZ-23: Deprecated Profile D-Bus APIs (LOW)
+
+**Interfaces**: `ThermometerManager1`/`Thermometer1`, `HeartRateManager1`/`HeartRate1`, `CyclingSpeedManager1`/`CyclingSpeed1`, `ProximityMonitor1`/`ProximityReporter1`
+
+**BlueZ docs**: `workDir/bluez/doc/thermometer-api.txt`, `workDir/bluez-tools/contrib/bluez-api-5.20-fixed/heartrate-api.txt`, `cyclingspeed-api.txt`, `proximity-api.txt`
+
+**BLEEP status**: Missing for all four.
+
+**Impact**: These are legacy BlueZ profile plugins (removed in BlueZ 5.48+). The functionality is now handled via standard GATT. BLEEP already interacts with these services via GATT characteristic read/write/notify. No implementation needed unless targeting legacy BlueZ installations.
+
+- [ ] **BZ-20a** Document these as intentionally unsupported (BlueZ deprecated) in `docs/bluez_interface_properties.md`
+
+#### BZ-24: Mesh ProvisionAgent1 OOB Hooks (MEDIUM)
+
+**BlueZ API** (`workDir/bluez/doc/mesh-api.txt`): `ProvisionAgent1` methods: `PrivateKey`, `PublicKey`, `DisplayString`, `DisplayNumeric`, `PromptNumeric`, `PromptStatic`, `Cancel`. Properties: `Capabilities`, `OutOfBandInfo`, `URI`.
+
+**BLEEP status**: `mesh/provision_agent.py` has the D-Bus skeleton with all method stubs, but all hooks raise `NotImplementedError` (lines 141-159). Properties `Capabilities`, `OutOfBandInfo`, `URI` are defined but not configurable.
+
+- [ ] **BZ-24a** Implement OOB data exchange hooks (at minimum: `DisplayNumeric`, `PromptNumeric`, `PromptStatic`)
+- [ ] **BZ-24b** Make `Capabilities` and `OutOfBandInfo` configurable via constructor args
+- [ ] **BZ-24c** Wire to CLI mesh provisioning commands
+
+#### BZ-25: Mesh Provisioner1 Reprovisioning (LOW)
+
+**BlueZ API**: `RequestReprovData`, `ReprovComplete`, `ReprovFailed` methods on `Provisioner1`.
+
+**BLEEP status**: `mesh/provisioner.py` implements `ScanResult`, `RequestProvData`, `AddNodeComplete`, `AddNodeFailed` but NOT the reprov* methods.
+
+- [ ] **BZ-25a** Add `RequestReprovData`, `ReprovComplete`, `ReprovFailed` to mesh Provisioner skeleton
+
+---
+
+### Accepted Implementation Sprints (2026-04-02)
+
+#### Sprint 1: Core Interaction Gaps — COMPLETE (2026-04-02)
+
+Quick wins + highest-impact GATT/signal improvements. No new architectural patterns.
+
+| # | Gap ID | Item | Effort | Files | Status |
+|---|--------|------|--------|-------|--------|
+| 1 | BZ-2 | Read `WriteAcquired` / `NotifyAcquired` from D-Bus | 30 min | `dbuslayer/characteristic.py`, `ble_ops/common/conversion.py`, `dbuslayer/device_le.py` | [x] |
+| 2 | BZ-8 | Device1 `Disconnected` signal subscription + reason capture | 2 hr | `dbuslayer/signals.py`, `core/error_handling.py` | [x] |
+| 3 | BZ-1 | GATT `AcquireWrite` / `AcquireNotify` (fd-based streaming) | 3-4 hr | `dbuslayer/characteristic.py` | [x] |
+
+**Dependency**: BZ-2 before BZ-1 (need `WriteAcquired`/`NotifyAcquired` to prevent double-acquire).
+
+#### Sprint 2: LE Advertising — COMPLETE (2026-04-02)
+
+| # | Gap ID | Item | Effort | Files | Status |
+|---|--------|------|--------|-------|--------|
+| 4 | BZ-6/7 | LE Advertising Manager + Advertisement | 4-6 hr | `dbuslayer/le_advertising.py`, `modes/advertise.py`, `cli.py`, `bt_ref/constants.py` | [x] |
+
+**Implementation details:**
+
+- [x] **BZ-6a** `LEAdvertisement(dbus.service.Object)` — exports all BlueZ `LEAdvertisement1` properties via `GetAll`; `Release()` callback; `AdvertisementConfig` dataclass covers Type, ServiceUUIDs, ManufacturerData, SolicitUUIDs, ServiceData, LocalName, Includes, Appearance, Discoverable, DiscoverableTimeout, Duration, Timeout, TxPower, MinInterval, MaxInterval, SecondaryChannel, Data
+- [x] **BZ-7a** `LEAdvertisingManager` wrapper — `register()`/`unregister()` with async reply/error + 5s timeout; property readers for ActiveInstances, SupportedInstances, SupportedIncludes, SupportedSecondaryChannels, SupportedFeatures, SupportedCapabilities
+- [x] **BZ-7b** `bleep advertise` CLI subcommand — `caps` (capabilities) and `start` (broadcast with full flag set); clean SIGINT/SIGTERM shutdown; `--local-duration` and `--duration` (BlueZ-level timeout)
+- [x] **BZ-7c** Documentation: `docs/le_advertising.md` — architecture, D-Bus flow, CLI examples, Python API, troubleshooting
+- [ ] **BZ-7d** Tests: mock-based unit tests for LEAdvertisement/LEAdvertisingManager
+
+#### Sprint 3: GATT Server (HIGH priority — v2.9.0 target)
+
+| # | Gap ID | Item | Effort | Files | Status |
+|---|--------|------|--------|-------|--------|
+| 5 | BZ-4 | GATT Server (`GattManager1.RegisterApplication`) | 8-12 hr | New: `dbuslayer/gatt_server.py`, `modes/gatt_server.py` | [ ] |
+| 6 | BZ-3/5 | `Confirm()` + `GattProfile1` (dependent on BZ-4) | 1 hr | `dbuslayer/gatt_server.py` | [ ] |
+
+#### Sprint 4: Advertisement Monitor — COMPLETE (2026-04-02)
+
+Kernel-offloaded pattern-based passive scanning. Independent of Sprints 2-3.
+Works **without** an active `StartDiscovery` session once bluetoothd activates the monitor job.
+
+| # | Gap ID | Item | Effort | Files | Status |
+|---|--------|------|--------|-------|--------|
+| 7 | BZ-11/12 | Advertisement Monitor + Manager | 4-6 hr | `dbuslayer/adv_monitor.py`, `modes/monitor.py`, `cli.py`, `bt_ref/constants.py` | [x] |
+
+**Detailed Sprint 4 Implementation Plan**
+
+Reference docs:
+- API: `workDir/BlueZDocs/org.bluez.AdvertisementMonitor.rst`
+- Manager API: `workDir/BlueZDocs/org.bluez.AdvertisementMonitorManager.rst`
+- Reference impl: `workDir/BlueZScripts/example-adv-monitor` (404 lines)
+
+Architecture overview:
+- The client (BLEEP) registers an **application root path** with `AdvertisementMonitorManager1.RegisterMonitor(app_root)` on the adapter.
+- Under that root, BLEEP exposes one or more **monitor objects** implementing:
+  - `org.freedesktop.DBus.Properties.GetAll(s)` → returns monitor config
+  - `org.freedesktop.DBus.ObjectManager.GetManagedObjects()` on app root
+  - `InterfacesAdded` / `InterfacesRemoved` signals on app root
+  - Methods invoked **by bluetoothd**: `Activate()`, `Release()`, `DeviceFound(o)`, `DeviceLost(o)`
+- Each monitor has: `Type` ("or_patterns"), RSSI thresholds/timeouts, `Patterns` (array of `(start_pos: u8, ad_type: u8, content: ay)`)
+- Once activated, device found/lost callbacks fire without needing `StartDiscovery`.
+
+**Sub-tasks:**
+
+BZ-11 — `dbuslayer/adv_monitor.py` (D-Bus layer):
+
+- [x] **BZ-11a** `AdvMonitor(dbus.service.Object)` class — `dbuslayer/adv_monitor.py`
+    - D-Bus path: `{app_root}/monitor{id}`
+    - Properties via `GetAll(s)`: Type, RSSIHighThreshold/Timeout, RSSILowThreshold/Timeout, RSSISamplingPeriod, Patterns `a(yyay)`
+    - Callback methods: `Activate()`, `Release()`, `DeviceFound(o)`, `DeviceLost(o)`
+    - `remove_monitor()` — calls `remove_from_connection()`
+
+- [x] **BZ-11b** `AdvMonitorApp(dbus.service.Object)` class — `dbuslayer/adv_monitor.py`
+    - Implements `ObjectManager`: `GetManagedObjects()`, `InterfacesAdded`/`InterfacesRemoved` signals
+    - `add_monitor()` / `remove_monitor()` / `remove_all()` lifecycle management
+
+- [x] **BZ-11c** `RSSIConfig` dataclass with high/low threshold, timeout, sampling_period fields
+
+- [x] **BZ-11d** `MonitorPattern` dataclass + `to_dbus()` converter; AD type constants provided
+
+BZ-12 — Manager + CLI integration:
+
+- [x] **BZ-12a** `AdvMonitorManager` wrapper class — `dbuslayer/adv_monitor.py`
+    - `register(app)` / `unregister(app)` with async reply/error + 5 s timeout
+    - `get_supported_types()` / `get_supported_features()` property readers
+
+- [x] **BZ-12b** `DeviceFound`/`DeviceLost` callbacks wired via `MonitorCallbacks` dataclass
+    - MAC extraction from device object path; real-time console output in `modes/monitor.py`
+    - Observation pipeline integration deferred to future PR (requires GLib↔thread bridge)
+
+- [x] **BZ-12c** `bt_ref/constants.py` entries added: `ADV_MONITOR_INTERFACE`, `ADV_MONITOR_MANAGER_INTERFACE`, `ADV_MONITOR_APP_BASE_PATH`
+
+- [x] **BZ-12d** `bleep monitor` subcommand in `modes/monitor.py` + `cli.py`
+    - Sub-actions: `caps` (show capabilities), `start` (register monitor + stream events)
+    - Flags: `--pattern OFF:AD:HEX` (repeatable), `--rssi-high/low`, `--rssi-high/low-timeout`, `--sampling-period`, `--duration`
+    - Clean shutdown via SIGINT/SIGTERM
+
+- [ ] **BZ-12e** Alternative: `--monitor` flag on existing `bleep scan` command (deferred)
+
+- [ ] **BZ-12f** Documentation: `docs/adv_monitor.md` with usage examples
+- [ ] **BZ-12g** Tests: mock-based unit tests for AdvMonitor/AdvMonitorApp/AdvMonitorManager
+
+#### Sprint 5: Enrichment & Completeness (MEDIUM priority — v2.9.x)
+
+| # | Gap ID | Item | Effort | Files | Status |
+|---|--------|------|--------|-------|--------|
+| 8 | BZ-15 | DeviceSet1 interface (TWS/coordinated sets) | 2-3 hr | New: `dbuslayer/device_set.py` | [ ] |
+| 9 | BZ-24 | Mesh ProvisionAgent1 OOB hook implementations | 2-3 hr | `mesh/provision_agent.py` | [ ] |
+| 10 | BZ-13/14 | AdminPolicySet1 / AdminPolicyStatus1 | 1-2 hr | `dbuslayer/adapter.py`, device wrappers | [ ] |
+| 11 | BZ-20a | Document deprecated profile APIs as intentionally unsupported | 30 min | `docs/bluez_interface_properties.md` | [ ] |
+
+#### Sprint 6: Niche / Experimental (LOW priority — v3.0+, backlog)
+
+| # | Gap ID | Item | Effort | Files | Status |
+|---|--------|------|--------|-------|--------|
+| 12 | BZ-9/10 | BatteryProvider registration | 1-2 hr | New: `dbuslayer/battery_provider.py` | [ ] |
+| 13 | BZ-16 | Bearer.LE1 / Bearer.BREDR1 split interfaces | 1-2 hr | Device wrappers | [ ] |
+| 14 | BZ-17 | Health Device Profile (HDP) | 2-3 hr | New: `dbuslayer/health.py` (if demanded) | [ ] |
+| 15 | BZ-18 | SIM Access Profile | 1 hr | New: `dbuslayer/sap.py` (if demanded) | [ ] |
+| 16 | BZ-19 | MediaAssistant1 (Broadcast Audio) | 2-3 hr | `dbuslayer/media.py` (when LE Audio matures) | [ ] |
+| 17 | BZ-25 | Mesh reprovisioning methods | 1 hr | `mesh/provisioner.py` | [ ] |
+
+---
+
+### Items Confirmed PRESENT (No Gap)
+
+For completeness, these BlueZ interfaces/features were verified as **fully implemented** in BLEEP:
+
+| Interface / Feature | BLEEP Implementation |
+|--------------------|--------------------|
+| `Adapter1` — all properties (Address, AddressType, Name, Alias, Class, Powered, PowerState, Discoverable, Pairable, Connectable, timeouts, Discovering, UUIDs, Modalias, Roles, ExperimentalFeatures, Manufacturer, Version) | `dbuslayer/adapter.py`, `modes/adapter_config.py` |
+| `Adapter1` — all methods (StartDiscovery, StopDiscovery, SetDiscoveryFilter, GetDiscoveryFilters, RemoveDevice) | `dbuslayer/adapter.py`, `dbuslayer/manager.py` |
+| `Device1` — all properties (Address through PreferredBearer, Sets) | `dbuslayer/device_le.py`, `dbuslayer/device_classic.py` |
+| `Device1` — methods (Connect, Disconnect, Pair, CancelPairing, ConnectProfile, DisconnectProfile, GetServiceRecords) | `dbuslayer/device_le.py`, `dbuslayer/device_classic.py`, `modes/pair.py` |
+| `GattService1`, `GattCharacteristic1` (ReadValue, WriteValue, StartNotify, StopNotify, MTU, Notifying, Flags), `GattDescriptor1` | `dbuslayer/service.py`, `dbuslayer/characteristic.py`, `dbuslayer/descriptor.py` |
+| `Agent1` — all methods (Release through Cancel), `AgentManager1` | `dbuslayer/agent.py`, `dbuslayer/agent_io.py` |
+| `Battery1` (Percentage, Source) | `ble_ops/le/scan.py`, `ble_ops/common/conversion.py` |
+| `Input1` (ReconnectMode) | `ble_ops/le/scan.py`, `ble_ops/common/conversion.py` |
+| `Media1`, `MediaPlayer1`, `MediaTransport1`, `MediaControl1`, `MediaEndpoint1`, `MediaFolder1`, `MediaItem1` | `dbuslayer/media.py`, `dbuslayer/media_stream.py`, `dbuslayer/media_browse.py` |
+| `Network1`, `NetworkServer1` | `dbuslayer/network.py`, `ble_ops/classic/pan.py` |
+| `Profile1`, `ProfileManager1` | `dbuslayer/spp_profile.py` |
+| OBEX: `Client1`, `Session1`, `Transfer1`, `ObjectPush1`, `FileTransfer1`, `PhonebookAccess1`, `MessageAccess1`, `Message1`, `Synchronization1`, `Image1` | `dbuslayer/obex_*.py`, `ble_ops/classic/` (pbap, map, opp, ftp, bip, sync) |
+| `PropertiesChanged` / `InterfacesAdded` / `InterfacesRemoved` signal handling | `dbuslayer/signals.py` |
+| Mesh: `Network1`, `Node1`, `Management1`, `Application1`, `Element1`, `Provisioner1` (partial), `ProvisionAgent1` (skeleton) | `mesh/` package |
+
+---
 
 ## Specialized Testing Modes
 
@@ -2350,6 +4789,33 @@ are in `workDir/BlueZDocs/org.bluez.obex.*.rst` and reference scripts in
        [ ] Selective pairing to a targeted device
        - Note: Research on the process shows that the communication "handshake" for Pairing() begins, but then fails due to lack of agent
            - URL:      https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc/org.bluez.Agent.rst
+### TODO (vendor-specific SDP services / proprietary profiles):
+   [ ] Samsung IcService_New (`a23d00bc-217c-123b-9c00-fc44577136ee`) — reverse-engineer wire protocol
+       - Observed on SAMSUNG-SM-G891A (Galaxy S7 Active), RFCOMM channel 5
+       - UUID registered in `bleep/bt_ref/constants.py`, documented in `bleep/docs/bl_classic_mode.md`
+       - Service accepts RFCOMM connections when phone is awake/unlocked, but uses unknown proprietary protocol
+       - Probe result: [SILENT] after ~5s — no initial banner or handshake from remote
+       - `copen 5` + `craw` → `str:HELO send` → 9B sent, no response from device
+       - Gap: No protocol dissector — only raw RFCOMM I/O via copen/csend/crecv/craw
+       - Gap: No dedicated command suite (e.g. `cicservice`) for structured interaction
+       - Gap: Phone screen must be awake for RFCOMM channel to accept connections
+       [ ] Capture and analyze traffic between Samsung Flow PC client ↔ phone to reverse-engineer the protocol framing
+       [ ] Identify handshake/auth sequence (likely Samsung Accessory Protocol or SMEP variant)
+       [ ] Determine if the service responds to Samsung Accessory SDK discovery messages
+       [ ] Cross-reference UUID against Samsung firmware decompilations (e.g. `com.samsung.android.app.accessoryservice`)
+       [ ] Add UUID to `SPEC_UUID_NAMES__SERV_CLASS` or equivalent for automatic resolution via `get_name_from_uuid()`
+       - References:
+           - Microsoft Q&A #3840559: https://learn.microsoft.com/en-us/answers/questions/3840559/accidentally-deleted-icservice-new-driver-possibly
+           - Microsoft Q&A #3284030: https://learn.microsoft.com/en-us/answers/questions/3284030/windows-was-unable-to-install-icservice-new-sms-mm
+           - Samsung Accessory SDK: https://developer.samsung.com/galaxy/accessory
+           - BlueZ vendor UUID discussion: https://github.com/bluez/bluez/issues/963
+   [ ] Catalog other vendor-specific SDP services observed during field testing
+       - BT DIAG (UUID 0x1101, Samsung/LG) — diagnostic serial channel, already observed on 14:89:FD:31:8A:7E
+       - SPPSERVICE3 (`b4a9d6a0-b2e3-4e40-976d-a69f167ea895`) — Samsung, Bixby-related
+       - SPPSERVICE4 / SMEP (`f8620674-a1ed-41ab-a8b9-de9ad655729d`) — Samsung proprietary protocol
+       [ ] Add observed vendor UUIDs to `bleep/bt_ref/constants.py` as they are discovered
+       [ ] Consider a `vendor_services.py` registry if the list grows beyond ~10 entries
+
 ### TODO (arduino):
    [ ] Create function for starting a user interaction interface for a SPECIFIC ADDRESS
    [ ] Clean-up and polish the user interaction interface screens
@@ -2360,6 +4826,55 @@ are in `workDir/BlueZDocs/org.bluez.obex.*.rst` and reference scripts in
 ### TODO (capabilities)
     [ ] Force Media Players to end ALL PLAYING AUDIO by "... setting position to the maxmium uint32 value."
         - Purpose is to allow bleep to identify MediaPlayer devices and force current media to stop playing
+
+### TODO (rfcomm-security):
+    [ ] Add BT_SECURITY socket option support to RFCOMM connections
+        - Currently `bleep/ble_ops/classic/connect.py:classic_rfccomm_open()` opens a raw
+          RFCOMM socket with no security level set — the kernel applies its own defaults.
+        - BlueZ userspace demonstrates the correct pattern in `workDir/bluez/btio/btio.c`:
+            - `set_sec_level()` (lines 453–494): sets `SOL_BLUETOOTH` / `BT_SECURITY` on the
+              socket before `connect()`; falls back to `SOL_RFCOMM` / `RFCOMM_LM` when the
+              kernel returns `ENOPROTOOPT`.
+            - `rfcomm_set_lm()` (lines 438–450): maps `BT_SECURITY_LOW` → `RFCOMM_LM_AUTH`,
+              `BT_SECURITY_MEDIUM` → `AUTH | ENCRYPT`, `BT_SECURITY_HIGH` → `AUTH | ENCRYPT | SECURE`.
+            - `rfcomm_set()` (lines 763–774): applies security + central role before use.
+            - `rfcomm_connect()` (lines 746–761): plain `connect()` after security is configured.
+        - BlueZ profile defaults from `workDir/bluez/src/profile.c`:
+            - `ext_set_defaults()` (line 2174–2180): defaults external profiles to `BT_IO_SEC_MEDIUM`.
+            - OPP explicitly sets `BT_IO_SEC_LOW` (lines 2111–2118).
+            - OBEX client (`workDir/bluez/obexd/client/bluetooth.c`, lines 104–122) uses `BT_IO_SEC_LOW`.
+        - Security constants from `workDir/bluez/lib/bluetooth.h` (lines 52–61):
+            - `BT_SECURITY` = 4, levels: SDP=0, LOW=1, MEDIUM=2, HIGH=3, FIPS=4.
+        - RFCOMM LM constants from `workDir/bluez/lib/rfcomm.h` (lines 40–46):
+            - `RFCOMM_LM` = 0x03, `RFCOMM_LM_AUTH` = 0x0002, `RFCOMM_LM_ENCRYPT` = 0x0004,
+              `RFCOMM_LM_SECURE` = 0x0020.
+        - Implementation approach:
+            [ ] Add optional `sec_level` parameter to `classic_rfccomm_open()` (default: MEDIUM)
+            [ ] Before `sock.connect()`, call `sock.setsockopt(SOL_BLUETOOTH, BT_SECURITY, ...)`
+                with fallback to `sock.setsockopt(SOL_RFCOMM, RFCOMM_LM, ...)` on ENOPROTOOPT,
+                mirroring the btio.c pattern
+            [ ] Expose sec_level through CLI flags on classic-connect, debug ckeep/copen
+            [ ] Verify Python `socket` module exposes SOL_BLUETOOTH / BT_SECURITY constants
+                (may require ctypes or hard-coded values: SOL_BLUETOOTH=274, BT_SECURITY=4)
+
+## MAP CLI Auto-Resolve Intermediate Folders (Future Work)
+
+**Goal**: Enhance `list_messages()` in `bleep/ble_ops/classic/map.py` to detect when the requested folder is an intermediate directory (has subfolders, not messages) and automatically enumerate its subtree to find and list messages from all leaf descendants.
+
+**Context**: The MAP specification allows varied folder hierarchies across devices — some devices use a deep structure (`telecom/msg/{inbox,draft,sent,outbox,deleted}`) while others store messages directly in `telecom/`.  Currently, when a user requests `list_messages("telecom")` on a device with the deep structure, the remote MAS returns OBEX "Bad Request" because `telecom/` is a structural folder, not a message container.  The CLI now provides helpful recovery hints (see Fix 2 in MAP CLI Folder Enumeration Fix below), but does not auto-descend.
+
+**Proposed approach**:
+- [ ] In `list_messages()`, catch "Bad Request" from `ListMessages` on the first attempt
+- [ ] When caught, call `walk_folder_tree()` from the current position to discover leaf subfolders
+- [ ] Re-issue `ListMessages` against each discovered leaf folder, aggregating results
+- [ ] Tag each returned message with its actual source folder path for caller disambiguation
+- [ ] Preserve existing behavior for leaf folders (no extra round-trips)
+
+**Dependencies**: Requires the recursive `walk_folder_tree()` and `collect_leaf_paths()` utilities already in the operations layer.
+
+**Risk**: Additional OBEX session round-trips on devices with deep hierarchies; should be gated behind the "Bad Request" error path only (zero cost on the happy path).
+
+---
 
 # Resources and Notes:
         - Great way to obfusate use of the D-Bus:

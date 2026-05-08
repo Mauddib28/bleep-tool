@@ -48,7 +48,7 @@ else:
 
 setup(
     name="bleep",
-    version="2.7.14",
+    version="2.8.3",
     description="Bluetooth Landscape Exploration & Enumeration Platform",
     author="Paul A. Wortman",
     packages=find_packages(),

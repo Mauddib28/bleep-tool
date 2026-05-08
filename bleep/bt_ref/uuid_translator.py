@@ -44,9 +44,7 @@ class UUIDCategory(Enum):
     SERVICE_CLASS = "Service Class"
 
 
-# Standard BT SIG Base UUID
-BT_SIG_BASE_UUID = "00000000-0000-1000-8000-00805f9b34fb"
-BT_SIG_BASE_UUID_NODASH = BT_SIG_BASE_UUID.replace("-", "").lower()
+from bleep.bt_ref.constants import BT_SIG_BASE_UUID, BT_SIG_BASE_UUID_NODASH
 
 
 class UUIDFormatHandler:

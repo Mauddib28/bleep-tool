@@ -23,27 +23,33 @@ usage and helper APIs introduced during the media-layer refactor (2025-07).
 * For **sink** registration the audio server (PipeWire / PulseAudio) must not
   already occupy the A2DP profile on the adapter – otherwise BlueZ will reject
   the custom endpoint.
+* If the host has **no audio server** (e.g. headless systems, containers, minimal
+  installs), install `bluez-alsa-utils` (`sudo apt-get install bluez-alsa-utils`)
+  to provide the A2DP/HFP profile handlers that `Device1.Connect()` requires.
+  Without any audio profile handler, `media-enum` will fail with
+  `br-connection-profile-unavailable` on dual-mode audio devices.
+  Run `bleep --check-env` to verify audio tool availability.
 
 ---
 
-## 2  Command reference (`bleep modes media`)
+## 2  Command reference
 
-| Sub-command | Purpose |
-|-------------|---------|
-| `list` | Show detected Media devices, players and transports |
-| `list --objects` | Full D-Bus object tree (Media1 services, folders, items) |
-| `control <MAC> <action>` | AVRCP control wrappers (play/pause/next/… volume) |
-| `monitor <MAC>` | Poll playback status & track changes |
+BLEEP exposes media functionality through two top-level CLI commands:
 
-Run `python -m bleep.cli media --help` for all global flags.
+| Command | Purpose |
+|---------|---------|
+| `bleep media-enum` | Enumerate media devices, players, transports, and the full D-Bus object tree |
+| `bleep media-ctrl <MAC> <action> [args]` | AVRCP playback and volume control |
 
-### 2.1  List examples
+### 2.1  Enumeration examples
 ```bash
-python -m bleep.cli media list
-python -m bleep.cli media list --objects  # dumps folders & items
+bleep media-enum 28:EF:01:02:AB:CD                # player summary, transports, endpoints
+bleep media-enum 28:EF:01:02:AB:CD --verbose       # full property bags + D-Bus object tree
+bleep media-enum 28:EF:01:02:AB:CD --browse        # include top-level folder listing (if browsable)
+bleep media-enum 28:EF:01:02:AB:CD --monitor       # poll media status changes for --duration seconds
 ```
 
-Sample *--objects* output
+Sample `--verbose` output (excerpt):
 ```
 [=] Full media object tree:
   Media1 service: /org/bluez/hci0
@@ -54,8 +60,8 @@ Sample *--objects* output
 
 ### 2.2  Control examples
 ```bash
-python -m bleep.cli media control 28:EF:01:02:AB:CD play
-python -m bleep.cli media control 28:EF:01:02:AB:CD volume --value 90
+bleep media-ctrl 28:EF:01:02:AB:CD play
+bleep media-ctrl 28:EF:01:02:AB:CD volume --value 90
 ```
 
 ---
@@ -95,8 +101,9 @@ CLI to mirror *general* messages to stdout.
 
 ## 5  Roadmap / limitations
 
-* Browsing API currently exposes `MediaFolder1.ListItems` but not recursive
-  navigation helpers – contributions welcome.
+* Browsing: `--browse` lists the top-level folder via `MediaFolder1.ListItems`
+  but does not recurse into sub-folders — recursive navigation helpers are a
+  future contribution opportunity.
 * Broadcast sink/source (BAP ISO) registration is out of scope for the initial
   refactor; see `todo_tracker.md` for future tasks.
 * No automatic codec negotiation – helper registers SBC capabilities only.
@@ -109,4 +116,4 @@ CLI to mirror *general* messages to stdout.
 
 ---
 
-*Last updated: 2026-02-28* 
+*Last updated: 2026-04-02*

@@ -92,18 +92,21 @@ class AOIAnalyser:
     and other notable findings.
     """
     
-    def __init__(self, aoi_dir: Optional[str] = None, use_db: bool = True):
+    def __init__(self, aoi_dir: Optional[str] = None, use_db: bool = True,
+                 db_only: bool = False):
         """
         Initialize the AOI Analyser.
         
         Args:
             aoi_dir: Directory where AoI JSON dumps are stored. Defaults to ~/.bleep/aoi/
             use_db: Whether to use the database for storage/retrieval
+            db_only: If True, skip file writes (database only)
         """
         self.aoi_dir = Path(aoi_dir or DEFAULT_AOI_DIR)
         self._ensure_aoi_dir()
         self.reports = {}
         self.use_db = use_db
+        self.db_only = db_only
         
     def _prepare_data_for_json(self, data):
         """
@@ -203,7 +206,7 @@ class AOIAnalyser:
         
         # Fall back to file-based lookup
         # Normalize MAC address format
-        device_mac_norm = device_mac.replace(':', '').lower()
+        device_mac_norm = device_mac.replace(':', '').upper()
         
         # Find the most recent file for this device
         device_files = list(self.aoi_dir.glob(f"{device_mac_norm}*.json"))
@@ -275,41 +278,72 @@ class AOIAnalyser:
                             services.append({"uuid": svc_uuid})
                         
                     service_ids = observations.upsert_services(device_mac, services)
-                    
-                    # Save characteristics if present in services_mapping
+
+                    # Persist chars/descriptors from the full GATT mapping structure
                     if "services_mapping" in data and service_ids:
+                        svc_map = data["services_mapping"]
                         for svc_uuid, svc_id in service_ids.items():
-                            chars = []
-                            # Extract characteristics for this service
-                            for uuid, handle in data["services_mapping"].items():
-                                if handle == svc_uuid:
-                                    # Find characteristic details if available
-                                    char_info = {"uuid": uuid}
-                                    if "characteristics" in data and uuid in data["characteristics"]:
-                                        # Ensure bytes are converted to hex strings
-                                        char_data = data["characteristics"][uuid]
-                                        if isinstance(char_data, dict):
-                                            for k, v in char_data.items():
-                                                if isinstance(v, bytes):
-                                                    char_data[k] = v.hex()
-                                            char_info.update(char_data)
-                                    chars.append(char_info)
-                            
-                            if chars:
-                                observations.upsert_characteristics(svc_id, chars)
+                            svc_data = svc_map.get(svc_uuid)
+                            if not isinstance(svc_data, dict):
+                                continue
+                            chars_data = svc_data.get("chars") or svc_data.get("Characteristics")
+                            if not chars_data or not isinstance(chars_data, dict):
+                                continue
+                            char_list = []
+                            for char_uuid, char_info in chars_data.items():
+                                if not isinstance(char_info, dict):
+                                    char_list.append({"uuid": char_uuid})
+                                    continue
+                                char_entry = {
+                                    "uuid": char_uuid,
+                                    "handle": char_info.get("handle"),
+                                    "properties": list(char_info.get("properties", {}).keys()) if isinstance(char_info.get("properties"), dict) else char_info.get("properties", []),
+                                    "value": char_info.get("value"),
+                                }
+                                if char_info.get("mtu") is not None:
+                                    char_entry["mtu"] = char_info["mtu"]
+                                char_list.append(char_entry)
+                            if char_list:
+                                observations.upsert_characteristics(svc_id, char_list, mac=device_mac, service_uuid=svc_uuid)
+                            # Persist descriptors
+                            for char_uuid, char_info in chars_data.items():
+                                if not isinstance(char_info, dict):
+                                    continue
+                                desc_data = char_info.get("Descriptors") or char_info.get("descriptors")
+                                if not desc_data or not isinstance(desc_data, dict):
+                                    continue
+                                char_id = observations.get_characteristic_id(svc_id, char_uuid)
+                                if not char_id:
+                                    continue
+                                desc_list = []
+                                for d_uuid, d_entry in desc_data.items():
+                                    d_info = {"uuid": d_uuid}
+                                    if isinstance(d_entry, dict):
+                                        d_info["value"] = d_entry.get("Value") or d_entry.get("value")
+                                        d_info["handle"] = d_entry.get("Handle") or d_entry.get("handle")
+                                        d_info["flags"] = d_entry.get("Flags") or d_entry.get("flags")
+                                    desc_list.append(d_info)
+                                if desc_list:
+                                    observations.upsert_descriptors(char_id, desc_list)
                 
-                # If analysis exists, save it
+                # If analysis exists, merge v11 fields and persist
                 if "analysis" in data:
-                    observations.store_aoi_analysis(device_mac, data["analysis"])
+                    merged_analysis = dict(data["analysis"])
+                    for v11_key in ("pairing_profile", "sdp_summary", "post_pair_delta"):
+                        if v11_key in data and v11_key not in merged_analysis:
+                            merged_analysis[v11_key] = data[v11_key]
+                    observations.store_aoi_analysis(device_mac, merged_analysis)
                     
                 logger.info(f"Saved AoI data to database for {device_mac}")
             except Exception as e:
                 logger.error(f"Error saving to database: {str(e)}")
                 # Continue with file save even if database save fails
         
-        # Always save to file for backward compatibility
+        if self.db_only:
+            return ""
+
         # Normalize MAC address format
-        device_mac_norm = device_mac.replace(':', '').lower()
+        device_mac_norm = device_mac.replace(':', '').upper()
         
         # Create timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -377,18 +411,16 @@ class AOIAnalyser:
         permission_map = data.get("permission_map", {})
         
         # Handle different service data formats
-        # If services is a list of UUIDs
         if isinstance(services_data, list):
-            for uuid in services_data:
-                service_info = {"uuid": uuid}
-                service_report = self._analyse_service(uuid, service_info)
+            for elem in services_data:
+                svc_uuid = elem.get("uuid", elem.get("UUID", "")) if isinstance(elem, dict) else str(elem)
+                service_info = {"uuid": svc_uuid}
+                service_report = self._analyse_service(svc_uuid, service_info)
                 if service_report:
                     report["details"]["services"].append(service_report)
-                    
-                    # Check for notable services
                     if service_report.get("is_notable", False):
                         report["summary"]["notable_services"].append({
-                            "uuid": uuid,
+                            "uuid": svc_uuid,
                             "name": service_report.get("name", "Unknown Service"),
                             "reason": service_report.get("notable_reason", ""),
                         })
@@ -407,30 +439,37 @@ class AOIAnalyser:
                             "reason": service_report.get("notable_reason", ""),
                         })
         
-        # Analyze characteristics
-        # Handle cases where characteristics might be in services_mapping instead
+        # Extract characteristics from the full GATT mapping structure
         if not characteristics and "services_mapping" in data:
-            for handle, uuid in data.get("services_mapping", {}).items():
-                char_info = {"uuid": uuid, "handle": handle}
-                char_report = self._analyse_characteristic(uuid, char_info)
-                if char_report:
-                    report["details"]["characteristics"].append(char_report)
-                    
-                    # Check for security concerns
-                    if char_report.get("security_concern", False):
-                        report["summary"]["security_concerns"].append({
-                            "uuid": uuid,
-                            "name": char_report.get("name", "Unknown Characteristic"),
-                            "reason": char_report.get("security_reason", ""),
-                        })
-                    
-                    # Check for unusual characteristics
-                    if char_report.get("is_unusual", False):
-                        report["summary"]["unusual_characteristics"].append({
-                            "uuid": uuid,
-                            "name": char_report.get("name", "Unknown Characteristic"),
-                            "reason": char_report.get("unusual_reason", ""),
-                        })
+            svc_map = data.get("services_mapping", {})
+            for _svc_uuid, svc_data in svc_map.items():
+                if not isinstance(svc_data, dict):
+                    continue
+                chars_data = svc_data.get("chars") or svc_data.get("Characteristics") or {}
+                if not isinstance(chars_data, dict):
+                    continue
+                for char_uuid, char_info in chars_data.items():
+                    if not isinstance(char_info, dict):
+                        char_info = {}
+                    char_info_copy = dict(char_info)
+                    char_info_copy["uuid"] = char_uuid
+                    char_report = self._analyse_characteristic(char_uuid, char_info_copy)
+                    if char_report:
+                        report["details"]["characteristics"].append(char_report)
+
+                        if char_report.get("security_concern", False):
+                            report["summary"]["security_concerns"].append({
+                                "uuid": char_uuid,
+                                "name": char_report.get("name", "Unknown Characteristic"),
+                                "reason": char_report.get("security_reason", ""),
+                            })
+
+                        if char_report.get("is_unusual", False):
+                            report["summary"]["unusual_characteristics"].append({
+                                "uuid": char_uuid,
+                                "name": char_report.get("name", "Unknown Characteristic"),
+                                "reason": char_report.get("unusual_reason", ""),
+                            })
         # Process normal characteristics dictionary
         elif isinstance(characteristics, dict):
             for uuid, char_info in characteristics.items():
@@ -464,11 +503,28 @@ class AOIAnalyser:
             report["details"]["permission_map"]
         )
         
+        # Analyse v11 fields if present
+        if "sdp_summary" in data:
+            sdp_analysis = self._analyse_sdp_records(data["sdp_summary"])
+            report["sdp_summary"] = sdp_analysis
+            for flag in sdp_analysis.get("security_flags", []):
+                report["summary"]["security_concerns"].append(
+                    {"name": "Classic Profile", "reason": flag})
+
+        if "pairing_profile" in data:
+            pp_analysis = self._analyse_pairing_profile(data["pairing_profile"])
+            report["pairing_profile"] = pp_analysis
+            for c in pp_analysis.get("concerns", []):
+                report["summary"]["security_concerns"].append(
+                    {"name": "Pairing", "reason": c})
+
+        if "post_pair_delta" in data:
+            ppd = self._analyse_post_pair_delta(data["post_pair_delta"])
+            report["post_pair_delta"] = ppd
+
         # Generate recommendations
         report["summary"]["recommendations"] = self._generate_recommendations(report)
         
-        # Ensure all dictionary keys in the report are strings
-        # This prevents "unhashable type: 'dict'" errors when the report is used as a key
         report = self._prepare_data_for_json(report)
         
         # Store the report
@@ -492,7 +548,11 @@ class AOIAnalyser:
                 except Exception as e:
                     logger.error(f"Error checking device existence: {str(e)}")
                 
-                observations.store_aoi_analysis(device_mac, report)
+                merged_report = dict(report)
+                for v11_key in ("pairing_profile", "sdp_summary", "post_pair_delta"):
+                    if v11_key in data and v11_key not in merged_report:
+                        merged_report[v11_key] = data[v11_key]
+                observations.store_aoi_analysis(device_mac, merged_report)
                 logger.info(f"Saved analysis to database for {device_mac}")
             except Exception as e:
                 logger.error(f"Error saving analysis to database: {str(e)}")
@@ -650,6 +710,46 @@ class AOIAnalyser:
             "accessibility_score": (total_chars - blocked_chars - protected_chars) / total_chars if total_chars else 0,
         }
     
+    def _analyse_sdp_records(self, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Analyse SDP records for security-relevant services.
+        
+        Returns a summary dict with ``services_found``, ``security_flags``,
+        and ``raw_count``.
+        """
+        security_flags: List[str] = []
+        svc_names: List[str] = []
+        for rec in records:
+            name = rec.get("name", "")
+            svc_names.append(name or rec.get("uuid", "unknown"))
+            lower = name.lower()
+            if any(kw in lower for kw in ("obex", "ftp", "opp", "pbap", "map", "spp", "serial")):
+                security_flags.append(f"Classic profile exposed: {name}")
+        return {
+            "raw_count": len(records),
+            "services_found": svc_names,
+            "security_flags": security_flags,
+        }
+
+    def _analyse_pairing_profile(self, profile: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyse a pairing-profile dict for security concerns."""
+        concerns: List[str] = []
+        if profile.get("paired") and profile.get("method") == "JustWorks":
+            concerns.append("Device paired via JustWorks (no MITM protection)")
+        if profile.get("error") and "rejected" not in str(profile["error"]).lower():
+            concerns.append(f"Pairing error: {profile['error']}")
+        return {"concerns": concerns, "method": profile.get("method"), "paired": profile.get("paired", False)}
+
+    def _analyse_post_pair_delta(self, delta: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyse changes revealed by post-pair re-enumeration."""
+        findings: List[str] = []
+        if delta.get("le_delta"):
+            le = delta["le_delta"]
+            svc_count = len(le.get("services", []))
+            findings.append(f"Post-pair LE enum revealed {svc_count} service(s)")
+        if delta.get("sdp_delta"):
+            findings.append(f"Post-pair SDP revealed {len(delta['sdp_delta'])} record(s)")
+        return {"findings": findings}
+
     def _generate_recommendations(self, report: Dict[str, Any]) -> List[str]:
         """
         Generate recommendations based on the report.
@@ -676,16 +776,16 @@ class AOIAnalyser:
                 f"{report['summary']['unusual_characteristics'][0]['name']}."
             )
         
-        # Check accessibility
-        accessibility = report["summary"]["accessibility"]
-        if accessibility["accessibility_score"] > 0.8:
+        accessibility = report.get("summary", {}).get("accessibility", {})
+        acc_score = accessibility.get("accessibility_score", 0) if isinstance(accessibility, dict) else 0
+        if acc_score > 0.8:
             recommendations.append(
-                f"Device is highly accessible ({accessibility['accessibility_score']:.2%}). "
+                f"Device is highly accessible ({acc_score:.2%}). "
                 "Consider detailed enumeration of all characteristics."
             )
-        elif accessibility["accessibility_score"] < 0.3:
+        elif acc_score < 0.3 and acc_score != 0:
             recommendations.append(
-                f"Device has limited accessibility ({accessibility['accessibility_score']:.2%}). "
+                f"Device has limited accessibility ({acc_score:.2%}). "
                 "Consider authentication/pairing options."
             )
         
@@ -813,46 +913,78 @@ class AOIAnalyser:
                 
             report.append("")
         
-        # Add services section
         if "services" in device_data:
-            report.extend([
-                "## Services",
-                "",
-            ])
-            
+            report.extend(["## Services", ""])
             for service in device_data["services"]:
-                uuid = service.get("uuid", "Unknown")
-                name = service.get("name", get_name_from_uuid(uuid) or uuid)
-                
+                if isinstance(service, dict):
+                    uuid = service.get("uuid", "Unknown")
+                    name = service.get("name", get_name_from_uuid(uuid) or uuid)
+                elif isinstance(service, str):
+                    uuid = service
+                    name = get_name_from_uuid(uuid) or uuid
+                else:
+                    continue
                 report.append(f"### {name}")
                 report.append(f"- UUID: `{uuid}`")
-                
-                # Add characteristics
-                chars = service.get("characteristics", [])
-                if chars:
-                    report.append("- **Characteristics:**")
-                    
-                    for char in chars:
-                        char_uuid = char.get("uuid", "Unknown")
-                        char_name = char.get("name", get_name_from_uuid(char_uuid) or char_uuid)
-                        flags = ", ".join(char.get("flags", []))
-                        report.append(f"  - {char_name} (`{char_uuid}`): {flags}")
-                        
-                        # Add security notes if present
-                        for vuln in vulnerabilities:
-                            if vuln.get("uuid") == char_uuid:
-                                report.append(f"    - ⚠️ {vuln.get('description', '')}")
-                                
+                if isinstance(service, dict):
+                    chars = service.get("characteristics", [])
+                    if chars:
+                        report.append("- **Characteristics:**")
+                        for char in chars:
+                            char_uuid = char.get("uuid", "Unknown")
+                            char_name = char.get("name", get_name_from_uuid(char_uuid) or char_uuid)
+                            flags = ", ".join(char.get("flags", []))
+                            report.append(f"  - {char_name} (`{char_uuid}`): {flags}")
+                            for vuln in vulnerabilities:
+                                if vuln.get("uuid") == char_uuid:
+                                    report.append(f"    - ⚠️ {vuln.get('description', '')}")
                 report.append("")
         
-        # Add recommendations
+        # SDP summary section
+        sdp_info = analysis.get("sdp_summary") or device_data.get("sdp_summary")
+        if sdp_info:
+            report.extend(["## SDP Discovery", ""])
+            if isinstance(sdp_info, dict):
+                for svc in sdp_info.get("services_found", []):
+                    report.append(f"- {svc}")
+                for flag in sdp_info.get("security_flags", []):
+                    report.append(f"- **{flag}**")
+            elif isinstance(sdp_info, list):
+                for rec in sdp_info:
+                    report.append(f"- {rec.get('name', rec.get('uuid', 'unknown'))}")
+            report.append("")
+
+        # Pairing profile section
+        pp = analysis.get("pairing_profile") or device_data.get("pairing_profile")
+        if pp and pp.get("attempted", pp.get("paired", False)):
+            report.extend(["## Pairing Profile", ""])
+            report.append(f"- **Method:** {pp.get('method', 'N/A')}")
+            report.append(f"- **Paired:** {'Yes' if pp.get('paired') else 'No'}")
+            for c in pp.get("concerns", []):
+                report.append(f"- {c}")
+            report.append("")
+
+        ppd = analysis.get("post_pair_delta") or device_data.get("post_pair_delta")
+        if ppd:
+            findings = ppd.get("findings", [])
+            if not findings:
+                findings = []
+                if ppd.get("le_delta"):
+                    le = ppd["le_delta"]
+                    cnt = len(le.get("services", []))
+                    findings.append(f"Post-pair LE enum revealed {cnt} service(s)")
+                if ppd.get("sdp_delta"):
+                    findings.append(f"Post-pair SDP revealed {len(ppd['sdp_delta'])} record(s)")
+            if findings:
+                report.extend(["## Post-Pair Delta", ""])
+                for f in findings:
+                    report.append(f"- {f}")
+                report.append("")
+
+        # Recommendations
         recommendations = self._generate_recommendations(analysis)
         if recommendations:
-            report.extend([
-                "## Recommendations",
-                "",
-            ])
-            
+            report.extend(["## Recommendations", ""])
             for i, rec in enumerate(recommendations, 1):
                 report.append(f"{i}. {rec}")
                 
@@ -903,11 +1035,29 @@ class AOIAnalyser:
                 
             report.append("")
         
-        # Add recommendations
+        # SDP summary
+        sdp_info = analysis.get("sdp_summary") or device_data.get("sdp_summary")
+        if sdp_info:
+            report.append("SDP DISCOVERY")
+            if isinstance(sdp_info, dict):
+                for svc in sdp_info.get("services_found", []):
+                    report.append(f"- {svc}")
+            elif isinstance(sdp_info, list):
+                for rec in sdp_info:
+                    report.append(f"- {rec.get('name', rec.get('uuid', 'unknown'))}")
+            report.append("")
+
+        # Pairing profile
+        pp = analysis.get("pairing_profile") or device_data.get("pairing_profile")
+        if pp and pp.get("attempted", pp.get("paired", False)):
+            report.append("PAIRING PROFILE")
+            report.append(f"Method: {pp.get('method', 'N/A')}")
+            report.append(f"Paired: {'Yes' if pp.get('paired') else 'No'}")
+            report.append("")
+
         recommendations = self._generate_recommendations(analysis)
         if recommendations:
             report.append("RECOMMENDATIONS")
-            
             for i, rec in enumerate(recommendations, 1):
                 report.append(f"{i}. {rec}")
                 
@@ -923,21 +1073,24 @@ class AOIAnalyser:
         # Extract recommendations
         recommendations = self._generate_recommendations(analysis)
         
-        # Build report object
         report = {
             "device": device_data,
             "analysis": {
                 "timestamp": datetime.now().isoformat(),
                 "security_score": security_score,
                 "vulnerabilities": vulnerabilities,
-                "recommendations": recommendations
+                "recommendations": recommendations,
             },
             "metadata": {
                 "version": self._get_version(),
-                "generator": "BLEEP AOI Analyzer"
-            }
+                "generator": "BLEEP AOI Analyzer",
+            },
         }
-        
+        for v11_key in ("sdp_summary", "pairing_profile", "post_pair_delta"):
+            val = analysis.get(v11_key) or device_data.get(v11_key)
+            if val:
+                report["analysis"][v11_key] = val
+
         return json.dumps(report, indent=2)
     
     def save_report(self, report_content: str, filename: str = None, device_address: str = None) -> str:

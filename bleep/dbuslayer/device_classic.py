@@ -35,7 +35,7 @@ class system_dbus__bluez_device__classic:
     
     def __init__(self, mac_address: str, adapter_name: str = ADAPTER_NAME):
         """Initialize a Bluetooth Classic device."""
-        self.mac_address = mac_address.lower()
+        self.mac_address = mac_address.upper()
         self.adapter_name = adapter_name
         
         self._bus = dbus.SystemBus()
@@ -128,11 +128,43 @@ class system_dbus__bluez_device__classic:
                 LOG__DEBUG,
             )
             raise map_dbus_error(e)
-            
+
+    # ---------------------------------------------------------------------
+    # State queries
+    # ---------------------------------------------------------------------
+    def is_paired(self) -> bool:
+        """Check whether the device is currently paired."""
+        try:
+            return bool(self._props_iface.Get(DEVICE_INTERFACE, "Paired"))
+        except dbus.exceptions.DBusException as e:
+            raise map_dbus_error(e)
+
+    def is_trusted(self) -> bool:
+        """Check whether the device is marked as trusted."""
+        try:
+            return bool(self._props_iface.Get(DEVICE_INTERFACE, "Trusted"))
+        except dbus.exceptions.DBusException as e:
+            raise map_dbus_error(e)
+
+    def is_bonded(self) -> bool:
+        """Check whether the device holds a stored bond (link key)."""
+        try:
+            return bool(self._props_iface.Get(DEVICE_INTERFACE, "Bonded"))
+        except dbus.exceptions.DBusException as e:
+            raise map_dbus_error(e)
+
+    def is_connected(self) -> bool:
+        """Check whether the device is currently connected."""
+        try:
+            return bool(self._props_iface.Get(DEVICE_INTERFACE, "Connected"))
+        except dbus.exceptions.DBusException as e:
+            raise map_dbus_error(e)
+
     # ---------------------------------------------------------------------
     # Connection Management
     # ---------------------------------------------------------------------
-    def connect(self, retry: int = 3, wait_timeout: float = 10.0) -> bool:
+    def connect(self, retry: int = 3, wait_timeout: float = 10.0,
+                force_disconnect: bool = False) -> bool:
         """Connect to the device.
         
         Parameters
@@ -141,6 +173,10 @@ class system_dbus__bluez_device__classic:
             Number of connection attempts, by default 3
         wait_timeout : float, optional
             Seconds to wait for connection to complete, by default 10.0
+        force_disconnect : bool, optional
+            If True, disconnect before each connection attempt (needed for
+            operations like ``pair --test``).  Default False preserves an
+            existing connection.
             
         Returns
         -------
@@ -154,15 +190,13 @@ class system_dbus__bluez_device__classic:
         """
         # Check if already connected before attempting connection
         try:
-            if self.is_connected():
+            if self.is_connected() and not force_disconnect:
                 print_and_log(
                     f"[!] Device {self.mac_address} already connected, skipping connect attempt",
                     LOG__GENERAL
                 )
                 return True
         except Exception as e:
-            # If is_connected() fails, we may have D-Bus issues
-            # Proceed with connection attempt
             print_and_log(
                 f"[!] Could not check connection state, proceeding with connection attempt: {e}",
                 LOG__DEBUG
@@ -174,12 +208,11 @@ class system_dbus__bluez_device__classic:
         
         while self._connect_retry_attempt < retry:
             try:
-                # Try to disconnect first to ensure clean slate
-                try:
-                    self._device_iface.Disconnect()
-                except dbus.exceptions.DBusException:
-                    # Ignore - device was not connected
-                    pass
+                if force_disconnect:
+                    try:
+                        self._device_iface.Disconnect()
+                    except dbus.exceptions.DBusException:
+                        pass
                     
                 self._connect_retry_attempt += 1
                 print_and_log(
@@ -510,8 +543,8 @@ class system_dbus__bluez_device__classic:
                 info["raw_properties"]["Version"] = self._props_iface.Get(DEVICE_INTERFACE, "Version")
             except (dbus.exceptions.DBusException, KeyError):
                 pass
-        except Exception:
-            pass  # Ignore errors when collecting raw properties
+        except Exception as _e:
+            print_and_log(f"[DEBUG] Raw property collection error: {_e}", LOG__DEBUG)
         
         return info
             

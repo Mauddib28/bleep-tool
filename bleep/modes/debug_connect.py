@@ -9,8 +9,8 @@ import dbus
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 from bleep.bt_ref.utils import get_name_from_uuid
-from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
-from bleep.ble_ops.conversion import format_device_class
+from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+from bleep.ble_ops.common.conversion import format_device_class
 
 from bleep.modes.debug_state import DebugState
 from bleep.modes.debug_dbus import format_dbus_error, print_detailed_dbus_error
@@ -71,13 +71,13 @@ def find_device_path(target_mac: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 def cmd_connect(args: List[str], state: DebugState) -> None:
-    """Connect to a device by MAC address.
+    """Connect to a BLE device by MAC address and enumerate GATT services.
 
-    Auto-detects transport type (BR/EDR vs BLE) and routes to the appropriate
-    connection method.
+    This command is BLE-only by design for directed LE testing in debug
+    mode.  For Bluetooth Classic targets use ``cconnect`` instead.
     """
     if not args:
-        print("Usage: connect <MAC>")
+        print("Usage: connect <MAC>  (BLE only — use 'cconnect' for Classic)")
         return
 
     mac = args[0].upper()
@@ -104,13 +104,7 @@ def cmd_connect(args: List[str], state: DebugState) -> None:
             print(f"[-] Device {mac} not found")
             return
 
-    transport = get_device_transport(device_path)
-    print_and_log(f"[*] Detected transport: {transport}", LOG__DEBUG)
-
-    if transport == "le":
-        _connect_le(mac, device_path, state)
-    else:
-        _connect_classic(mac, device_path, state)
+    _connect_le(mac, device_path, state)
 
 
 def _connect_le(mac: str, device_path: str, state: DebugState) -> None:
@@ -125,14 +119,18 @@ def _connect_le(mac: str, device_path: str, state: DebugState) -> None:
     except Exception as exc:
         print_and_log(f"[-] BLE connection failed: {exc}", LOG__DEBUG)
         state.current_path = device_path
-        print("[-] Connection failed – D-Bus exploration still available via 'interfaces', 'props'")
+        transport = get_device_transport(device_path)
+        if transport in ("br-edr", "dual"):
+            print(f"[-] BLE connection failed – device is {transport}; use 'cconnect {mac}' instead")
+        else:
+            print("[-] Connection failed – D-Bus exploration still available via 'interfaces', 'props'")
 
 
 def _connect_classic(mac: str, device_path: str, state: DebugState) -> None:
     """Classic connect with profile fallback to SDP + keepalive."""
     try:
         from bleep.ble_ops import connect_and_enumerate__bluetooth__classic as _c_enum
-        dev, svc_map = _c_enum(mac)
+        dev, svc_map = _c_enum(mac, debug_state=state)
         state.current_device = dev
         state.current_mapping = svc_map
         state.current_mode = "classic"
@@ -161,9 +159,7 @@ def cmd_disconnect(args: List[str], state: DebugState) -> None:
 
     if state.current_device:
         try:
-            mac = state.current_device.mac_address
             state.current_device.disconnect()
-            print_and_log(f"[+] Disconnected from {mac}", LOG__GENERAL)
         except Exception as exc:
             print_and_log(f"[-] Disconnect failed: {exc}", LOG__DEBUG)
 
@@ -174,45 +170,189 @@ def cmd_disconnect(args: List[str], state: DebugState) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Unified property formatting
+# ---------------------------------------------------------------------------
+
+_BOOL_KEYS = {"Blocked", "Connected", "LegacyPairing", "Paired", "Trusted",
+              "ServicesResolved"}
+
+_KEY_LABELS = {
+    "AddressType":      "Address Type",
+    "LegacyPairing":    "Legacy Pairing",
+    "ServicesResolved":  "Services Resolved",
+    "ServiceData":       "Service Data",
+    "TxPower":           "TX Power",
+    "ManufacturerData":  "Manufacturer Data",
+}
+
+
+def _format_bool(val, detailed: bool = False) -> str:
+    """Format a boolean value.
+
+    With *detailed* the numeric equivalent is appended: ``True (1)``.
+    Without it only the word is returned: ``True``.
+    """
+    b = bool(val)
+    if detailed:
+        return f"{b} ({1 if b else 0})"
+    return str(b)
+
+
+def _print_unified_props(props: dict, detailed: bool = False) -> None:
+    """Print device properties in a uniform format.
+
+    Boolean properties show both human-readable and numeric forms.
+    Property labels are Title Case.  Raw captured data (ServiceData,
+    UUIDs, ManufacturerData) is printed verbatim.
+    """
+    import json as _json
+    from bleep.bt_ref.utils import get_name_from_uuid
+
+    skip = {"Address", "Adapter", "Alias", "Name"}
+    for key in sorted(props.keys()):
+        if key in skip:
+            continue
+
+        label = _KEY_LABELS.get(key, key)
+        value = props[key]
+
+        if key in _BOOL_KEYS:
+            print(f"  {label + ':':<20s} {_format_bool(value, detailed)}")
+            continue
+
+        if key == "Class":
+            if detailed:
+                class_str = format_device_class(int(value))
+                print(f"  {label + ':':<20s} 0x{int(value):06X} ({class_str})")
+            else:
+                print(f"  {label + ':':<20s} 0x{int(value):06X}")
+            continue
+
+        if key == "RSSI":
+            print(f"  {label + ':':<20s} {int(value)} dBm")
+            continue
+        if key == "TxPower":
+            print(f"  {label + ':':<20s} {int(value)} dBm")
+            continue
+
+        if key == "UUIDs":
+            uuid_list = [str(u) for u in value]
+            print(f"  {label + ':':<20s} {len(uuid_list)} service(s)")
+            if detailed:
+                for u in uuid_list:
+                    name = get_name_from_uuid(u) or u
+                    print(f"    {u} ({name})" if name != u else f"    {u}")
+            else:
+                for u in uuid_list:
+                    print(f"    {u}")
+            continue
+
+        if isinstance(value, (list, dict)):
+            print(f"  {label + ':':<20s} {_json.dumps(value, indent=2)}")
+        else:
+            print(f"  {label + ':':<20s} {value}")
+
+
+# ---------------------------------------------------------------------------
 # Info command
 # ---------------------------------------------------------------------------
 
 def cmd_info(args: List[str], state: DebugState) -> None:
-    """Show device information."""
+    """Show device information with a unified format for BLE and Classic."""
     if not state.current_device and not state.current_path:
         print("[-] No device connected or paired in this session")
         return
 
     if state.current_device:
         if state.current_mode == "ble":
-            device_path = state.current_device._device_path
-            device_addr = state.current_device.mac_address
-            device_name = getattr(state.current_device, "name", "Unknown")
-            device_addr_type = getattr(state.current_device, "address_type", "Unknown")
-
-            print(f"[+] Device: {device_name}")
-            print(f"  Address: {device_addr} ({device_addr_type})")
-            print(f"  Path: {device_path}")
-
-            try:
-                bus = dbus.SystemBus()
-                obj = bus.get_object("org.bluez", device_path)
-                props_iface = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
-                props = props_iface.GetAll("org.bluez.Device1")
-                print("[*] Device Properties:")
-                from bleep.modes.debug_gatt import show_properties
-                show_properties(props, state.detailed_view)
-            except Exception as e:
-                print(f"[-] Error getting additional info: {e}")
+            _info_ble(state)
         else:
-            info = state.current_device.get_device_info()
-            print("[+] Classic Device Info:")
-            for k, v in info.items():
-                print(f"  {k}: {v}")
-            if state.current_mapping:
-                print(f"  SDP services: {len(state.current_mapping)} (use 'cservices' to list)")
+            _info_classic(state)
     else:
         _info_from_dbus_path(state.current_path, state)
+
+
+def _info_ble(state: DebugState) -> None:
+    """Unified BLE device info display."""
+    device_path = state.current_device._device_path
+    device_addr = state.current_device.mac_address
+
+    try:
+        bus = dbus.SystemBus()
+        obj = bus.get_object("org.bluez", device_path)
+        props_iface = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
+        props = props_iface.GetAll("org.bluez.Device1")
+    except Exception as e:
+        print(f"[-] Error getting device properties: {e}")
+        return
+
+    name = str(props.get("Alias", props.get("Name", "Unknown")))
+    addr_type = str(props.get("AddressType", "Unknown"))
+
+    print(f"[+] Device Info:")
+    print(f"  {'Address:':<20s} {device_addr}")
+    print(f"  {'Name:':<20s} {name}")
+    print(f"  {'Type:':<20s} BLE")
+    print(f"  {'Address Type:':<20s} {addr_type}")
+    print(f"  {'Path:':<20s} {device_path}")
+    _print_unified_props(props, state.detailed_view)
+
+
+def _info_classic(state: DebugState) -> None:
+    """Unified Classic device info display."""
+    info = state.current_device.get_device_info()
+
+    name = info.get("name", "Unknown")
+    addr = info.get("address", "Unknown")
+
+    d = state.detailed_view
+    type_label = "Classic (BR/EDR)" if d else "Classic"
+
+    print(f"[+] Device Info:")
+    print(f"  {'Address:':<20s} {addr}")
+    print(f"  {'Name:':<20s} {name}")
+    print(f"  {'Type:':<20s} {type_label}")
+    print(f"  {'Path:':<20s} {getattr(state.current_device, '_device_path', 'N/A')}")
+
+    print(f"  {'Connected:':<20s} {_format_bool(info.get('connected'), d)}")
+    print(f"  {'Paired:':<20s} {_format_bool(info.get('paired'), d)}")
+    print(f"  {'Trusted:':<20s} {_format_bool(info.get('trusted'), d)}")
+    print(f"  {'Blocked:':<20s} {_format_bool(info.get('blocked'), d)}")
+    print(f"  {'Legacy Pairing:':<20s} {_format_bool(info.get('legacy_pairing'), d)}")
+
+    dev_class = info.get("device_class")
+    if dev_class is not None:
+        if d:
+            class_str = format_device_class(int(dev_class))
+            print(f"  {'Device Class:':<20s} 0x{int(dev_class):06X} ({class_str})")
+        else:
+            print(f"  {'Device Class:':<20s} 0x{int(dev_class):06X}")
+
+    rssi = info.get("rssi")
+    if rssi is not None:
+        print(f"  {'RSSI:':<20s} {rssi} dBm")
+    tx = info.get("tx_power")
+    if tx is not None:
+        print(f"  {'TX Power:':<20s} {tx} dBm")
+
+    profiles = info.get("supported_profiles", [])
+    if profiles:
+        print(f"  {'Profiles:':<20s} {len(profiles)} supported")
+        if state.detailed_view:
+            from bleep.bt_ref.utils import get_name_from_uuid
+            for u in profiles:
+                name_p = get_name_from_uuid(u) or u
+                print(f"    {u} ({name_p})" if name_p != u else f"    {u}")
+        else:
+            for u in profiles:
+                print(f"    {u}")
+
+    connected_p = info.get("connected_profiles", [])
+    if connected_p:
+        print(f"  {'Active Profiles:':<20s} {', '.join(str(p) for p in connected_p)}")
+
+    if state.current_mapping:
+        print(f"  {'SDP Services:':<20s} {len(state.current_mapping)} (use 'cservices' to list)")
 
 
 def _info_from_dbus_path(device_path: str, state: DebugState) -> None:
@@ -225,36 +365,17 @@ def _info_from_dbus_path(device_path: str, state: DebugState) -> None:
 
         name = str(props.get("Alias", props.get("Name", "Unknown")))
         addr = str(props.get("Address", "Unknown"))
-        paired = bool(props.get("Paired", False))
-        trusted = bool(props.get("Trusted", False))
+        addr_type = str(props.get("AddressType", ""))
         connected = bool(props.get("Connected", False))
 
-        print(f"[+] Device: {name}")
-        print(f"  Address:   {addr}")
-        print(f"  Path:      {device_path}")
-        print(f"  Paired:    {paired}")
-        print(f"  Trusted:   {trusted}")
-        print(f"  Connected: {connected}")
-
-        addr_type = str(props.get("AddressType", ""))
+        print(f"[+] Device Info:")
+        print(f"  {'Address:':<20s} {addr}")
+        print(f"  {'Name:':<20s} {name}")
+        print(f"  {'Type:':<20s} D-Bus Path (no active wrapper)")
         if addr_type:
-            print(f"  AddrType:  {addr_type}")
-
-        dev_class = props.get("Class")
-        if dev_class is not None:
-            class_str = format_device_class(int(dev_class))
-            print(f"  Class:     0x{int(dev_class):06X} ({class_str})")
-
-        rssi = props.get("RSSI")
-        if rssi is not None:
-            print(f"  RSSI:      {int(rssi)} dBm")
-
-        uuids = [str(u) for u in props.get("UUIDs", [])]
-        if uuids:
-            print(f"  UUIDs:     {len(uuids)} service(s)")
-            for u in uuids:
-                label = get_name_from_uuid(u) or u
-                print(f"    {label}")
+            print(f"  {'Address Type:':<20s} {addr_type}")
+        print(f"  {'Path:':<20s} {device_path}")
+        _print_unified_props(props, state.detailed_view)
 
         if not connected:
             print("\n[*] Device is paired but not connected.")

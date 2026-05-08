@@ -8,10 +8,10 @@ from __future__ import annotations
 from typing import List
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
-from bleep.ble_ops.connect import (
+from bleep.ble_ops.le.connect import (
     connect_and_enumerate__bluetooth__low_energy as _connect_enum,
 )
-from bleep.ble_ops.enum_helpers import (
+from bleep.ble_ops.le.enum_helpers import (
     multi_read_all,
     small_write_probe,
     build_payload_iterator,

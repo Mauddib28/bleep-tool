@@ -28,7 +28,7 @@ __all__ = ["main"]
 
 def _cmd_scan(args: argparse.Namespace) -> int:
     """Scan for audio-capable devices, attempt connections, report results."""
-    from bleep.ble_ops.amusica import (
+    from bleep.ble_ops.audio.amusica import (
         scan_audio_targets,
         assess_targets,
         summarise_assessment,
@@ -87,7 +87,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
 def _cmd_halt(args: argparse.Namespace) -> int:
     """Halt all audio on a connected target device."""
-    from bleep.ble_ops.audio_tools import AudioToolsHelper
+    from bleep.ble_ops.audio.audio_tools import AudioToolsHelper
 
     helper = AudioToolsHelper()
     result = helper.halt_audio_for_device(args.device)
@@ -117,7 +117,7 @@ def _cmd_control(args: argparse.Namespace) -> int:
 
 def _cmd_inject(args: argparse.Namespace) -> int:
     """Play an audio file into a target device's audio sink."""
-    from bleep.ble_ops.audio_tools import AudioToolsHelper
+    from bleep.ble_ops.audio.audio_tools import AudioToolsHelper
 
     helper = AudioToolsHelper()
 
@@ -148,7 +148,7 @@ def _cmd_inject(args: argparse.Namespace) -> int:
 
 def _cmd_record(args: argparse.Namespace) -> int:
     """Record audio from a target device's source/sink interfaces."""
-    from bleep.ble_ops.audio_tools import AudioToolsHelper
+    from bleep.ble_ops.audio.audio_tools import AudioToolsHelper
 
     helper = AudioToolsHelper()
 
@@ -183,25 +183,30 @@ def _cmd_record(args: argparse.Namespace) -> int:
 
 def _cmd_status(args: argparse.Namespace) -> int:
     """Show current audio state of a connected target."""
-    from bleep.ble_ops.audio_tools import AudioToolsHelper
+    from bleep.ble_ops.audio.audio_tools import AudioToolsHelper
     from bleep.modes.media import control_media_device
 
     helper = AudioToolsHelper()
 
     cards = helper.get_bluez_cards()
-    mac_norm = args.device.replace(":", "").lower()
+    mac_norm = args.device.replace(":", "").upper()
 
     card_found = False
     for card in cards:
         card_mac = helper.extract_mac_from_alsa_device(card.get("name", ""))
-        if not card_mac or card_mac.replace(":", "").lower() != mac_norm:
+        if not card_mac or card_mac.replace(":", "").upper() != mac_norm:
             continue
         card_found = True
         card_index = card.get("index", "")
         print_and_log(f"[+] Card: {card.get('name')} (index {card_index})", LOG__USER)
 
         profiles = helper.get_profiles_for_card(card_index)
-        print_and_log(f"    Profiles: {', '.join(profiles) if profiles else 'none'}", LOG__USER)
+        active = helper.get_active_profile_for_card(card_index)
+        print_and_log(
+            f"    Available profiles: {', '.join(profiles) if profiles else 'none'}",
+            LOG__USER,
+        )
+        print_and_log(f"    Active profile:     {active or 'unknown'}", LOG__USER)
 
         ss = helper.get_sources_and_sinks_for_card_profile(card_index)
         for s in ss.get("sources", []):
@@ -226,10 +231,10 @@ def _find_sink_for_mac(
     mac: str,
 ) -> Optional[str]:
     """Return the first sink name that belongs to *mac*, or None."""
-    mac_norm = mac.replace(":", "").lower()
+    mac_norm = mac.replace(":", "").upper()
     for card in cards:
         card_mac = helper.extract_mac_from_alsa_device(card.get("name", ""))
-        if not card_mac or card_mac.replace(":", "").lower() != mac_norm:
+        if not card_mac or card_mac.replace(":", "").upper() != mac_norm:
             continue
         ss = helper.get_sources_and_sinks_for_card_profile(card.get("index", ""))
         for s in ss.get("sinks", []):
@@ -244,16 +249,76 @@ def _find_source_for_mac(
     mac: str,
 ) -> Optional[str]:
     """Return the first source name that belongs to *mac*, or None."""
-    mac_norm = mac.replace(":", "").lower()
+    mac_norm = mac.replace(":", "").upper()
     for card in cards:
         card_mac = helper.extract_mac_from_alsa_device(card.get("name", ""))
-        if not card_mac or card_mac.replace(":", "").lower() != mac_norm:
+        if not card_mac or card_mac.replace(":", "").upper() != mac_norm:
             continue
         ss = helper.get_sources_and_sinks_for_card_profile(card.get("index", ""))
         for s in ss.get("sources", []):
             if s.get("name"):
                 return s["name"]
     return None
+
+
+def _cmd_auto(args: argparse.Namespace) -> int:
+    """Run the full 5-stage autonomous audio pipeline."""
+    from bleep.ble_ops.audio.amusica_orchestrator import run_amusica_full_auto
+
+    result = run_amusica_full_auto(
+        scan_timeout=args.timeout,
+        adapter_name=getattr(args, "adapter", None),
+        brute=args.brute,
+        brute_depth=args.brute_depth,
+        record_duration=args.duration,
+        record_dir=args.record_dir,
+        test_file=getattr(args, "test_file", None),
+    )
+
+    # Print summary table
+    print_and_log("\n" + "=" * 60, LOG__USER)
+    print_and_log("[=] Amusica Full-Auto Summary", LOG__USER)
+    print_and_log("=" * 60, LOG__USER)
+    print_and_log(f"  Targets scanned:     {result.targets_scanned}", LOG__USER)
+    print_and_log(f"  JustWorks OK:        {result.justworks}", LOG__USER)
+    print_and_log(f"  Auth required:       {result.auth_required}", LOG__USER)
+    print_and_log(f"  Profile unavailable: {result.profile_unavailable}", LOG__USER)
+    if result.brute_ok:
+        print_and_log(f"  PIN brute-forced:    {result.brute_ok}", LOG__USER)
+    print_and_log(f"  Failed:              {result.failed}", LOG__USER)
+    print_and_log(f"  Recordings:          {result.recordings_total}", LOG__USER)
+    print_and_log(f"  With audio content:  {result.recordings_with_audio}", LOG__USER)
+    print_and_log(f"  Elapsed:             {result.elapsed_seconds:.1f}s", LOG__USER)
+
+    if result.per_target:
+        print_and_log("\n  Per-Target Breakdown:", LOG__USER)
+        for tr in result.per_target:
+            label = f"{tr.name} ({tr.address})" if tr.name else tr.address
+            pin_info = f"  PIN={tr.pin_found}" if tr.pin_found else ""
+            recs = len(tr.recordings)
+            audio_recs = sum(1 for r in tr.recordings if r.has_audio)
+            print_and_log(
+                f"    {label}: [{tr.category}]{pin_info}  "
+                f"{recs} recording(s), {audio_recs} with audio",
+                LOG__USER,
+            )
+
+    print_and_log("=" * 60, LOG__USER)
+
+    if args.out:
+        _write_json(_auto_result_to_dict(result), args.out)
+
+    return 0
+
+
+def _auto_result_to_dict(result) -> dict:
+    """Convert AutoResult to a JSON-serializable dict."""
+    from dataclasses import asdict
+    d = asdict(result)
+    for tr in d.get("per_target", []):
+        if tr.get("recon") and not isinstance(tr["recon"], dict):
+            tr["recon"] = None
+    return d
 
 
 def _write_json(data: object, path: str) -> None:
@@ -316,6 +381,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_st = sub.add_parser("status", help="Show audio state of a connected target")
     sp_st.add_argument("device", help="Target device MAC address")
 
+    # auto (full pipeline)
+    sp_auto = sub.add_parser("auto", help="Run full 5-stage autonomous audio pipeline")
+    sp_auto.add_argument("--timeout", type=int, default=15, help="Scan duration in seconds (default: 15)")
+    sp_auto.add_argument("--adapter", help="HCI adapter name (e.g. hci1)")
+    sp_auto.add_argument("--brute", action="store_true", help="Attempt PIN brute-force on auth-required targets")
+    sp_auto.add_argument("--brute-depth", type=int, default=50, help="Max PIN attempts per protected target (default: 50)")
+    sp_auto.add_argument("--duration", type=int, default=8, help="Recording duration per interface (default: 8)")
+    sp_auto.add_argument("--record-dir", default="/tmp", help="Directory for recordings (default: /tmp)")
+    sp_auto.add_argument("--test-file", help="Audio file for playback testing during recon")
+    sp_auto.add_argument("--out", help="Write full results to JSON file")
+
     return parser
 
 
@@ -346,6 +422,7 @@ def main(argv: Optional[list] = None) -> int:
         "inject": _cmd_inject,
         "record": _cmd_record,
         "status": _cmd_status,
+        "auto": _cmd_auto,
     }
 
     handler = dispatch.get(args.command)

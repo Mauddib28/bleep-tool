@@ -51,8 +51,19 @@ The database schema is versioned to allow for smooth migrations:
 | v5 | Added performance indexes for frequently queried fields |
 | v6 | Added `device_type_evidence` table for classification audit trail and signature caching |
 | v7 | Added `sdp_records` table for full SDP record snapshots with all attributes |
+| v8 | **MAC address normalisation** — All MAC addresses in every table normalised to uppercase via one-time migration.  `_normalize_mac()` helper enforces uppercase on all write paths. |
+| v9 | **UUID normalisation** — All UUIDs in `services`, `characteristics`, `classic_services`, `sdp_records`, and `char_history` normalised to uppercase via one-time migration.  `_normalize_uuid()` helper enforces uppercase on all write paths. |
+| v10 | **Data fidelity enrichment** — Added `descriptors` table.  New device columns: `tx_power`, `modalias`, `icon`, `service_data`, `advertising_data`.  New service columns: `is_primary`, `includes`.  New characteristic column: `mtu`.  New APIs: `get_characteristic_id()`, `upsert_descriptors()`.  All CLI commands now persist full v10 metadata.  `_persist_mapping` handles descriptors, `is_primary`/`includes`, and `mtu` end-to-end. |
 
-Migrations occur transparently when the schema version changes. For detailed migration history, see the schema version table in [observation_db_schema.md](observation_db_schema.md).
+The database schema is currently at **version 10**.  Migrations occur transparently when the schema version changes. For detailed migration history, see the schema version table in [observation_db_schema.md](observation_db_schema.md).
+
+### Data Integrity (FK Defense Chain)
+
+The database persistence layer includes a self-healing foreign-key defense chain:
+
+- `_ensure_device_exists(cur, mac)` — Performs `INSERT OR IGNORE` to guarantee the parent `devices` row exists before any child-table insert.  Integrated into 8 child-table methods.
+- `_ensure_service_exists(cur, mac, service_uuid)` — Performs `INSERT OR IGNORE` to guarantee the parent `services` row exists before any `characteristics` insert.
+- `upsert_characteristics()` accepts optional `mac` and `service_uuid` kwargs; when supplied, both helpers are called internally, making characteristic inserts self-healing against missing parent rows.
 
 ## AOI Integration
 
@@ -250,20 +261,19 @@ upsert_services(
     ]
 )
 
-# Store characteristics
+# Store characteristics (with FK-defense kwargs)
 upsert_characteristics(
-    mac="00:11:22:33:44:55",
-    services=[{
-        'uuid': '1800',
-        'characteristics': [
-            {
-                'uuid': '2a00',
-                'handle': 3,
-                'properties': 'read',
-                'value': b'Device Name'
-            }
-        ]
-    }]
+    service_id=1,
+    char_list=[
+        {
+            'uuid': '2a00',
+            'handle': 3,
+            'properties': ['read'],
+            'value': b'Device Name'
+        }
+    ],
+    mac="00:11:22:33:44:55",        # FK defense: ensures device row exists
+    service_uuid="1800",             # FK defense: ensures service row exists
 )
 
 # Store Classic service mapping
@@ -351,7 +361,7 @@ except Exception as e:
 
 ## Device Type Classification
 
-BLEEP uses an **evidence-based, stateless classification system** (Schema v6). Classification decisions are based **only** on current device properties and active queries, never on historical database data. This prevents false positives from MAC address collisions. The database schema is currently at **version 7** (see [Schema Versioning](#schema-versioning) section above).
+BLEEP uses an **evidence-based, stateless classification system** (Schema v6). Classification decisions are based **only** on current device properties and active queries, never on historical database data. This prevents false positives from MAC address collisions. The database schema is currently at **version 9** (see [Schema Versioning](#schema-versioning) section above).
 
 | Device Type | Description | Detection Criteria |
 |-------------|-------------|-------------------|

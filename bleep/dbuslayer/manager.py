@@ -242,7 +242,7 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
         match = self._device_path_regex.match(device_path)
         if not match:
             return None
-        return match.group(1).replace("_", ":").lower() 
+        return match.group(1).replace("_", ":").upper()
 
     # ------------------------------------------------------------------
     # RSSI Cache Management
@@ -255,7 +255,7 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
         """Store RSSI value from PropertiesChanged signal in cache.
         
         Args:
-            mac_address: Device MAC address (normalized to lowercase with colons)
+            mac_address: Device MAC address (uppercase with colons)
             rssi: RSSI value in dBm
         """
         with self._rssi_cache_lock:
@@ -265,7 +265,7 @@ class system_dbus__bluez_device_manager:  # noqa: N802 – keep legacy naming
         """Retrieve cached RSSI value for a device.
         
         Args:
-            mac_address: Device MAC address (normalized to lowercase with colons)
+            mac_address: Device MAC address (uppercase with colons)
             
         Returns:
             Cached RSSI value in dBm, or None if not available

@@ -2,29 +2,21 @@
 
 Debug mode drops you into an **interactive shell** with helpers for inspecting BlueZ D-Bus objects, reading characteristics, and monitoring property changes in real-time.
 
-## Launch Options
+## Launch
 
-There are two ways to access the debug mode:
-
-### Direct Module Access (Recommended)
-
-This method directly accesses the debug mode implementation:
-
-```bash
-python -m bleep.modes.debug --help           # show flags
-python -m bleep.modes.debug CC:50:E3:B6:BC:A6  # auto-connect to target
-```
-
-### CLI Module Access (Alternative)
-
-This method goes through the main CLI interface:
+Debug mode is reachable in two equivalent forms — pick whichever fits the
+context.  The `bleep debug` subcommand is the canonical, discoverable form
+(`bleep --help` lists it alongside every other mode); the `python -m`
+form remains supported unchanged for scripts and CI that already depend
+on it:
 
 ```bash
-python -m bleep.cli debug --help           # show flags
-python -m bleep.cli debug CC:50:E3:B6:BC:A6  # auto-connect to target
-```
+bleep debug --help                          # canonical form
+bleep debug CC:50:E3:B6:BC:A6               # auto-connect to target
 
-> Note: The documentation previously showed `python -m bleep -m debug`, but this syntax is incorrect as the package doesn't have a `__main__.py` file.
+python -m bleep.modes.debug --help          # equivalent (legacy / scripting)
+python -m bleep.modes.debug CC:50:E3:B6:BC:A6
+```
 
 Key flags:
 
@@ -37,24 +29,106 @@ Key flags:
 
 Once inside the prompt (`BLEEP-DEBUG>`):
 
+**Connection & Device Info**
+
+| Command | Purpose |
+|---------|---------|
+| `connect <MAC>` | BLE connect + GATT enumerate (use `cconnect` for Classic) |
+| `disconnect` | Disconnect from the current device |
+| `info` | Show current device properties |
+
+**BLE Scanning** (see [Scan Modes](ble_scan_modes.md))
+
 | Command | Purpose |
 |---------|---------|
 | `scan` | Passive scan then list devices |
-| `connect <MAC>` | Connect to device & build mapping |
+| `scann` | Naggy scan (duplicate adverts) |
+| `scanp <MAC>` | Pokey scan (repeated short bursts targeting one device) |
+| `scanb` | Brute scan (BR/EDR inquiry + LE naggy) |
+
+**BLE Enumeration** (see [GATT Enumeration](gatt_enumeration.md))
+
+| Command | Purpose |
+|---------|---------|
+| `enum <MAC>` | One-shot GATT read of every readable characteristic |
+| `enumn <MAC>` | Naggy enumeration (3× read pass, detects changing values) |
+| `enump <MAC> [--rounds N]` | Pokey enumeration (light write probes after each round) |
+| `enumb <MAC> <CHAR\|all>` | Brute-force write enumeration |
+| `mines` | Display current landmine/permission maps |
+
+**GATT Interaction**
+
+| Command | Purpose |
+|---------|---------|
 | `services` | List primary services |
-| `chars [<svc-uuid>]` | List characteristics (filtered by service) |
+| `chars [<svc-uuid>]` | List characteristics (optionally filtered by service) |
+| `char <uuid>` | Show details for a single characteristic |
 | `read <char>` | Read characteristic by handle/UUID |
-| `write <char> <hex|ascii>` | Write bytes/ASCII to characteristic |
+| `write <char> <hex\|ascii>` | Write bytes/ASCII to characteristic |
 | `notify <char>` | Subscribe to notifications |
-| `monitor` | Toggle property monitor |
-| `ls / cd / pwd` | Navigate D-Bus object tree |
-| `introspect [path]` | Pretty-print XML introspection data |
-| `call <interface> <method> [args...]` | Call D-Bus method directly |
-| `signals` | View captured signals |
-| `pair <MAC> [options]` | Pair with device and connect for exploration |
-| `connect <MAC>` | Connect to a device (auto-detects BLE vs Classic transport) |
+| `detailed` | Toggle verbose output (hex dumps, decoded UUIDs) |
+| `multiread <char> [rounds]` | Multi-read a single characteristic |
+| `multiread_all [rounds]` | Multi-read all readable characteristics |
+| `brutewrite <char> [options]` | Brute-force write to a characteristic |
+
+**Classic Bluetooth** (see [Classic Mode](bl_classic_mode.md))
+
+| Command | Purpose |
+|---------|---------|
+| `cscan` | Classic (BR/EDR) inquiry scan |
+| `cconnect <MAC>` | Classic connect (SDP + RFCOMM fallback) |
+| `cservices` | List RFCOMM services |
+| `csdp [MAC]` | SDP browse / query |
+| `ckeep` | Open RFCOMM keepalive socket |
+| `pbap [MAC]` | Download phone-book via PBAP |
+| `copp <send\|pull\|exchange>` | Object Push Profile operations |
+| `cmap <subcommand>` | Message Access Profile operations |
+| `cftp <subcommand>` | OBEX File Transfer operations |
+| `csync <get\|put>` | IrMC Sync operations |
+| `cbip <props\|get\|thumb>` | Basic Imaging Profile operations |
+| `cpan <subcommand>` | Personal Area Networking operations |
+| `cprofiles` | List Device1.UUIDs (advertised profiles) with resolved names |
+| `cprofile connect\|disconnect <UUID>` | Connect/disconnect a specific profile by UUID |
+| `chid` | Show HID classification for connected device |
+| `cspp <subcommand>` | Serial Port Profile operations (`--auth`/`--no-auth`) |
+| `copen / csend / crecv / craw` | Raw RFCOMM channel operations |
+
+**Pairing**
+
+| Command | Purpose |
+|---------|---------|
 | `agent` | Register / manage the BlueZ pairing agent |
+| `pair <MAC> [options]` | Pair with device and connect for exploration |
+
+**D-Bus Navigation & Introspection**
+
+| Command | Purpose |
+|---------|---------|
+| `ls [path]` | List D-Bus objects at path |
+| `cd [path]` | Change current D-Bus path |
+| `pwd` | Show current D-Bus path |
+| `interfaces [path]` | List interfaces on an object |
+| `props [interface]` | Show properties for an interface |
+| `methods [interface]` | List methods on an interface |
+| `signals` | View captured D-Bus signals |
+| `introspect [path]` | Pretty-print XML introspection data |
+| `call <iface> <method> [args]` | Call D-Bus method directly |
+| `monitor` | Toggle property change monitoring |
+
+**Database & AoI**
+
+| Command | Purpose |
+|---------|---------|
+| `aoi [MAC]` | Run AoI analysis on current or specified device |
+| `dbsave` | Save current session data to observation database |
+| `dbexport [MAC]` | Export device data from database |
+
+**General**
+
+| Command | Purpose |
+|---------|---------|
 | `help` | Show full built-in command list |
+| `quit` / `Ctrl-D` | Exit debug shell |
 
 Exit with `Ctrl-D` or `quit`.
 
@@ -78,6 +152,9 @@ pair D8:3A:DD:0B:69:B9 --passkey 123456          # LE passkey (uint32)
 pair D8:3A:DD:0B:69:B9 --pin 12345 --timeout 90  # extend timeout
 pair D8:3A:DD:0B:69:B9 --cap DisplayYesNo        # override capability
 pair D8:3A:DD:0B:69:B9 --interactive              # prompt for PIN/passkey
+pair D8:3A:DD:0B:69:B9 --check                    # check pairing state only
+pair D8:3A:DD:0B:69:B9 --reset                    # remove existing bond, then re-pair
+pair D8:3A:DD:0B:69:B9 --reset --pin 12345        # force re-pair with PIN
 ```
 
 After pairing the shell shows connection status and returns to the prompt.  Use `info` to inspect the device, `cservices` to list RFCOMM services, or `interfaces` / `props` for D-Bus exploration.
@@ -114,6 +191,8 @@ Iterates through candidate PINs or passkeys, performing a full pair/remove/re-pa
 | `--pin` | `0000` | PIN code for hardcoded mode (BR/EDR string, 1-16 chars) |
 | `--passkey` | — | Passkey for hardcoded mode (LE uint32, 0-999999) |
 | `--interactive` | — | Prompt for PIN/passkey at pair time |
+| `--check` | — | Check pairing state only — do not pair |
+| `--reset` | — | Force-remove existing bond before pairing |
 | `--test` | — | PoC test mode: pair + auto-disconnect monitor |
 | `--brute` | — | Enable brute-force mode |
 | `--passkey-brute` | — | Brute-force passkeys instead of PINs |
@@ -129,7 +208,7 @@ Iterates through candidate PINs or passkeys, performing a full pair/remove/re-pa
 #### How it works
 
 1. **Device discovery**: Queries BlueZ's `GetManagedObjects()` for a `Device1` matching the target MAC.  Runs a 15-second auto-discovery scan if not found.
-2. **Stale bond removal**: If already paired, removes the bond via `RemoveDevice()` and re-discovers before proceeding.
+2. **Pre-pair check**: Queries the device's `Paired`, `Trusted`, and `Connected` D-Bus properties.  If already paired and `--reset` was not given, reports the current state and skips directly to connection.  Use `--check` to inspect pairing state without pairing.  Use `--reset` to force-remove the existing bond via `RemoveDevice()` and re-discover before proceeding.
 3. **Agent registration**: Registers a `PairingAgent` with the selected capability and I/O handler.
 4. **Pairing dispatch**: Stops the background GLib event loop and runs a temporary `GLib.MainLoop` on the main thread for `dbus.service.Object` handler dispatch.  Restarts the background loop after pairing.
 5. **Error classification**: After each failed attempt, reads `agent.last_pair_error` to classify: `AuthenticationFailed` = wrong PIN (advance), `AuthenticationRejected` = lockout (pause + retry same candidate), blocking errors = abort after 5 consecutive.
@@ -139,16 +218,18 @@ Iterates through candidate PINs or passkeys, performing a full pair/remove/re-pa
 
 ### Connecting with the `connect` Command
 
-The `connect` command auto-detects the device's transport type and routes to the appropriate connection method:
-
-- **BLE**: `connect_and_enumerate__bluetooth__low_energy` — GATT service enumeration
-- **BR/EDR Classic**: `connect_and_enumerate__bluetooth__classic` — profile connection + SDP enumeration, with fallback to SDP + RFCOMM keepalive if profile-level `Connect()` fails
+The `connect` command is **BLE-only** by design for directed LE testing.
+It always calls `connect_and_enumerate__bluetooth__low_energy` to perform
+GATT service enumeration, regardless of the target device's transport type.
 
 ```bash
-connect D8:3A:DD:0B:69:B9    # auto-detect transport and connect
+connect D8:3A:DD:0B:69:B9    # BLE GATT connect + enumerate
 ```
 
-For explicit classic-only connection, `cconnect` remains available.  For BLE-only, use `connect` (BLE is the default when transport is ambiguous with LE indicators).
+For Bluetooth Classic targets use `cconnect`, which performs SDP discovery
+and opens an RFCOMM keepalive socket — bypassing the `Device1.Connect()`
+profile requirement that causes `br-connection-profile-unavailable` for
+most Classic devices.
 
 #### PinCode vs Passkey
 
@@ -579,6 +660,8 @@ Debug mode is organised into focused submodules under `bleep/modes/`:
 | `debug_connect.py` | Transport detection, `connect`/`disconnect`/`info` |
 | `debug_gatt.py` | `services`/`chars`/`char`/`read`/`write`/`notify`/`detailed`, notification callback, property display |
 | `debug_classic.py` | `cscan`/`cconnect`/`cservices`/`ckeep`/`csdp`/`pbap` |
+| `debug_classic_profiles.py` | `cprofiles`/`cprofile` (connect/disconnect profiles), `cspp --auth` |
+| `debug_hid.py` | `chid` (HID classification) |
 | `debug_pairing.py` | `agent`/`pair` (single, brute-force), post-pair connect flows |
 | `debug_scan.py` | `scan`/`scann`/`scanp`/`scanb`/`enum`/`enumn`/`enump`/`enumb` |
 | `debug_aoi.py` | `aoi`/`dbsave`/`dbexport` |

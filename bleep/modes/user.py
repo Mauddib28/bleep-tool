@@ -33,12 +33,12 @@ from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__USER
 from bleep.core.error_handling import BlueZErrorHandler
 from bleep.dbuslayer.adapter import system_dbus__bluez_adapter
 from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy
-from bleep.ble_ops.scan import passive_scan
-from bleep.ble_ops.connect import connect_and_enumerate__bluetooth__low_energy
+from bleep.ble_ops.le.scan import passive_scan
+from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy
 from bleep.core.errors import map_dbus_error, BLEEPError
 from bleep.bt_ref.utils import get_name_from_uuid
-from bleep.ble_ops.uuid_utils import identify_uuid
-from bleep.ble_ops.enum_helpers import multi_read_characteristic, multi_read_all, build_payload_iterator, brute_write_range
+from bleep.ble_ops.common.uuid_utils import identify_uuid
+from bleep.ble_ops.le.enum_helpers import multi_read_characteristic, multi_read_all, build_payload_iterator, brute_write_range
 from bleep.signals.capture_config import SignalCaptureConfig, SignalFilter, SignalRoute, SignalAction, ActionType, SignalType
 from bleep.analysis.aoi_analyser import AOIAnalyser
 
@@ -266,7 +266,7 @@ def connect_to_device(address: str) -> Tuple[Optional[system_dbus__bluez_device_
                 
                 try:
                     # Try alternate connection method with different parameters
-                    from bleep.ble_ops.connect import connect_device_with_retry
+                    from bleep.ble_ops.le.connect import connect_device_with_retry
                     device = connect_device_with_retry(address, 
                                                       retries=3, 
                                                       backoff=1.5, 
@@ -541,12 +541,12 @@ def read_characteristic(char_uuid: str) -> None:
         
         try:
             ascii_value = value.decode('ascii', errors='replace')
-        except:
+        except (AttributeError, UnicodeDecodeError):
             ascii_value = "".join([chr(b) if 32 <= b <= 126 else '.' for b in value])
             
         try:
             int_value = int.from_bytes(value, byteorder='little')
-        except:
+        except (TypeError, ValueError):
             int_value = None
             
         # Display results

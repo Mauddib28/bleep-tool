@@ -79,18 +79,33 @@ def cmd_cscan(args: List[str], state: DebugState) -> None:
 
 
 def cmd_cconnect(args: List[str], state: DebugState) -> None:
-    """Connect to a Classic device and enumerate RFCOMM services."""
+    """Connect to a Classic device and enumerate RFCOMM services.
+
+    Tries ``Device1.Connect()`` first; if that fails (common when no
+    BlueZ profile handler is registered), falls back to the SDP + RFCOMM
+    keepalive path that bypasses the profile requirement.
+    """
     if not args:
         print("Usage: cconnect <MAC>")
         return
 
-    mac = args[0]
+    from bleep.core.preflight import require_adapter
+    if not require_adapter():
+        return
+
+    mac = args[0].upper()
     try:
         from bleep.ble_ops import connect_and_enumerate__bluetooth__classic as _c_enum
-        print_and_log(f"[*] Classic connect {mac}…", LOG__GENERAL)
-        dev, svc_map = _c_enum(mac)
+        dev, svc_map = _c_enum(mac, debug_state=state)
     except Exception as exc:
-        print_and_log(f"[-] Classic connect failed: {exc}", LOG__DEBUG)
+        print_and_log(f"[*] Classic profile connect failed: {exc}", LOG__DEBUG)
+        from bleep.pairing import find_device_path
+        from bleep.modes.debug_pairing import post_pair_connect_classic
+        device_path = find_device_path(mac)
+        if device_path is None:
+            print(f"[-] Device {mac} not found")
+            return
+        post_pair_connect_classic(mac, device_path, state)
         return
 
     if state.current_device and state.current_device.is_connected():
@@ -180,7 +195,7 @@ def cmd_ckeep(args: List[str], state: DebugState) -> None:
     """Open/close keep-alive RFCOMM socket to prevent Classic ACL drop."""
     mac_token = None
     if args and not args[0].startswith("-") and ":" in args[0]:
-        mac_token = args[0].strip()
+        mac_token = args[0].strip().upper()
         args = args[1:]
 
     parser = argparse.ArgumentParser(prog="ckeep", add_help=False)
@@ -234,7 +249,7 @@ def cmd_ckeep(args: List[str], state: DebugState) -> None:
 
     if (opts.first or opts.svc) and not state.current_mapping:
         try:
-            from bleep.ble_ops.classic_sdp import discover_services_sdp, build_svc_map
+            from bleep.ble_ops.classic.sdp import discover_services_sdp, build_svc_map
             records = discover_services_sdp(state.current_device.mac_address)
             state.current_mapping = build_svc_map(records)
         except Exception as exc:
@@ -271,7 +286,7 @@ def cmd_ckeep(args: List[str], state: DebugState) -> None:
         print("[-] Could not resolve RFCOMM channel")
         return
 
-    from bleep.ble_ops.classic_connect import classic_rfccomm_open
+    from bleep.ble_ops.classic.connect import classic_rfccomm_open
     try:
         state.keepalive_sock = classic_rfccomm_open(
             state.current_device.mac_address, channel, timeout=5.0,
@@ -304,7 +319,7 @@ def cmd_csdp(args: List[str], state: DebugState) -> None:
     mac = opts.mac.strip().upper()
 
     try:
-        from bleep.ble_ops.classic_sdp import discover_services_sdp, discover_services_sdp_connectionless, build_svc_map
+        from bleep.ble_ops.classic.sdp import discover_services_sdp, discover_services_sdp_connectionless, build_svc_map
 
         if opts.connectionless:
             print_and_log(f"[*] Performing connectionless SDP discovery for {mac}...", LOG__GENERAL)
@@ -428,7 +443,7 @@ def cmd_pbap(args: List[str], state: DebugState) -> None:
 
     if not pbap_channel:
         try:
-            from bleep.ble_ops.classic_sdp import discover_services_sdp
+            from bleep.ble_ops.classic.sdp import discover_services_sdp
             print_and_log("[*] PBAP not in service map, checking SDP records...", LOG__DEBUG)
             records = discover_services_sdp(mac, timeout=10)
             for rec in records:
@@ -448,7 +463,7 @@ def cmd_pbap(args: List[str], state: DebugState) -> None:
 
     repos_arg = opts.repos.upper()
     try:
-        from bleep.ble_ops.classic_pbap import pbap_dump_async, DEFAULT_PBAP_REPOS
+        from bleep.ble_ops.classic.pbap import pbap_dump_async, DEFAULT_PBAP_REPOS
         repos_tuple = DEFAULT_PBAP_REPOS if repos_arg == "ALL" else tuple(
             r.strip().upper() for r in repos_arg.split(",") if r.strip()
         )
@@ -478,7 +493,7 @@ def cmd_pbap(args: List[str], state: DebugState) -> None:
                 if custom_out:
                     output_path = opts.out
                 else:
-                    base = mac.replace(":", "").lower()
+                    base = mac.replace(":", "").upper()
                     output_path = f"/tmp/{base}_{repo}.vcf"
 
                 try:
@@ -509,7 +524,13 @@ def cmd_pbap(args: List[str], state: DebugState) -> None:
         print_and_log(f"[-] PBAP command failed: {exc}", LOG__DEBUG)
         print_detailed_dbus_error(exc)
         error_str = str(exc).lower()
-        if "too short header" in error_str:
+        if "transport" in error_str and "disconnect" in error_str:
+            print("[-] OBEX transport disconnected.")
+            print("    The target device may not have 'Contact Sharing' enabled.")
+            print("    1. Check Bluetooth settings on the target → enable Contact Sharing / PBAP")
+            print("    2. Accept the PBAP access prompt on the target device if one appeared")
+            print("    3. Restart the target device and retry")
+        elif "too short header" in error_str:
             print("[-] OBEX 'Too short header' error detected.")
             print("    This indicates stale OBEX state on the device.")
             print("    Restart the target device to clear OBEX buffers.")

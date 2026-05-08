@@ -87,28 +87,27 @@ class Descriptor:  # noqa: N801
                     f"[DEBUG] Descriptor ReadValue failed ({self.path}): {e.get_dbus_name()}: {e.get_dbus_message() or ''}",
                     LOG__DEBUG,
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                print_and_log(f"[DEBUG] Descriptor read unexpected error: {_e}", LOG__DEBUG)
             return b""
 
         # 1st read – with offset key (always present in monolith calls)
         opts_first: Dict[str, Any] = {"offset": dbus.UInt16(offset)}
         result = _safe_read(opts_first)
 
-        # 2nd read – empty opts to fetch actual payload when first returned zero/empty
-        if not result or result == b"\x00":
+        # 2nd read – empty opts to fetch actual payload when first returned empty
+        if not result:
             result = _safe_read({})
 
         # Property interface fallback
-        if not result or result == b"\x00":
+        if not result:
             try:
                 prop_val = self._props_iface.Get(GATT_DESCRIPTOR_INTERFACE, "Value")
                 result = bytes(prop_val)
-            except Exception:  # pragma: no cover
-                pass
+            except Exception as _e:  # pragma: no cover
+                print_and_log(f"Descriptor property fallback failed: {_e}", LOG__DEBUG)
 
-        # Final guarantee – never return empty bytes (unit-test expects data)
-        return result or b"\x00"
+        return result if result is not None else b""
 
     def write_value(self, value: bytes | bytearray | list[int]):
         array = dbus.ByteArray(value)
