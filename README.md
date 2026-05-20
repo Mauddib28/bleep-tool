@@ -56,3 +56,5 @@ Slides presenting Safari Hunt of Bluetooth Wildlife + Cartography at BSidesLV 20
     - YouTube Recording of the Presentation:                                            https://youtu.be/AZ0U3bhRYkA
 Slides presenting technical function and review of BLEEP + mapping at DefCon 32:        https://github.com/Mauddib28/bleep--2024--DefCon-DemoLabs-Slides
 Slides presenting Bluetooth Wildlife dissection at CackalackyCon 2025:                  https://github.com/Mauddib28/bleep--2025--CackalackyCon-Slides
+Slides presenting BLEEP D-Bus and Unix ALSA at CackalackyCon 2026:                      https://github.com/Mauddib28/bleep--2026--CackalackyCon-Slides
+    - YouTube Recording of the Presentation:                                            https://www.youtube.com/watch?v=3BKD1MsC9Fc
