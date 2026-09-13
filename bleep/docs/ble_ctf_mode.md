@@ -45,6 +45,11 @@ scan                Scan for BLE devices
 connect             Connect to the BLE CTF device
 read <flag>         Read a specific flag (e.g., Flag-02 or char002d)
 write <value>       Write a value to Flag-Write characteristic
+write-hex <hex>     Write a hex value as raw bytes to Flag-Write
+write-byte <byte>   Write a single byte value (0-255) to Flag-Write
+write-char <char> <value>       Write a value to any characteristic
+write-char-hex <char> <hex>     Write a hex value as raw bytes to any characteristic
+write-char-byte <char> <byte>   Write a single byte value to any characteristic
 score               Read the current score
 solve <flag>        Solve a specific challenge (e.g., Flag-02)
 solve-all           Attempt to solve all available challenges
@@ -168,7 +173,7 @@ To add support for a new challenge type:
 For brute-force challenges, you can create custom payloads:
 
 ```python
-from bleep.ble_ops.enum_helpers import build_payload_iterator, brute_write_range
+from bleep.ble_ops.le.enum_helpers import build_payload_iterator, brute_write_range
 
 # Generate payloads
 payloads = build_payload_iterator(

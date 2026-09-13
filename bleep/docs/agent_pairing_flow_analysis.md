@@ -4,7 +4,12 @@
 
 This document provides a comprehensive analysis of how BLEEP handles the interaction between a generated BLEEP agent, BlueZ, D-Bus, and a remote Bluetooth device during pairing operations. It compares the **expected operation** (based on BlueZ specifications) with the **actual implementation** in the BLEEP codebase.
 
-**Status (v2.6.2, 2026-02-28)**: Pairing is **CONFIRMED WORKING** end-to-end.  BLEEP successfully pairs with target devices using PIN code exchange.  All `org.bluez.Agent1` methods are correctly dispatched and handled.
+**Status (v2.6.2, 2026-02-28; current as of v3.0.0, 2026-09-13)**: Pairing is **CONFIRMED WORKING** end-to-end.  BLEEP successfully pairs with target devices using PIN code exchange.  All `org.bluez.Agent1` methods are correctly dispatched and handled.  The v2.6.2 labels below mark the MainLoop-dispatch fix and remain accurate under v3.0.0.
+
+> **Historical investigations:** the point-in-time analyses that led to this
+> resolution (the MainLoop-dispatch root cause, introspection/`AccessDenied`
+> findings, and related agent diagnostics) are preserved under
+> [`archive/`](archive/README.md).
 
 ## Expected Operation (BlueZ Standard)
 
@@ -44,9 +49,11 @@ According to the BlueZ D-Bus Agent API specification, the expected flow for PIN 
 
 **Implementation:**
 ```python
-class PairingAgent(BlueZAgent):
-    # Registration via ensure_default_pairing_agent():
-    def register(self, capabilities="KeyboardDisplay", default=True):
+class PairingAgent(EnhancedAgent):  # EnhancedAgent(BlueZAgent)
+    # register()'s own defaults are capabilities="NoInputNoOutput", default=False.
+    # The ensure_default_pairing_agent() path explicitly passes
+    # capabilities="KeyboardDisplay", default=True (see agent.py:124,164).
+    def register(self, capabilities="NoInputNoOutput", default=False):
         self._agent_manager.RegisterAgent(self.agent_path, capabilities)
         if default:
             self._agent_manager.RequestDefaultAgent(self.agent_path)
@@ -82,7 +89,7 @@ def RequestPinCode(self, device):
 
 ### 3. Device Discovery (debug mode `pair` command)
 
-**Location:** `bleep/modes/debug.py` → `_cmd_pair()`
+**Location:** `bleep/modes/debug_pairing.py` → `cmd_pair()` (@ ~325; `bleep/modes/debug.py` only imports it)
 
 **Implementation:**
 ```python
@@ -152,19 +159,20 @@ tmp_loop.run()  # dispatches RequestPinCode → handler → PIN returned → loo
 ```
  1. User: `pair D8:3A:DD:0B:69:B9 --pin 12345`
     ↓
- 2. _cmd_pair(): Stop background GLib loop (_stop_glib_mainloop)
+ 2. cmd_pair(): Stop background GLib loop (stop_glib_mainloop, in debug_state.py)
     ↓
- 3. _cmd_pair(): Create PairingAgent with AutoAcceptIOHandler(pin="12345")
+ 3. cmd_pair(): Create PairingAgent with AutoAcceptIOHandler(pin="12345")
     ↓
  4. Agent: RegisterAgent("/test/agent", "KeyboardDisplay")
     ↓
  5. Agent: RequestDefaultAgent("/test/agent")
     ↓
- 6. _cmd_pair(): Query GetManagedObjects() for Device1 matching MAC
+ 6. cmd_pair(): Query GetManagedObjects() for Device1 matching MAC
     ↓
  7. (If not found): Run 15s discovery scan with Transport: "auto"
     ↓
- 8. (If already paired): RemoveDevice() + re-scan + re-resolve
+ 8. (If already paired AND --reset given): remove_stale_bond() → RemoveDevice() + re-scan + re-resolve.
+    Without --reset, an already-paired device short-circuits (no re-pair; use --reset to force).
     ↓
  9. pair_device(): device.Pair(reply_handler, error_handler, timeout=60000)
     ↓
@@ -190,9 +198,9 @@ tmp_loop.run()  # dispatches RequestPinCode → handler → PIN returned → loo
     ↓
 20. pair_device(): handle_pairing_success() → bond stored
     ↓
-21. _cmd_pair(): Restart background GLib loop (_ensure_glib_mainloop)
+21. cmd_pair(): Restart background GLib loop (ensure_glib_mainloop, in debug_state.py)
     ↓
-22. _cmd_pair(): Post-pair monitoring (detect auto-disconnect)
+22. cmd_pair(): Post-pair monitoring (detect auto-disconnect)
 ```
 
 ## Confirmed Working — Evidence
@@ -270,7 +278,7 @@ BLEEP-DEBUG> pair D8:3A:DD:0B:69:B9 --pin 12345
 
 7. **Agent re-registration**: Each `pair` command creates a new `PairingAgent` instance and registers it.  If a previous agent is still registered, BlueZ may return `AlreadyExists` (handled by catching and continuing).
 
-8. **DB FOREIGN KEY errors during scan**: The observations database occasionally produces `FOREIGN KEY constraint failed` errors during device type evidence storage.  This is a pre-existing issue in `bleep/core/observations.py` unrelated to pairing — devices still appear in scan results.
+8. **DB FOREIGN KEY errors during scan**: The observations database occasionally produces `FOREIGN KEY constraint failed` errors during device type evidence storage.  This is a pre-existing issue in `bleep/core/observations/` unrelated to pairing — devices still appear in scan results.
 
 ## Future Work
 
@@ -286,7 +294,7 @@ BLEEP-DEBUG> pair D8:3A:DD:0B:69:B9 --pin 12345
 
 4. **Investigate message filter workaround**: Determine whether the filter interference is a `dbus-python` bug or a fundamental `libdbus` behavior.  If the filter could be made compatible (e.g. by returning a different value, or using a different registration mechanism), unified monitoring during pairing would be possible.
 
-5. **Support `agent` mode pairing**: The `bleep agent` CLI mode should use the same temporary-MainLoop dispatch pattern as debug mode.  Currently, `agent` mode relies on a persistent `mainloop.run()` which works but doesn't integrate with the `PairingAgent` state machine.
+5. **Unify `agent` mode dispatch with debug mode** *(updated 2026-09-13, v3.0.0)*: `bleep agent --mode=pairing --pair=MAC` **does** drive the `PairingAgent` state machine — `bleep/modes/agent.py` (~346-376) registers `pairing_started` / `pairing_succeeded` / `pairing_failed` / `device_trusted` callbacks via `agent.set_pairing_callback()` and then calls `agent.pair_device()`.  Unlike debug mode it dispatches over a persistent `GLib.MainLoop().run()` rather than the temporary-MainLoop stop/restart pattern; converging the two dispatch strategies remains the only open item here.
 
 6. **PIN code persistence**: Store known device PIN codes in the observations database.  When pairing with a previously-paired device, automatically use the stored PIN instead of requiring `--pin` on every invocation.
 
@@ -296,7 +304,7 @@ BLEEP-DEBUG> pair D8:3A:DD:0B:69:B9 --pin 12345
 
 8. **Pairing state persistence**: The `PairingStateMachine` is in-memory only.  If the process crashes mid-pair, state is lost.  For production use, consider persisting state to allow recovery.
 
-9. **Multi-adapter support**: Device discovery currently hardcodes `hci0`.  Support selecting a specific adapter via `--adapter` flag or auto-detecting the correct one.
+9. **Multi-adapter support**: Device discovery currently hardcodes `hci0`.  Support selecting a specific adapter via `--adapter` flag or auto-detecting the correct one. **Partial (2026-09-03 / Phase 4c):** `bleep pair --adapter` and `find_device_path(..., adapter=)` now scope Device1 to `/org/bluez/hciN/`. Agent1 is still process-global.
 
 10. **Async pairing API**: Expose `pair_device()` as an async method for integration with asyncio-based applications.
 

@@ -41,10 +41,19 @@ Once inside the prompt (`BLEEP-DEBUG>`):
 
 | Command | Purpose |
 |---------|---------|
-| `scan` | Passive scan then list devices |
-| `scann` | Naggy scan (duplicate adverts) |
-| `scanp <MAC>` | Pokey scan (repeated short bursts targeting one device) |
-| `scanb` | Brute scan (BR/EDR inquiry + LE naggy) |
+| `scan [--timeout N]` | Passive scan then list devices (default 10 s) |
+| `scann [--timeout N]` | Naggy scan (duplicate adverts) |
+| `scanp <MAC> [--timeout N]` | Pokey scan (repeated short bursts targeting one device) |
+| `scanb [--timeout N]` | Brute scan (BR/EDR inquiry + LE naggy; default 20 s) |
+| `dscan [--timeout N]` | Dual scan — combined LE + BR/EDR discovery in a single session (`debug_scan.py`) |
+| `advertise-monitor caps` | Show `AdvertisementMonitorManager1` capabilities |
+| `advertise-monitor start [options]` | Register kernel-offloaded pattern/RSSI monitor(s) and stream `DeviceFound`/`DeviceLost` until Ctrl-C |
+| `survey start [--duration N] [--round-time N] [-o FILE] \| survey stop` | Start/stop a long-duration background LE+Classic device census (mirrors CLI `survey`). `--collector` / `--enumerator` / `--listen-monitor` are refused here — run those from the CLI. |
+| `survey-status` | Show survey progress and device counts |
+
+All four scan verbs accept an optional `--timeout`/`-t` (parity with `bleep scan --timeout`); omitting it preserves each verb's historical default.
+
+`advertise-monitor` is the kernel-offloaded **Advertisement** Monitor (parity with the CLI `bleep advertise-monitor`), and is distinct from the `monitor` command below, which toggles a live `PropertiesChanged` **device-property** monitor. `start` options mirror the CLI: `[-p OFF:AD:HEX ...]` (omit `-p` for Flags-OR overlay — one monitor, not a BlueZ match-all), `--manufacturer CID[:HEX]`, `--mfr-string TEXT`, `--rssi-high`/`--rssi-low` (+ their `-timeout`), `--sampling-period`, `--duration`, `--adapter`. Survey `--listen-monitor` is CLI-only.
 
 **BLE Enumeration** (see [GATT Enumeration](gatt_enumeration.md))
 
@@ -53,8 +62,9 @@ Once inside the prompt (`BLEEP-DEBUG>`):
 | `enum <MAC>` | One-shot GATT read of every readable characteristic |
 | `enumn <MAC>` | Naggy enumeration (3× read pass, detects changing values) |
 | `enump <MAC> [--rounds N]` | Pokey enumeration (light write probes after each round) |
-| `enumb <MAC> <CHAR\|all>` | Brute-force write enumeration |
+| `enumb <MAC> <CHAR>` | Brute-force write enumeration of a **single** characteristic (ROE off). Fuzzing **all** writable characteristics is CLI-only: `bleep enum-scan <MAC> --variant brute --write-char all` |
 | `mines` | Display current landmine/permission maps |
+| `explore [MAC] [--out F] [--conn-mode passive\|naggy] [--timeout N]` | Scan & dump GATT DB to JSON (mirrors CLI `explore`; MAC defaults to current device) |
 
 **GATT Interaction**
 
@@ -65,7 +75,8 @@ Once inside the prompt (`BLEEP-DEBUG>`):
 | `char <uuid>` | Show details for a single characteristic |
 | `read <char>` | Read characteristic by handle/UUID |
 | `write <char> <hex\|ascii>` | Write bytes/ASCII to characteristic |
-| `notify <char>` | Subscribe to notifications |
+| `notify <char>` | Subscribe to notifications (quick toggle) |
+| `signal <char> [--time N]` | Timed notification listener on the current device, no reconnect (mirrors CLI `signal`) |
 | `detailed` | Toggle verbose output (hex dumps, decoded UUIDs) |
 | `multiread <char> [rounds]` | Multi-read a single characteristic |
 | `multiread_all [rounds]` | Multi-read all readable characteristics |
@@ -75,29 +86,48 @@ Once inside the prompt (`BLEEP-DEBUG>`):
 
 | Command | Purpose |
 |---------|---------|
-| `cscan` | Classic (BR/EDR) inquiry scan |
+| `cscan [--uuid U] [--rssi N] [--pathloss N] [--timeout N] [--adapter hciX] [--debug]` | Classic (BR/EDR) inquiry scan — delegates to the shared `classic_scan.run` (mirrors CLI `classic-scan`); UUID/RSSI/path-loss discovery filters + observation-DB persistence |
 | `cconnect <MAC>` | Classic connect (SDP + RFCOMM fallback) |
 | `cservices` | List RFCOMM services |
-| `csdp [MAC]` | SDP browse / query |
+| `csdp [MAC]` | SDP browse / query (raw socket) |
+| `cenum [MAC] [--version-info] [--analyze] [--sdp-source S] [--connectionless]` | Rich SDP enumeration/analysis (mirrors CLI `classic-enum`; MAC defaults to current device) |
 | `ckeep` | Open RFCOMM keepalive socket |
 | `pbap [MAC]` | Download phone-book via PBAP |
 | `copp <send\|pull\|exchange>` | Object Push Profile operations |
+| `cmapinfo` | Show MAP version, features & BlueZ compatibility info |
 | `cmap <subcommand>` | Message Access Profile operations |
 | `cftp <subcommand>` | OBEX File Transfer operations |
 | `csync <get\|put>` | IrMC Sync operations |
 | `cbip <props\|get\|thumb>` | Basic Imaging Profile operations |
-| `cpan <subcommand>` | Personal Area Networking operations |
+| `netenum [--adapter hciX] [--all-devices] [--json]` | Enumerate PAN network capability across adapters/devices (mirrors CLI `network-enum`) |
+| `cping <MAC> [--count N] [--timeout N]` | L2CAP echo (l2ping) reachability test (mirrors CLI `classic-ping`) |
+| `cpan <subcommand>` | Personal Area Networking: `connect` / `disconnect` / `status` / `server-reg` / `server-unreg` (alias: `server register`/`server unregister`) |
 | `cprofiles` | List Device1.UUIDs (advertised profiles) with resolved names |
 | `cprofile connect\|disconnect <UUID>` | Connect/disconnect a specific profile by UUID |
-| `chid` | Show HID classification for connected device |
+| `chid [MAC]` | HID classification: connected device, or connectionless when given a `MAC` (mirrors CLI `hid-info`) |
 | `cspp <subcommand>` | Serial Port Profile operations (`--auth`/`--no-auth`) |
+| `crfcomm [--probe] [--timeout N]` | List RFCOMM channels via SDP, optionally probe endpoints (mirrors CLI `classic-rfcomm`) |
+| `cbind <ch> [--device N] \| release [N] \| list` | Persistent RFCOMM `/dev/rfcommN` binding |
 | `copen / csend / crecv / craw` | Raw RFCOMM channel operations |
+
+**Media & Audio**
+
+| Command | Purpose |
+|---------|---------|
+| `mediaenum` | List media D-Bus objects for the connected device (mirrors CLI `media-enum`) |
+| `mediaprops` | Show `MediaControl`/`MediaPlayer`/`MediaTransport` properties |
+| `mediactrl <play\|pause\|stop\|next\|prev\|volume\|info\|press> [val]` | AVRCP media-player control (mirrors CLI `media-ctrl`) |
+| `audiorecon [--mac MAC] [--file F] [--no-play] [--no-record]` | Audio reconnaissance: backend, cards, play/record (mirrors CLI `audio-recon`) |
+| `audioplay <file> [--system] [--volume N] [--direct] [--codec C]` | Play an audio file to the connected BT device (mirrors CLI `audio-play`) |
+| `audiorec <output> [--system] [--duration N] [--direct] [--hfp] [--keep-profile]` | Record audio from the connected BT device (mirrors CLI `audio-record`) |
 
 **Pairing**
 
 | Command | Purpose |
 |---------|---------|
-| `agent` | Register / manage the BlueZ pairing agent |
+| `agent status\|register\|unregister` | Register / manage the BlueZ pairing agent (session verbs) |
+| `agent trust\|untrust\|remove-bond <MAC>` | Device management, delegates to the shared CLI `agent` core (mirrors `bleep agent --trust/--untrust/--remove-bond`) |
+| `agent list-trusted\|list-bonded` | List trusted / bonded devices (mirrors CLI `agent --list-trusted/--list-bonded`) |
 | `pair <MAC> [options]` | Pair with device and connect for exploration |
 
 **D-Bus Navigation & Introspection**
@@ -107,21 +137,46 @@ Once inside the prompt (`BLEEP-DEBUG>`):
 | `ls [path]` | List D-Bus objects at path |
 | `cd [path]` | Change current D-Bus path |
 | `pwd` | Show current D-Bus path |
+| `back` | Return to the previous D-Bus path (pops the `cd` history) |
 | `interfaces [path]` | List interfaces on an object |
 | `props [interface]` | Show properties for an interface |
 | `methods [interface]` | List methods on an interface |
-| `signals` | View captured D-Bus signals |
+| `signals <interface>` | Introspect a **named interface** and list *its* D-Bus signals |
 | `introspect [path]` | Pretty-print XML introspection data |
 | `call <iface> <method> [args]` | Call D-Bus method directly |
-| `monitor` | Toggle property change monitoring |
+| `monitor [start\|stop]` | Start/stop device `PropertiesChanged` monitoring (bare `monitor` = **start**; distinct from `advertise-monitor`) |
 
 **Database & AoI**
 
 | Command | Purpose |
 |---------|---------|
-| `aoi [MAC]` | Run AoI analysis on current or specified device |
-| `dbsave` | Save current session data to observation database |
-| `dbexport [MAC]` | Export device data from database |
+| `aoi [--save] [MAC]` | Live AoI analysis on current/specified device (default helper) |
+| `aoi <scan\|analyze\|list\|report\|export\|db> [...]` | Full AoI pipeline — delegates to the shared `aoi.run` (mirrors CLI `bleep aoi <subcommand>`) |
+| `dbsave` | Save current session data to observation database (session helper) |
+| `dbexport [--save]` | Print the observation-DB summary for the **currently connected** device; `--save` also writes `bleep_debug_export_<MAC>.json` (requires a connected device; no MAC argument) |
+| `db <list\|show\|timeline\|export\|report\|uuids\|maintain> [MAC] [opts]` | Full observation-DB query/maintenance surface (mirrors CLI `bleep db`, incl. `db report`, via `parse_as_cli`; terminal output) |
+
+**Utilities**
+
+| Command | Purpose |
+|---------|---------|
+| `uuidtr <uuid...> [--json] [--verbose] [--include-unknown]` | Translate UUID(s) to human-readable names (mirrors CLI `uuid-translate`) |
+| `adaptercfg [show \| get <prop> \| set <prop> <val...>] [--adapter hciX]` | View/modify local adapter configuration (mirrors CLI `adapter-config`) |
+| `audiocfg [--endpoints]` | Host audio-backend + BT audio-stack readiness diagnostics (read-only) |
+| `audiocfg <show\|add\|remove\|tunnel\|backup\|restore> [...]` | Manage ALSA/BlueALSA config (mirrors CLI `audio-config`) |
+
+**Local Roles, Broadcast & Advanced**
+
+Each mirrors the corresponding CLI subcommand (`bleep gatt-server` / `advertise` / `audio-intercept` / `device-sets` / `mesh` / `ctf`). `gattserver`/`advertise` run the shared core's own foreground GLib loop — the debug shell hands the loop off and restores Ctrl-C on exit (same handoff as `advertise-monitor start`).
+
+| Command | Purpose |
+|---------|---------|
+| `gattserver start [--uuid U ...] [--name N] [--read-value HEX] [--duration N]` | Publish a local GATT server until Ctrl-C |
+| `advertise caps \| start [options]` | Broadcast custom LE advertisements until Ctrl-C |
+| `audiointercept [MAC] [--duration N] [--engine whisper\|vosk] [--no-transcribe]` | Capture/optionally transcribe audio from a BT device (MAC defaults to current device) |
+| `devicesets [list \| connect <path> \| disconnect <path> \| info <path>]` | Manage `DeviceSet1` coordinated sets (e.g. TWS earbuds) |
+| `mesh [join <uuid> \| provision <uuid> \| reprovision <unicast> --node-path P]` | Bluetooth Mesh provisioning (experimental) |
+| `ctf [--device MAC] [--discover] [--solve] [--visualize] [--interactive]` | BLE CTF solver/analyzer (secondary interaction path) |
 
 **General**
 
@@ -193,6 +248,8 @@ Iterates through candidate PINs or passkeys, performing a full pair/remove/re-pa
 | `--interactive` | — | Prompt for PIN/passkey at pair time |
 | `--check` | — | Check pairing state only — do not pair |
 | `--reset` | — | Force-remove existing bond before pairing |
+| `--no-connect` | — | Pair only — skip the post-pair connection flow |
+| `--no-trust` | — | Do not set the device as trusted after pairing |
 | `--test` | — | PoC test mode: pair + auto-disconnect monitor |
 | `--brute` | — | Enable brute-force mode |
 | `--passkey-brute` | — | Brute-force passkeys instead of PINs |
@@ -249,8 +306,8 @@ most Classic devices.
 
 ### Known Issues and Fixes
 
-- **Fixed in Unreleased Version**: The `services` command previously failed with "argument of type 'Service' is not iterable" error. This was fixed by updating the `_get_handle_from_dict()` function to properly handle Service objects in addition to dictionaries.
-- **Fixed in Unreleased Version**: Error in property monitor callback when disconnecting from a device while monitoring is active. This was fixed by adding a check for `_current_device` existence before trying to access its attributes.
+- **Fixed (v3.0.0)**: The `services` command previously failed with "argument of type 'Service' is not iterable" error. This was fixed by updating the `_get_handle_from_dict()` function to properly handle Service objects in addition to dictionaries.
+- **Fixed (v3.0.0)**: Error in property monitor callback when disconnecting from a device while monitoring is active. This was fixed by adding a check for `_current_device` existence before trying to access its attributes.
 
 ---
 
@@ -312,31 +369,33 @@ BLEEP-DEBUG> introspect .            # Introspect current path
 ```
 
 **Code Reference:**
-```1495:1525:bleep/modes/debug.py
-def _cmd_introspect(args: List[str]) -> None:
+```585:610:bleep/modes/debug_dbus.py
+def cmd_introspect(args: List[str], state: DebugState) -> None:
     """Introspect a D-Bus object."""
-    global _current_path
-    
-    if len(args) > 0:
-        path = args[0]
+    if args:
+        path = resolve_path(args[0], state)
+    elif state.current_path:
+        path = state.current_path
+    elif state.current_device:
+        path = state.current_device._device_path
     else:
-        path = _current_path or "/org/bluez"
-    
-    # Resolve relative paths
-    path = _resolve_path(path, _current_path)
-    
+        print("[-] No device connected and no current path")
+        return
+
     try:
         bus = dbus.SystemBus()
         obj = bus.get_object("org.bluez", path)
         introspect_iface = dbus.Interface(obj, "org.freedesktop.DBus.Introspectable")
         xml = introspect_iface.Introspect()
-        
+        dom = minidom.parseString(xml)
+        pretty_xml = dom.toprettyxml(indent="  ")
+        pretty_xml = re.sub(r'\n\s*\n', '\n', pretty_xml)
+
         print(f"\nIntrospection of {path}:\n")
-        print(xml)
-        print_and_log(f"[+] Introspected {path}", LOG__DEBUG)
+        print(pretty_xml)
+        print()
     except Exception as exc:
         print_and_log(f"[-] Introspection failed: {exc}", LOG__DEBUG)
-        _print_detailed_dbus_error(exc)
 ```
 
 ### Direct D-Bus Method Calls
@@ -351,11 +410,9 @@ BLEEP-DEBUG> call org.freedesktop.DBus.Properties Get org.bluez.Device1 Connecte
 ```
 
 **Code Reference:**
-```1351:1389:bleep/modes/debug.py
-def _cmd_call(args: List[str]) -> None:
+```464:490:bleep/modes/debug_dbus.py
+def cmd_call(args: List[str], state: DebugState) -> None:
     """Call a method on an interface."""
-    global _current_path
-
     if len(args) < 2:
         print("Usage: call <interface> <method> [args...]")
         return
@@ -364,32 +421,23 @@ def _cmd_call(args: List[str]) -> None:
     method = args[1]
     method_args = args[2:] if len(args) > 2 else []
 
-    # Use current path if available, otherwise use device path
-    path = _current_path
-    if not path and _current_device:
-        path = _current_device._device_path
-
+    path = _get_path_for_cmd(state)
     if not path:
         print("[-] No device connected and no current path")
         return
 
     try:
-        # Get the D-Bus object for the path
         bus = dbus.SystemBus()
         obj = bus.get_object("org.bluez", path)
         iface = dbus.Interface(obj, interface)
         method_obj = getattr(iface, method)
 
-        if method_args:
-            result = method_obj(*method_args)
-        else:
-            result = method_obj()
-
-        print(f"[+] Method call successful")
+        result = method_obj(*method_args) if method_args else method_obj()
+        print("[+] Method call successful")
         print(f"Result: {result}")
     except Exception as exc:
         print_and_log(f"[-] Method call failed: {exc}", LOG__DEBUG)
-        _print_detailed_dbus_error(exc)
+        print_detailed_dbus_error(exc)
 ```
 
 ### Raw D-Bus Access Capabilities
@@ -409,10 +457,15 @@ Debug mode includes comprehensive real-time monitoring of D-Bus property changes
 
 ### `monitor` Command
 
-Toggles real-time property change monitoring. When enabled, all `PropertiesChanged` signals are displayed with timestamps and formatted values.
+Starts or stops real-time property change monitoring: `monitor [start|stop]`.
+A bare `monitor` defaults to **start** (it is not a toggle). When active, all
+`PropertiesChanged` signals for the connected device are displayed with
+timestamps and formatted values.
 
 ```bash
-BLEEP-DEBUG> monitor              # Toggle monitoring on/off
+BLEEP-DEBUG> monitor              # start monitoring (bare = start)
+BLEEP-DEBUG> monitor start        # start monitoring
+BLEEP-DEBUG> monitor stop         # stop monitoring
 ```
 
 ### `--monitor` Flag
@@ -429,87 +482,78 @@ python -m bleep.modes.debug --monitor CC:50:E3:B6:BC:A6
 - Background thread for continuous monitoring
 - Logs all property changes with timestamps
 - Formats values based on type (bytes shown as hex, arrays/dictionaries summarized)
-- Can be toggled on/off during session
+- Started/stopped during the session via `monitor start` / `monitor stop`
 
 **Example Output:**
 ```
-[2025-11-10 14:23:45] PropertiesChanged on /org/bluez/hci0/dev_CC_50_E3_B6_BC_A6
+[MONITOR] Properties changed:
   Interface: org.bluez.Device1
+  Path: /org/bluez/hci0/dev_CC_50_E3_B6_BC_A6
   Connected: True
   RSSI: -67
   ServicesResolved: True
 ```
 
+The `monitor` command (`cmd_monitor`, debug_dbus.py ~550) spawns the background
+worker `_monitor_properties`:
+
 **Code Reference:**
-```1391:1544:bleep/modes/debug.py
-def _monitor_properties(device_path: str, stop_event: threading.Event) -> None:
-    """Monitor property changes for a device."""
-    global _current_device
-    
-    bus = dbus.SystemBus()
-    
-    # Set up signal receiver for PropertiesChanged
-    def on_properties_changed(interface, changed, invalidated, path):
-        if not path.startswith(device_path):
-            return
-        
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"\n[{timestamp}] PropertiesChanged on {path}")
-        print(f"  Interface: {interface}")
-        
-        for prop_name, value in changed.items():
-            # Format value based on type
-            if isinstance(value, dbus.Array):
-                value_str = f"Array({len(value)} items)"
-            elif isinstance(value, dbus.Dictionary):
-                value_str = f"Dictionary({len(value)} keys)"
-            elif isinstance(value, bytes):
-                value_str = f"bytes({len(value)}): {value.hex()}"
-            else:
-                value_str = str(value)
-            
-            print(f"  {prop_name}: {value_str}")
-            print_and_log(
-                f"[PROPERTY] {path}::{prop_name} = {value_str}",
-                LOG__DEBUG
-            )
-        
-        if invalidated:
-            print(f"  Invalidated: {', '.join(invalidated)}")
-    
-    # Add signal receiver
-    bus.add_signal_receiver(
-        on_properties_changed,
-        signal_name="PropertiesChanged",
-        dbus_interface="org.freedesktop.DBus.Properties",
-        path_keyword="path"
-    )
-    
-    # Run mainloop until stop event
-    loop = gobject.MainLoop()
-    
-    def check_stop():
-        if stop_event.is_set():
-            loop.quit()
-            return False
-        return True
-    
-    gobject.timeout_add(100, check_stop)  # Check every 100ms
-    
+```493:547:bleep/modes/debug_dbus.py
+def _monitor_properties(device_path: str, stop_event: threading.Event, state: DebugState) -> None:
+    """Monitor properties of a device in real-time."""
     try:
-        loop.run()
-    except Exception as e:
-        print_and_log(f"[-] Monitor error: {e}", LOG__DEBUG)
+        bus = dbus.SystemBus()
+        bus.get_object("org.bluez", device_path)
+
+        from dbus.mainloop.glib import DBusGMainLoop
+        DBusGMainLoop(set_as_default=True)
+        from gi.repository import GLib as glib
+
+        mainloop = glib.MainLoop()
+
+        def properties_changed_cb(interface, changed, invalidated, path=None):
+            if stop_event.is_set():
+                mainloop.quit()
+                return
+
+            print("\n[MONITOR] Properties changed:")
+            print(f"  Interface: {interface}")
+            print(f"  Path: {path}")
+
+            for prop, value in changed.items():
+                print(f"  {prop}: {value}")
+
+            if invalidated:
+                print("  Invalidated properties:")
+                for prop in invalidated:
+                    print(f"    {prop}")
+
+            if state.current_device is not None:
+                print(DEVICE_PROMPT.format(state.current_device.mac_address), end="", flush=True)
+            else:
+                print(PROMPT, end="", flush=True)
+
+        bus.add_signal_receiver(
+            properties_changed_cb,
+            dbus_interface="org.freedesktop.DBus.Properties",
+            signal_name="PropertiesChanged",
+            path=device_path,
+            path_keyword="path",
+        )
+
+        def check_stop():
+            if stop_event.is_set():
+                mainloop.quit()
+                return False
+            return True
+
+        glib.timeout_add(500, check_stop)
+        print_and_log("[+] Property monitoring started", LOG__GENERAL)
+        mainloop.run()
+    except Exception as exc:
+        print_and_log(f"[-] Monitoring error: {exc}", LOG__DEBUG)
     finally:
-        # Remove signal receiver
-        try:
-            bus.remove_signal_receiver(
-                on_properties_changed,
-                signal_name="PropertiesChanged",
-                dbus_interface="org.freedesktop.DBus.Properties"
-            )
-        except Exception:
-            pass
+        print_and_log("[*] Property monitoring stopped", LOG__GENERAL)
 ```
 
 ---
@@ -518,17 +562,21 @@ def _monitor_properties(device_path: str, stop_event: threading.Event) -> None:
 
 ### `signals` Command
 
-View captured D-Bus signals for the current device or session.
+Introspect a **named D-Bus interface** and list the signals it declares
+(`signals <interface>`, `cmd_signals` in debug_dbus.py ~411). This is a static
+introspection of the interface definition — it does **not** display previously
+captured/live signal traffic. Provide the interface name as the argument;
+without one it prints `Usage: signals <interface>`.
 
 ```bash
-BLEEP-DEBUG> signals
+BLEEP-DEBUG> signals org.bluez.Device1
+BLEEP-DEBUG> signals org.freedesktop.DBus.Properties
 ```
 
-This command displays signals that have been captured by the signal system, including:
-- `PropertiesChanged` signals
-- `InterfacesAdded` signals
-- `InterfacesRemoved` signals
-- Characteristic read/write/notification events
+Example output lists each signal and its argument signature, e.g.
+`PropertiesChanged(interface: s, changed_properties: a{sv}, invalidated_properties: as)`
+for `org.freedesktop.DBus.Properties`. To watch live property changes on the
+connected device, use the `monitor` command instead.
 
 ---
 
@@ -556,28 +604,19 @@ When a D-Bus error occurs, debug mode automatically displays:
 ```
 
 **Code Reference:**
-```89:129:bleep/modes/debug.py
-def _print_detailed_dbus_error(exc: Exception) -> None:
-    """Print detailed information about a D-Bus exception.
-
-    This function extracts and displays:
-    - The full D-Bus error name (e.g., org.freedesktop.DBus.Error.InvalidArgs)
-    - The error message and arguments
-    - For InvalidArgs errors, it tries to extract the specific method, interface or property name
-    - Shows how the error maps to the BLEEP error system
-    """
+```73:103:bleep/modes/debug_dbus.py
+def print_detailed_dbus_error(exc: Exception) -> None:
+    """Print detailed information about a D-Bus exception."""
     print("\n[!] D-Bus Error Details:")
 
     if isinstance(exc, dbus.exceptions.DBusException):
         error_name = exc.get_dbus_name()
-        error_msg = str(exc)
+        error_msg = exc.get_dbus_message() or str(exc)
 
         print(f"[-] D-Bus Error: {error_name}")
         print(f"[-] Message: {error_msg}")
 
-        # Extract method/property name for InvalidArgs errors
         if error_name == "org.freedesktop.DBus.Error.InvalidArgs":
-            # Try to extract the property or method name from the error message
             prop_match = re.search(r"property '([^']+)'", error_msg)
             method_match = re.search(r"method '([^']+)'", error_msg)
             iface_match = re.search(r"interface '([^']+)'", error_msg)
@@ -589,7 +628,6 @@ def _print_detailed_dbus_error(exc: Exception) -> None:
             if iface_match:
                 print(f"[-] On interface: {iface_match.group(1)}")
 
-        # Map to BLEEP error system
         try:
             bleep_error = map_dbus_error(exc)
             print(f"[-] Maps to BLEEP error: {type(bleep_error).__name__}")
@@ -648,7 +686,74 @@ This provides raw D-Bus message inspection while debug mode provides structured 
 
 ## Logging
 
-## Module Structure (v2.7.2)
+## Methodology & CLI parity
+
+BLEEP exposes most capabilities on **two surfaces** that follow deliberately
+different contracts. The `bleep/cli/capability_registry.py` registry is the
+single source of truth mapping each capability to the command name(s) it
+exposes per surface, and two guard tests keep code and docs honest:
+`tests/test_cli_debug_parity.py` (every reachable command is registered and each
+`parity` value is internally consistent) and `tests/test_docs_match_registry.py`
+(every registered command is documented on its surface — this file and
+`cli_usage.md`).
+
+### The two contracts
+
+| | CLI (`bleep <subcommand>`) | Debug shell verb |
+|---|---|---|
+| Invocation | One-shot, scriptable, non-interactive | Interactive REPL line (`shlex`-split) |
+| Parsing | `argparse` subparser in `bleep/cli/parsers/*` | `fn(args: List[str], state: DebugState) -> None` |
+| State | Stateless per process | Persistent `DebugState` (current device, GLib loop, survey thread, …) |
+| Output | `OutputContext` (terminal / `--json` / `--quiet`) + exit code | `print_and_log` to the terminal |
+| Lifecycle | Connect → act → exit | Reuses the already-connected/enumerated session |
+
+### Anti-drift mechanism (shared implementation, thin adapters)
+
+A capability is implemented **once** (its `shared_impl`) and wrapped by thin
+per-surface adapters — never duplicated:
+
+- **Shared option builders** (`_add_*_arguments`, the `shared_args` column) define
+  a command's flags once and are consumed by both the CLI subparser and any
+  standalone parser.
+- **`parse_as_cli(cli_name, tokens)`** (`bleep/modes/debug_cli_adapters.py`) parses
+  debug tokens through the *real* CLI subparser, so ported verbs (`cscan`, `cenum`,
+  `netenum`, `cping`, `uuidtr`, `adaptercfg`, `db`, `explore`, `gattserver`,
+  `advertise`, `advertise-monitor`, `audiointercept`, `devicesets`, `mesh`, `ctf`,
+  the `agent` management verbs, the `aoi` subcommand pipeline, and the `audiocfg`
+  write sub-surface) accept *exactly* their CLI twin's options and can never
+  drift. `SystemExit` from argparse is caught so a bad line never tears down the
+  shell. (`advertise-monitor` was migrated onto this seam in CDU-M9, retiring the
+  last hand-built debug parser.)
+- **`foreground_loop_handoff(state)`** (`bleep/modes/debug_state.py`) lets debug
+  verbs delegate to cores that run their own foreground `GLib.MainLoop` +
+  SIGINT/SIGTERM handlers (`advertise-monitor`, `signal`, `gattserver`,
+  `advertise`) by stopping the background debug loop and restoring the shell's
+  Ctrl-C handler afterwards.
+
+### Why some commands are intentionally single-surface
+
+Parity means *"the same capability is reachable where it makes sense"*, not
+*"every command exists on both surfaces"*. The registry records each deliberate
+single-surface command in its `parity` field + `rationale`:
+
+- **Debug-only (`debug-only`)** — interactive or stateful operations that are
+  meaningless as a one-shot CLI verb: raw RFCOMM socket I/O (`copen`/`csend`/
+  `crecv`/`craw`/`ckeep`), per-characteristic GATT interaction
+  (`read`/`write`/`notify`/`char`/…), D-Bus tree navigation/introspection
+  (`ls`/`cd`/`interfaces`/`call`/…), the live `monitor` property watcher, the
+  advertised-profile listing (`cprofiles`), and shell meta (`help`/`quit`/`exit`).
+- **CLI-only (`cli-only`)** — batch, offline, or self-contained flows with no live
+  session value: `refresh-refs` (reference-data regeneration), `analyse` (offline
+  JSON post-processing), `amusica` (self-contained audio sub-CLI), `gatt-enum`
+  (single-pass enum; the debug `enum*` family covers connected variants),
+  `audio-profiles`, `signal-config`, and the `user`/`interactive`/`debug` entry
+  points.
+
+Everything else is `full` (both surfaces delegate to one core) or `partial`
+(both surfaces present, with a documented option-depth difference the registry
+`rationale` records).
+
+## Module Structure (v3.0.0)
 
 Debug mode is organised into focused submodules under `bleep/modes/`:
 
@@ -660,10 +765,17 @@ Debug mode is organised into focused submodules under `bleep/modes/`:
 | `debug_connect.py` | Transport detection, `connect`/`disconnect`/`info` |
 | `debug_gatt.py` | `services`/`chars`/`char`/`read`/`write`/`notify`/`detailed`, notification callback, property display |
 | `debug_classic.py` | `cscan`/`cconnect`/`cservices`/`ckeep`/`csdp`/`pbap` |
+| `debug_classic_data.py` | Classic data-exchange re-export shim (splits into the focused `debug_classic_*` sub-modules) |
+| `debug_classic_obex.py` | OBEX profiles: `copp`/`cmapinfo`/`cmap`/`cftp`/`csync`/`cbip` |
+| `debug_media.py` | `mediaenum`/`mediactrl`/`mediaprops`/`audiorecon`/`audioplay`/`audiorec`/`audiocfg` |
+| `debug_survey.py` | `survey`/`survey-status` (background census thread) |
+| `debug_stateful_adapters.py` | `explore`/`signal`/`cenum`/`gattserver`/`advertise`/`audiointercept`/`devicesets`/`mesh`/`ctf` (thin CLI-core twins) |
+| `debug_cli_adapters.py` | `parse_as_cli` anti-drift helper + stateless CLI twins (`uuidtr`/`adaptercfg`/`netenum`/`cping`/`db`) |
+| `debug_advmon.py` | `advertise-monitor` (kernel-offloaded Advertisement Monitor, foreground-loop handoff) |
 | `debug_classic_profiles.py` | `cprofiles`/`cprofile` (connect/disconnect profiles), `cspp --auth` |
 | `debug_hid.py` | `chid` (HID classification) |
 | `debug_pairing.py` | `agent`/`pair` (single, brute-force), post-pair connect flows |
-| `debug_scan.py` | `scan`/`scann`/`scanp`/`scanb`/`enum`/`enumn`/`enump`/`enumb` |
+| `debug_scan.py` | `scan`/`scann`/`scanp`/`scanb`/`dscan`/`enum`/`enumn`/`enump`/`enumb` |
 | `debug_aoi.py` | `aoi`/`dbsave`/`dbexport` |
 | `debug_multiread.py` | `multiread`/`multiread_all`/`brutewrite` |
 

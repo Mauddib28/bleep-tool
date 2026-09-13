@@ -13,12 +13,15 @@ import re
 from typing import Dict, Any, Optional, List, Tuple
 
 from bleep.bt_ref.constants import (
+    ADMIN_POLICY_STATUS_INTERFACE,
+    BEARER_BREDR_INTERFACE,
     BLUEZ_SERVICE_NAME,
     BLUEZ_NAMESPACE,
     ADAPTER_NAME,
     DEVICE_INTERFACE,
     DBUS_PROPERTIES,
     DBUS_OM_IFACE,
+    NETWORK_INTERFACE,
     RESULT_ERR_UNKNOWN_OBJECT,
 )
 from bleep.bt_ref.utils import dbus_to_python, device_address_to_path
@@ -292,6 +295,36 @@ class system_dbus__bluez_device__classic:
             raise map_dbus_error(e)
             
     # ---------------------------------------------------------------------
+    # Bearer-specific connect/disconnect (BZ-16b) — experimental
+    # ---------------------------------------------------------------------
+
+    def bearer_bredr_connect(self) -> bool:
+        """Connect only the BR/EDR bearer via ``Bearer.BREDR1.Connect()``."""
+        try:
+            bearer = dbus.Interface(
+                self._bus.get_object(BLUEZ_SERVICE_NAME, self._device_path),
+                BEARER_BREDR_INTERFACE,
+            )
+            bearer.Connect()
+            return True
+        except dbus.exceptions.DBusException as exc:
+            print_and_log(f"[-] Bearer.BREDR1.Connect failed: {exc}", LOG__DEBUG)
+            return False
+
+    def bearer_bredr_disconnect(self) -> bool:
+        """Disconnect only the BR/EDR bearer via ``Bearer.BREDR1.Disconnect()``."""
+        try:
+            bearer = dbus.Interface(
+                self._bus.get_object(BLUEZ_SERVICE_NAME, self._device_path),
+                BEARER_BREDR_INTERFACE,
+            )
+            bearer.Disconnect()
+            return True
+        except dbus.exceptions.DBusException as exc:
+            print_and_log(f"[-] Bearer.BREDR1.Disconnect failed: {exc}", LOG__DEBUG)
+            return False
+
+    # ---------------------------------------------------------------------
     # Properties & State
     # ---------------------------------------------------------------------
     def is_connected(self) -> bool:
@@ -371,7 +404,7 @@ class system_dbus__bluez_device__classic:
             # Get UUIDs if available
             try:
                 uuids = self._props_iface.Get(DEVICE_INTERFACE, "UUIDs")
-                context["uuids"] = [str(uuid) for uuid in uuids] if uuids else []
+                context["uuids"] = [str(uuid).strip().upper() for uuid in uuids] if uuids else []
             except (dbus.exceptions.DBusException, KeyError):
                 context["uuids"] = []
             
@@ -547,6 +580,42 @@ class system_dbus__bluez_device__classic:
             print_and_log(f"[DEBUG] Raw property collection error: {_e}", LOG__DEBUG)
         
         return info
+
+    def query_and_store_remote_version(self) -> Optional[Dict[str, Any]]:
+        """Query the remote device's authoritative LMP version via HCI and persist to DB.
+
+        Establishes an ACL connection using ``hcitool info``, reads LMP version,
+        manufacturer, and features, then stores the result in the observations DB.
+
+        Returns
+        -------
+        Optional[Dict[str, Any]]
+            Version info dict on success (same as ``query_remote_version()``), or None.
+        """
+        from bleep.ble_ops.classic.version import query_remote_version
+
+        result = query_remote_version(self.mac_address)
+        if result is None:
+            return None
+
+        try:
+            from bleep.core import observations as _obs
+            from bleep.core.time_utils import utc_now_iso
+            _obs.upsert_device(
+                self.mac_address,
+                lmp_version=result["lmp_version"],
+                lmp_subversion=result["lmp_subversion"],
+                bt_manufacturer=result.get("manufacturer"),
+                bt_spec_version=result.get("lmp_spec"),
+                lmp_features=result.get("features_raw"),
+                version_queried_at=utc_now_iso(),
+            )
+        except Exception as exc:
+            print_and_log(
+                f"[device_classic] Failed to persist remote version: {exc}", LOG__DEBUG,
+            )
+
+        return result
             
     # ---------------------------------------------------------------------
     # Profile Management
@@ -556,7 +625,7 @@ class system_dbus__bluez_device__classic:
         try:
             # Get UUIDs of supported profiles
             uuids = self._props_iface.Get(DEVICE_INTERFACE, "UUIDs")
-            self._supported_profiles = [str(uuid) for uuid in uuids]
+            self._supported_profiles = [str(uuid).strip().upper() for uuid in uuids]
             
             # Determine connected profiles based on device properties
             # This is an approximation as BlueZ doesn't expose this directly
@@ -609,7 +678,7 @@ class system_dbus__bluez_device__classic:
         """
         try:
             uuids = self._props_iface.Get(DEVICE_INTERFACE, "UUIDs")
-            return [str(uuid) for uuid in uuids]
+            return [str(uuid).strip().upper() for uuid in uuids]
         except (dbus.exceptions.DBusException, KeyError):
             return []
             
@@ -623,6 +692,46 @@ class system_dbus__bluez_device__classic:
         """
         self._update_profiles()
         return self._connected_profiles
+
+    # ---------------------------------------------------------------------
+    # Network (PAN) capability — additive, mirrors the media-capability helpers
+    # ---------------------------------------------------------------------
+    def get_network_roles(self) -> List[str]:
+        """Return advertised PAN role labels (``PANU``/``NAP``/``GN``).
+
+        Reads the raw ``Device1.UUIDs`` (available after discovery/pairing);
+        returns an empty list on error. Does not require an active BNEP stack.
+        """
+        from bleep.ble_ops.classic.pan import network_roles_from_uuids
+        return network_roles_from_uuids(self.get_supported_profiles())
+
+    def has_network_uuids(self) -> bool:
+        """True if the device advertises a PAN service UUID (PANU/NAP/GN)."""
+        return bool(self.get_network_roles())
+
+    def get_network_status(self) -> Optional[Dict[str, Any]]:
+        """Return the ``org.bluez.Network1`` property snapshot, or ``None``.
+
+        ``None`` means the device object does not expose the Network1 interface
+        (never raises).
+        """
+        try:
+            raw = dict(self._props_iface.GetAll(NETWORK_INTERFACE))
+        except dbus.exceptions.DBusException:
+            return None
+        return {
+            "connected": bool(raw.get("Connected", False)),
+            "interface": str(raw["Interface"]) if raw.get("Interface") else None,
+            "uuid": str(raw["UUID"]) if raw.get("UUID") else None,
+        }
+
+    def has_network_interface(self) -> bool:
+        """True if the device object exposes the ``Network1`` interface."""
+        return self.get_network_status() is not None
+
+    def is_network_device(self) -> bool:
+        """True if the device has PAN capability (Network1 iface or PAN UUIDs)."""
+        return self.has_network_interface() or self.has_network_uuids()
         
     def connect_profile(self, profile_uuid: str) -> bool:
         """Connect to a specific profile.
@@ -642,6 +751,7 @@ class system_dbus__bluez_device__classic:
         BLEEPError
             If profile connection fails
         """
+        profile_uuid = profile_uuid.strip().upper()
         try:
             print_and_log(f"[*] Connecting profile {profile_uuid} on {self.mac_address}", LOG__USER)
             self._device_iface.ConnectProfile(profile_uuid)
@@ -761,7 +871,46 @@ class system_dbus__bluez_device__classic:
             info["legacy_pairing"] = bool(self._props_iface.Get(DEVICE_INTERFACE, "LegacyPairing"))
         except (dbus.exceptions.DBusException, KeyError):
             info["legacy_pairing"] = None
-            
+
+        # BZ-14a: AdminPolicyStatus1.IsAffectedByPolicy (experimental)
+        try:
+            info["is_affected_by_policy"] = bool(
+                self._props_iface.Get(ADMIN_POLICY_STATUS_INTERFACE, "IsAffectedByPolicy")
+            )
+        except (dbus.exceptions.DBusException, KeyError):
+            info["is_affected_by_policy"] = None
+
+        # BZ-16a: Bearer.BREDR1 per-transport properties (experimental)
+        bearer_bredr: dict[str, Any] = {}
+        try:
+            bearer_bredr["paired"] = bool(
+                self._props_iface.Get(BEARER_BREDR_INTERFACE, "Paired")
+            )
+            bearer_bredr["bonded"] = bool(
+                self._props_iface.Get(BEARER_BREDR_INTERFACE, "Bonded")
+            )
+            bearer_bredr["connected"] = bool(
+                self._props_iface.Get(BEARER_BREDR_INTERFACE, "Connected")
+            )
+        except (dbus.exceptions.DBusException, KeyError):
+            bearer_bredr = None
+        info["bearer_bredr"] = bearer_bredr
+
+        # Network (PAN) capability — additive key; never raises.
+        try:
+            roles = self.get_network_roles()
+            status = self.get_network_status()
+            if roles or status is not None:
+                info["network"] = {
+                    "roles": roles,
+                    "has_interface": status is not None,
+                    "status": status,
+                }
+            else:
+                info["network"] = None
+        except Exception:  # noqa: BLE001 – capability probe must never break info
+            info["network"] = None
+
         return info
         
     # ---------------------------------------------------------------------

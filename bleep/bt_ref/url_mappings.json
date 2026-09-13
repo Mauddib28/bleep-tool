@@ -10,5 +10,6 @@
   "APPEAR": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/core/appearance_values.yaml",
   "CODING_FORMAT": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/core/coding_format.yaml",
   "NAMESPACE": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/core/namespace.yaml",
-  "PSM": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/core/psm.yaml"
+  "PSM": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/core/psm.yaml",
+  "CORE_VERSION": "https://bitbucket.org/bluetooth-SIG/public/raw/main/assigned_numbers/core/core_version.yaml"
 }

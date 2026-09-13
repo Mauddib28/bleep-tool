@@ -1,7 +1,7 @@
 """Bluetooth Mesh support for BLEEP.
 
 Provides D-Bus wrappers for BlueZ's ``bluetooth-meshd`` mesh daemon,
-following ``workDir/bluez/doc/mesh-api.txt``.
+following ``workDir/BlueZDocs/mesh-api.txt``.
 
 Modules
 -------
@@ -17,14 +17,36 @@ Modules
 - ``proxy_solicitation`` — Send Mesh Proxy Solicitation PDUs.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from . import constants  # noqa: F401
 from . import errors  # noqa: F401
 from . import proxy_solicitation as proxy  # noqa: F401
+
+if TYPE_CHECKING:
+    from . import network as network  # noqa: F811
+    from . import node as node  # noqa: F811
+    from . import management as management  # noqa: F811
+    from . import application as application  # noqa: F811
+    from . import element as element  # noqa: F811
+    from . import provisioner as provisioner  # noqa: F811
+    from . import provision_agent as provision_agent  # noqa: F811
+    from . import interactive_provision_agent as interactive_provision_agent  # noqa: F811
 
 __all__ = [
     "constants",
     "errors",
     "proxy",
+    "network",
+    "node",
+    "management",
+    "application",
+    "element",
+    "provisioner",
+    "provision_agent",
+    "interactive_provision_agent",
 ]
 
 # Heavier modules that require dbus are loaded lazily to avoid import-time
@@ -40,6 +62,7 @@ def __getattr__(name: str):
         "element": ".element",
         "provisioner": ".provisioner",
         "provision_agent": ".provision_agent",
+        "interactive_provision_agent": ".interactive_provision_agent",
     }
     if name in _lazy:
         import importlib

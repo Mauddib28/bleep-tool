@@ -12,7 +12,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
@@ -20,10 +20,16 @@ from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 __all__ = [
     "DeviceState",
     "PreflightReport",
+    "BtmgmtStatus",
     "EndpointOwner",
     "EndpointContentionReport",
+    "PanPrereqReport",
     "check_device_state",
+    "check_btmgmt",
+    "run_btmgmt",
     "check_endpoint_contention",
+    "check_pan_prerequisites",
+    "print_pan_prereq_summary",
     "print_preflight_summary",
     "require_adapter",
     "run_preflight_checks",
@@ -111,8 +117,45 @@ def require_adapter(adapter_name: Optional[str] = None) -> bool:
             return True
     except Exception:
         pass
-    print_and_log("[!] Bluetooth adapter not found or not ready", LOG__GENERAL)
+    _which = adapter_name if adapter_name else "default"
+    print_and_log(f"[!] Bluetooth adapter not found or not ready: {_which}", LOG__GENERAL)
     return False
+
+
+@dataclass
+class BtmgmtStatus:
+    """Privilege-aware status of the ``btmgmt`` management tool.
+
+    ``shutil.which("btmgmt")`` alone is misleading: the binary opens the kernel
+    management socket, which requires ``CAP_NET_ADMIN``/root.  Run unprivileged,
+    any socket-touching ``btmgmt`` subcommand (e.g. ``info``) **blocks
+    indefinitely** — the tool also drops into an interactive REPL unless a
+    command completes.  This dataclass records the distinction between "present",
+    "runnable" (the socket-free ``--version`` probe succeeds), and whether a
+    controller query is actually possible in the current privilege context.
+
+    Attributes
+    ----------
+    present : bool
+        ``btmgmt`` is on ``PATH``.
+    version : Optional[str]
+        Parsed version string (e.g. ``"5.86"``) from ``btmgmt --version``.
+    runnable : bool
+        ``btmgmt --version`` exited cleanly — the binary executes without hanging.
+    controller_query : str
+        One of ``"ok"`` (controller info read), ``"needs_privilege"`` (running
+        unprivileged; a live query would block, so it was deliberately skipped),
+        ``"unavailable"`` (root, but no controller data returned), or
+        ``"skipped"`` (probe not run).
+    detail : Optional[str]
+        Human-readable remediation / context note.
+    """
+
+    present: bool = False
+    version: Optional[str] = None
+    runnable: bool = False
+    controller_query: str = "skipped"
+    detail: Optional[str] = None
 
 
 @dataclass
@@ -122,13 +165,25 @@ class PreflightReport:
     bluetooth_tools: Dict[str, bool] = field(default_factory=dict)
     audio_tools: Dict[str, bool] = field(default_factory=dict)
     bt_audio_stack: Dict[str, bool] = field(default_factory=dict)
+    codec_plugins: Dict[str, bool] = field(default_factory=dict)
     bluetooth_config: Dict[str, Any] = field(default_factory=dict)
     bluez_version: Optional[str] = None
     python_dependencies: Dict[str, str] = field(default_factory=dict)
+    experimental: Dict[str, Any] = field(default_factory=dict)
     
     def has_all_bluetooth_tools(self) -> bool:
         """Check if all required Bluetooth tools are available."""
         return all(self.bluetooth_tools.values())
+
+    @property
+    def can_record_sbc(self) -> bool:
+        """True when the GStreamer elements for A2DP SBC capture are present.
+
+        This is the codec path exercised by ``audio-record`` against an A2DP
+        source (``rtpsbcdepay`` → ``sbcparse`` → ``sbcdec``).  Missing here is
+        the silent-failure footgun that ``--check-env`` should surface up front.
+        """
+        return bool(self.codec_plugins.get("sbc_decode_ok"))
     
     def has_audio_tools(self) -> bool:
         """Check if any audio tools are available."""
@@ -176,6 +231,132 @@ def _check_bluetooth_tools() -> Dict[str, bool]:
     return {tool: path is not None for tool, path in tools.items()}
 
 
+def run_btmgmt(
+    args: List[str],
+    *,
+    timeout: float = 3.0,
+) -> Optional[subprocess.CompletedProcess]:
+    """Invoke ``btmgmt`` non-interactively without ever hanging the caller.
+
+    ``btmgmt`` has two footguns that must both be neutralised:
+
+    1. It drops into an **interactive REPL** unless the supplied command
+       completes — so a blocking or absent command leaves it reading stdin
+       forever.  We redirect ``stdin`` from ``/dev/null`` so the REPL sees EOF
+       and its own ``--timeout`` (non-interactive mode) applies.
+    2. Any subcommand that touches the kernel management socket requires
+       ``CAP_NET_ADMIN``; unprivileged it **blocks before ``--timeout`` even
+       takes effect**.  We therefore wrap the whole call in a hard subprocess
+       timeout as a backstop.
+
+    Parameters
+    ----------
+    args : list of str
+        ``btmgmt`` subcommand + arguments (e.g. ``["--index", "0", "info"]``).
+        ``--timeout`` is prepended automatically.
+    timeout : float
+        Both the value passed to ``btmgmt --timeout`` (int-truncated) and the
+        basis for the hard subprocess timeout (``timeout + 2`` s).
+
+    Returns
+    -------
+    Optional[subprocess.CompletedProcess]
+        The completed process, or ``None`` if ``btmgmt`` is absent or the call
+        timed out / errored.
+    """
+    btmgmt = shutil.which("btmgmt")
+    if not btmgmt:
+        return None
+    cmd = [btmgmt, "--timeout", str(int(timeout)), *args]
+    try:
+        return subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout + 2.0,
+        )
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+        return None
+
+
+def check_btmgmt(adapter_index: int = 0) -> BtmgmtStatus:
+    """Probe ``btmgmt`` usability without hanging, privilege-aware.
+
+    Strategy
+    --------
+    * **Presence** — ``shutil.which``.
+    * **Runnable** — ``btmgmt --version`` is socket-free and returns instantly;
+      it proves the binary executes (a stronger claim than mere presence) and
+      yields the version string.
+    * **Controller query** — reading controller info needs ``CAP_NET_ADMIN``.
+      Running unprivileged it would block, so we **do not** attempt it unless
+      ``euid == 0``; instead we report ``"needs_privilege"`` with remediation.
+      When root, the query is still hard-guarded via :func:`run_btmgmt`.
+
+    Parameters
+    ----------
+    adapter_index : int
+        HCI index to query (``0`` → ``hci0``) when privileged.
+
+    Returns
+    -------
+    BtmgmtStatus
+        Structured, non-hanging status suitable for the preflight summary.
+    """
+    btmgmt = shutil.which("btmgmt")
+    if not btmgmt:
+        return BtmgmtStatus(present=False, detail="not found in PATH")
+
+    status = BtmgmtStatus(present=True)
+
+    # --- runnable probe: --version never opens the mgmt socket ---------------
+    try:
+        ver = subprocess.run(
+            [btmgmt, "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=4.0,
+        )
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, FileNotFoundError):
+        status.runnable = False
+        status.detail = "btmgmt --version did not complete (binary present but not runnable)"
+        return status
+
+    if ver.returncode == 0:
+        status.runnable = True
+        out = (ver.stdout or ver.stderr or "").strip()
+        # Accepts "btmgmt: 5.86" and "btmgmt ver 5.86".
+        status.version = out.split()[-1] if out else None
+    else:
+        status.detail = "btmgmt --version returned non-zero exit"
+        return status
+
+    # --- controller query: requires CAP_NET_ADMIN; skip when unprivileged ---
+    if os.geteuid() != 0:
+        status.controller_query = "needs_privilege"
+        status.detail = (
+            "controller info requires root/CAP_NET_ADMIN — unprivileged "
+            "'btmgmt info' blocks; run 'sudo btmgmt info' or grant "
+            "CAP_NET_ADMIN. (BLEEP itself uses the 'bluetoothctl mgmt' submenu, "
+            "not btmgmt, so this does not affect BLEEP operations.)"
+        )
+        return status
+
+    proc = run_btmgmt(["--index", str(adapter_index), "info"], timeout=3.0)
+    if proc is not None and proc.returncode == 0 and "addr" in (proc.stdout or "").lower():
+        status.controller_query = "ok"
+        status.detail = f"controller hci{adapter_index} info read successfully"
+    else:
+        status.controller_query = "unavailable"
+        status.detail = (
+            f"btmgmt --index {adapter_index} info returned no controller data "
+            "(adapter absent, down, or busy)"
+        )
+    return status
+
+
 def _check_audio_tools() -> Dict[str, bool]:
     """
     Check availability of audio tools (PulseAudio, PipeWire, ALSA, and GStreamer).
@@ -220,6 +401,104 @@ def _check_audio_tools() -> Dict[str, bool]:
     
     return {tool: (path is not None if tool != "gstreamer_python" else tools[tool])
             for tool, path in tools.items()}
+
+
+# GStreamer element → capability mapping for the audio-codec pipelines in
+# ``bleep/ble_ops/audio/audio_codec.py``.  Grouped by the operation each
+# element enables so the preflight can tell the user *which* audio path is
+# unavailable rather than just "a plugin is missing".  Element names are the
+# GStreamer factory names probed via ``Gst.ElementFactory.find()``.
+_GST_CODEC_ELEMENTS: Dict[str, Tuple[str, ...]] = {
+    # Recording: decode transport FD → WAV
+    "sbc_decode": ("rtpsbcdepay", "sbcparse", "sbcdec"),   # A2DP capture (proven path)
+    "mp3_decode": ("mpegaudioparse", "mpg123audiodec"),
+    "aac_decode": ("aacparse", "avdec_aac"),
+    # Playback: encode file → transport FD
+    "sbc_encode": ("avenc_sbc", "audiobuffersplit"),
+    "mp3_encode": ("lamemp3enc",),
+    "aac_encode": ("avenc_aac",),
+    # Shared plumbing used by every pipeline
+    "core": (
+        "appsrc", "appsink", "audioconvert", "audioresample",
+        "wavenc", "decodebin", "filesrc", "filesink",
+    ),
+}
+
+
+def _check_gstreamer_codec_plugins() -> Dict[str, bool]:
+    """Probe the GStreamer element factories the audio-codec pipelines need.
+
+    Returns a flat ``{element_name: available}`` map plus one synthetic
+    ``<capability>_ok`` key per group in :data:`_GST_CODEC_ELEMENTS` (``True``
+    iff every element in that group resolves).  When the GStreamer Python
+    bindings are unavailable every element is reported ``False`` (and each
+    ``*_ok`` is ``False``) so the summary can render a clear "bindings missing"
+    state instead of silently omitting the section.
+    """
+    result: Dict[str, bool] = {}
+
+    gst = None
+    try:
+        import gi  # noqa: WPS433 — optional dependency, imported lazily
+        gi.require_version("Gst", "1.0")
+        from gi.repository import Gst as _Gst
+        gst = _Gst
+    except (ImportError, ValueError, AttributeError):
+        gst = None
+
+    if gst is not None:
+        # ``ElementFactory.find`` requires the registry to be initialised.
+        # ``Gst.init(None)`` is idempotent and safe to call repeatedly.
+        try:
+            gst.init(None)
+        except Exception:  # pragma: no cover — init failure ⇒ treat as no Gst
+            gst = None
+
+    for capability, elements in _GST_CODEC_ELEMENTS.items():
+        cap_ok = True
+        for element in elements:
+            if gst is None:
+                available = False
+            else:
+                try:
+                    available = gst.ElementFactory.find(element) is not None
+                except Exception:  # pragma: no cover — defensive
+                    available = False
+            result[element] = available
+            cap_ok = cap_ok and available
+        result[f"{capability}_ok"] = cap_ok
+
+    return result
+
+
+def _codec_plugin_install_hint() -> str:
+    """Return OS-specific install commands for the missing GStreamer plugins."""
+    distro = _detect_distro()
+    lines = ["    Install the GStreamer codec plugins used by audio-play/record:"]
+    if distro == "debian":
+        lines.append(
+            "      sudo apt-get install gstreamer1.0-plugins-good "
+            "gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav"
+        )
+    elif distro == "fedora":
+        lines.append(
+            "      sudo dnf install gstreamer1-plugins-good "
+            "gstreamer1-plugins-bad-free gstreamer1-plugins-ugly gstreamer1-libav"
+        )
+    elif distro == "arch":
+        lines.append(
+            "      sudo pacman -S gst-plugins-good gst-plugins-bad "
+            "gst-plugins-ugly gst-libav"
+        )
+    else:
+        lines.append(
+            "      Install the good/bad/ugly GStreamer plugin sets plus gst-libav "
+            "via your package manager"
+        )
+    lines.append(
+        "      (SBC capture needs 'bad' for sbcdec/sbcparse and 'good' for rtpsbcdepay)"
+    )
+    return "\n".join(lines)
 
 
 def _detect_distro() -> str:
@@ -295,6 +574,23 @@ def diagnose_audio() -> None:
         status = "available" if avail else "MISSING"
         print_and_log(f"    {tool}: {status}", LOG__USER)
 
+    codec_plugins = _check_gstreamer_codec_plugins()
+    print_and_log("\n[2b] GStreamer Codec Plugins (audio-play / audio-record):", LOG__USER)
+    if not codec_plugins:
+        print_and_log("    GStreamer Python bindings: MISSING (codec paths disabled)", LOG__USER)
+    else:
+        for capability, label in _CODEC_CAPABILITY_LABELS:
+            ok = codec_plugins.get(f"{capability}_ok", False)
+            status = "OK" if ok else "MISSING"
+            missing = [
+                el for el in _GST_CODEC_ELEMENTS.get(capability, ())
+                if not codec_plugins.get(el, False)
+            ]
+            detail = f" (missing: {', '.join(missing)})" if (missing and not ok) else ""
+            print_and_log(f"    {label}: {status}{detail}", LOG__USER)
+        if not codec_plugins.get("sbc_decode_ok", False):
+            print_and_log(_codec_plugin_install_hint(), LOG__USER)
+
     print_and_log("\n[3] Distro Detection:", LOG__USER)
     print_and_log(f"    Family: {_detect_distro()}", LOG__USER)
 
@@ -302,9 +598,18 @@ def diagnose_audio() -> None:
     ver = _check_bluez_version()
     print_and_log(f"    {ver}", LOG__USER)
 
+    codec_ready = bool(codec_plugins) and codec_plugins.get("sbc_decode_ok", False)
+
     print_and_log("\n" + "=" * 60, LOG__USER)
-    if has_any:
+    if has_any and codec_ready:
         print_and_log("Audio stack appears ready for Bluetooth media operations.", LOG__USER)
+    elif has_any and not codec_ready:
+        print_and_log(
+            "Audio ROUTING is available, but GStreamer codec plugins are "
+            "incomplete —", LOG__USER)
+        print_and_log(
+            "audio-play / audio-record (SBC) will not work. See section [2b] "
+            "above.", LOG__USER)
     else:
         print_and_log("Audio stack is NOT ready. Follow install hints above.", LOG__USER)
     print_and_log("=" * 60, LOG__USER)
@@ -586,6 +891,63 @@ def _check_python_dependencies() -> Dict[str, str]:
     return dependencies
 
 
+def _check_experimental_mode(adapter: str = "hci0") -> Dict[str, Any]:
+    """Detect BlueZ experimental surfaces (HW-2). Detect-only; no host mutation.
+
+    Probes AdvertisementMonitorManager1 and Adapter1.ConnectDevice on *adapter*.
+    """
+    hint = (
+        "Start bluetoothd with -E or set Experimental=true in "
+        "/etc/bluetooth/main.conf, then restart bluetooth. Needed for "
+        "advertise-monitor, scan --monitor, survey --listen-monitor, "
+        "ConnectDevice, device-sets, AdminPolicy, Bearer.LE1/BREDR1, "
+        "LE-Audio assistant; obexd --experimental for BIP."
+    )
+    out: Dict[str, Any] = {
+        "adapter": adapter,
+        "advertisement_monitor": False,
+        "connect_device": False,
+        "controller_patterns": False,
+        "supported_types": [],
+        "hint": hint,
+    }
+    try:
+        import dbus
+        bus = dbus.SystemBus()
+        path = f"/org/bluez/{adapter}"
+        intro = dbus.Interface(
+            bus.get_object("org.bluez", path),
+            "org.freedesktop.DBus.Introspectable",
+        )
+        xml = str(intro.Introspect())
+        out["advertisement_monitor"] = "org.bluez.AdvertisementMonitorManager1" in xml
+        out["connect_device"] = "ConnectDevice" in xml
+        if out["advertisement_monitor"]:
+            props = dbus.Interface(
+                bus.get_object("org.bluez", path),
+                "org.freedesktop.DBus.Properties",
+            )
+            types = list(
+                props.Get(
+                    "org.bluez.AdvertisementMonitorManager1",
+                    "SupportedMonitorTypes",
+                )
+            )
+            feats = list(
+                props.Get(
+                    "org.bluez.AdvertisementMonitorManager1",
+                    "SupportedFeatures",
+                )
+            )
+            out["supported_types"] = [str(t) for t in types]
+            out["controller_patterns"] = any(
+                str(f) == "controller-patterns" for f in feats
+            )
+    except Exception:
+        pass
+    return out
+
+
 def run_preflight_checks(use_cache: bool = True) -> PreflightReport:
     """
     Run all preflight checks and return a report.
@@ -611,14 +973,70 @@ def run_preflight_checks(use_cache: bool = True) -> PreflightReport:
     report.bluetooth_tools = _check_bluetooth_tools()
     report.audio_tools = _check_audio_tools()
     report.bt_audio_stack = _check_bluetooth_audio_stack()
+    report.codec_plugins = _check_gstreamer_codec_plugins()
     report.bluetooth_config = _check_bluetooth_config()
     report.bluez_version = _check_bluez_version()
     report.python_dependencies = _check_python_dependencies()
+
+    # btmgmt: presence via which() is misleading (the binary blocks on the
+    # kernel mgmt socket without CAP_NET_ADMIN).  Replace the naive tick with a
+    # non-hanging, privilege-aware runnability probe.
+    report.btmgmt = check_btmgmt()
+    if "btmgmt" in report.bluetooth_tools:
+        report.bluetooth_tools["btmgmt"] = report.btmgmt.runnable
+
+    report.experimental = _check_experimental_mode()
     
     # Cache the results
     _preflight_cache = report
     
     return report
+
+
+# Human-readable labels for each codec capability group, ordered for display.
+# The trailing note names the codec path each capability unlocks.
+_CODEC_CAPABILITY_LABELS: List[Tuple[str, str]] = [
+    ("sbc_decode", "SBC decode  (audio-record from A2DP source)"),
+    ("sbc_encode", "SBC encode  (audio-play to A2DP sink)"),
+    ("mp3_decode", "MP3 decode"),
+    ("mp3_encode", "MP3 encode"),
+    ("aac_decode", "AAC decode"),
+    ("aac_encode", "AAC encode"),
+    ("core", "core pipeline elements (appsrc/appsink/wavenc/…)"),
+]
+
+
+def _print_codec_plugin_section(report: PreflightReport) -> None:
+    """Render the GStreamer codec-plugin capability section of the summary."""
+    print_and_log("\n[+] GStreamer Codec Plugins (audio-play / audio-record):", LOG__GENERAL)
+    plugins = report.codec_plugins or {}
+    if not plugins:
+        print_and_log("  ✗ GStreamer Python bindings unavailable — codec paths disabled", LOG__GENERAL)
+        print_and_log(_codec_plugin_install_hint(), LOG__GENERAL)
+        return
+
+    for capability, label in _CODEC_CAPABILITY_LABELS:
+        ok = plugins.get(f"{capability}_ok", False)
+        status = "✓" if ok else "✗"
+        line = f"  {status} {label}"
+        if not ok:
+            # Name the specific missing element(s) so the fix is obvious.
+            missing = [
+                el for el in _GST_CODEC_ELEMENTS.get(capability, ())
+                if not plugins.get(el, False)
+            ]
+            if missing:
+                line += f"  — missing: {', '.join(missing)}"
+        print_and_log(line, LOG__GENERAL)
+
+    if not report.can_record_sbc:
+        print_and_log(
+            "  ⚠ SBC capture path incomplete — 'audio-record' against an A2DP\n"
+            "    source will fail to decode. This is a silent failure at capture\n"
+            "    time; install the plugins below to enable it.",
+            LOG__GENERAL,
+        )
+        print_and_log(_codec_plugin_install_hint(), LOG__GENERAL)
 
 
 def print_preflight_summary(report: Optional[PreflightReport] = None) -> None:
@@ -642,7 +1060,40 @@ def print_preflight_summary(report: Optional[PreflightReport] = None) -> None:
     for tool, available in sorted(report.bluetooth_tools.items()):
         status = "✓" if available else "✗"
         print_and_log(f"  {status} {tool}", LOG__GENERAL)
-    
+
+    # btmgmt: privilege-aware detail (the tick above reflects *runnability*,
+    # not controller access, which needs root).  Surface the nuance so the ✓ is
+    # not mistaken for "usable for controller queries here".
+    if report.btmgmt is not None:
+        bm = report.btmgmt
+        if not bm.present:
+            print_and_log("    ↳ btmgmt: not installed", LOG__GENERAL)
+        elif not bm.runnable:
+            print_and_log(
+                f"    ↳ btmgmt: present but not runnable — {bm.detail}",
+                LOG__GENERAL,
+            )
+        else:
+            ver = f" v{bm.version}" if bm.version else ""
+            if bm.controller_query == "ok":
+                print_and_log(
+                    f"    ↳ btmgmt{ver}: runnable; controller info OK", LOG__GENERAL
+                )
+            elif bm.controller_query == "needs_privilege":
+                print_and_log(
+                    f"    ↳ btmgmt{ver}: runnable; controller info needs root "
+                    "(CAP_NET_ADMIN). Not used by BLEEP — informational only.",
+                    LOG__GENERAL,
+                )
+            elif bm.controller_query == "unavailable":
+                print_and_log(
+                    f"    ↳ btmgmt{ver}: runnable; controller info unavailable "
+                    f"— {bm.detail}",
+                    LOG__GENERAL,
+                )
+            else:
+                print_and_log(f"    ↳ btmgmt{ver}: runnable", LOG__GENERAL)
+
     # Audio tools
     print_and_log("\n[+] Audio Tools:", LOG__GENERAL)
     for tool, available in sorted(report.audio_tools.items()):
@@ -662,7 +1113,10 @@ def print_preflight_summary(report: Optional[PreflightReport] = None) -> None:
             LOG__GENERAL,
         )
         print_and_log(_audio_stack_install_hint(), LOG__GENERAL)
-    
+
+    # GStreamer codec plugins (audio-play / audio-record pipelines)
+    _print_codec_plugin_section(report)
+
     # Bluetooth configuration
     print_and_log("\n[+] Bluetooth Configuration:", LOG__GENERAL)
     if report.bluetooth_config.get("config_dir_exists"):
@@ -681,6 +1135,37 @@ def print_preflight_summary(report: Optional[PreflightReport] = None) -> None:
         print_and_log(f"  ✓ {report.bluez_version}", LOG__GENERAL)
     else:
         print_and_log(f"  ✗ Unable to determine version", LOG__GENERAL)
+
+    exp = report.experimental or {}
+    print_and_log("\n[+] BlueZ experimental (-E):", LOG__GENERAL)
+    am = exp.get("advertisement_monitor")
+    cd = exp.get("connect_device")
+    adapter = exp.get("adapter", "hci0")
+    if am:
+        types = ", ".join(exp.get("supported_types") or []) or "(none)"
+        feats = "controller-patterns" if exp.get("controller_patterns") else "(none)"
+        print_and_log(
+            f"  ✓ AdvertisementMonitorManager1 on {adapter} "
+            f"(types={types}; features={feats})",
+            LOG__GENERAL,
+        )
+    else:
+        print_and_log(
+            f"  ✗ AdvertisementMonitorManager1 missing on {adapter} — "
+            f"advertise-monitor / scan --monitor / survey --listen-monitor disabled",
+            LOG__GENERAL,
+        )
+        print_and_log(f"    {exp.get('hint', '')}", LOG__GENERAL)
+    if cd:
+        print_and_log(f"  ✓ Adapter1.ConnectDevice on {adapter}", LOG__GENERAL)
+    else:
+        print_and_log(
+            f"  ✗ Adapter1.ConnectDevice missing on {adapter} — "
+            f"enumerator falls back to short discovery",
+            LOG__GENERAL,
+        )
+        if am:
+            print_and_log(f"    {exp.get('hint', '')}", LOG__GENERAL)
     
     # Python dependencies
     print_and_log("\n[+] Python Dependencies:", LOG__GENERAL)
@@ -708,6 +1193,12 @@ def print_preflight_summary(report: Optional[PreflightReport] = None) -> None:
     if not report.has_bluetooth_audio_stack:
         print_and_log(
             "  ⚠ No BT audio stack — 'gatt-enum'/'media-enum' may fail on audio devices",
+            LOG__GENERAL,
+        )
+
+    if report.codec_plugins and not report.can_record_sbc:
+        print_and_log(
+            "  ⚠ SBC codec plugins incomplete — 'audio-record' from an A2DP source will fail to decode",
             LOG__GENERAL,
         )
     
@@ -1034,7 +1525,7 @@ def _deep_endpoint_probe(
                 codec_val = None
 
             # Filter to the complement we care about when the UUID is known.
-            if uuid_val is not None and uuid_val.lower() != complement_uuid.lower():
+            if uuid_val is not None and uuid_val.upper() != complement_uuid.upper():
                 continue
 
             owners.append(
@@ -1143,3 +1634,247 @@ def check_endpoint_contention(
         severity=severity,
         deep_probe_run=deep_ran,
     )
+
+
+# ===========================================================================
+# PAN / BNEP (Personal Area Networking) prerequisites
+# ===========================================================================
+#
+# BlueZ's Network1.Connect() / NetworkServer1.Register() succeed at the D-Bus
+# layer but the underlying BNEP session lives in the kernel `bnep` module and
+# (for a NAP server) a Linux bridge.  When those host prerequisites are absent
+# the connection silently drops immediately (Connected flips False, no bnepX
+# interface appears) — the failure mode documented in
+# ``bleep/docs/pan_connection_analysis.md`` §3 and §5.
+#
+# These checks are **detect-and-instruct only**: they read /proc and /sys and
+# NEVER mutate host networking (no modprobe, no bridge creation, no sysctl).
+# Opt-in provisioning is tracked as Future Work (todo_tracker "NAP host
+# auto-setup").  See also the BNEP PSM/role definitions in
+# ``workDir/bluez/lib/bnep.h`` and the server bridge flow in
+# ``workDir/bluez/profiles/network/server.c``.
+
+_PAN_KERNEL_MODULE = "bnep"
+
+
+def _check_kernel_module(name: str) -> bool:
+    """Return True if a kernel module is loaded or built into the kernel.
+
+    Checks ``/sys/module/<name>`` (covers both loadable-and-loaded and
+    built-in modules) and falls back to scanning ``/proc/modules``.  Returns
+    False on any read error so callers treat "unknown" as "not available".
+    """
+    if os.path.isdir(f"/sys/module/{name}"):
+        return True
+    try:
+        with open("/proc/modules", "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.split(" ", 1)[0] == name:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _check_bridge(name: str) -> Dict[str, bool]:
+    """Probe a Linux network interface, reporting existence and bridge-ness.
+
+    Returns ``{"exists": bool, "is_bridge": bool}``.  A bridge interface has a
+    ``/sys/class/net/<name>/bridge`` directory.  Read-only; never mutates.
+    """
+    exists = os.path.isdir(f"/sys/class/net/{name}")
+    is_bridge = os.path.isdir(f"/sys/class/net/{name}/bridge")
+    return {"exists": exists, "is_bridge": is_bridge}
+
+
+def _check_ip_forward() -> Optional[bool]:
+    """Return IPv4 forwarding state, or None if it cannot be read."""
+    try:
+        with open("/proc/sys/net/ipv4/ip_forward", "r", encoding="utf-8") as fh:
+            return fh.read().strip() == "1"
+    except OSError:
+        return None
+
+
+@dataclass
+class PanPrereqReport:
+    """Host-side prerequisites for a PAN (BNEP) client connect or NAP server.
+
+    All fields are populated by :func:`check_pan_prerequisites`.  Server-only
+    fields (``bridge_*``, ``ip_forward_enabled``) stay ``None`` for the client
+    role.  The report never reflects a mutation — it is a pure snapshot.
+    """
+
+    role: str = "nap"
+    server: bool = False
+    bridge: Optional[str] = None
+    adapter: Optional[str] = None
+    bnep_module_loaded: bool = False
+    adapter_ready: bool = False
+    bridge_exists: Optional[bool] = None
+    bridge_is_bridge: Optional[bool] = None
+    ip_forward_enabled: Optional[bool] = None
+
+    @property
+    def client_ready(self) -> bool:
+        """True when the minimum client-connect prerequisites are met."""
+        return self.bnep_module_loaded and self.adapter_ready
+
+    @property
+    def server_ready(self) -> bool:
+        """True when the minimum NAP/GN/PANU server prerequisites are met.
+
+        A usable bridge is required for the server to attach incoming BNEP
+        sessions; IP forwarding is only advisory (a NAP that shares internet
+        needs it, a plain link-local bridge does not), so it does not gate.
+        """
+        return (
+            self.bnep_module_loaded
+            and self.adapter_ready
+            and bool(self.bridge_exists)
+            and bool(self.bridge_is_bridge)
+        )
+
+    @property
+    def ready(self) -> bool:
+        """Role-appropriate readiness flag."""
+        return self.server_ready if self.server else self.client_ready
+
+    def blocking_issues(self) -> List[str]:
+        """Return the prerequisite failures that will prevent a working PAN."""
+        issues: List[str] = []
+        if not self.bnep_module_loaded:
+            issues.append("bnep kernel module not loaded")
+        if not self.adapter_ready:
+            issues.append("Bluetooth adapter not present or not powered")
+        if self.server:
+            if not self.bridge_exists:
+                issues.append(f"bridge '{self.bridge}' does not exist")
+            elif not self.bridge_is_bridge:
+                issues.append(
+                    f"interface '{self.bridge}' exists but is not a bridge"
+                )
+        return issues
+
+    def instructions(self) -> List[str]:
+        """Return actionable remediation steps for any unmet prerequisites.
+
+        Mirrors the diagnostic checklist in
+        ``bleep/docs/pan_connection_analysis.md`` §5–6.  Empty when ready.
+        """
+        steps: List[str] = []
+        if not self.bnep_module_loaded:
+            steps.append("Load the BNEP kernel module:  sudo modprobe bnep")
+        if not self.adapter_ready:
+            steps.append(
+                "Power on a Bluetooth adapter:  bluetoothctl power on  "
+                "(or verify one is present with 'hciconfig')"
+            )
+        if self.server:
+            if not self.bridge_exists:
+                steps.append(
+                    f"Create the PAN bridge:  sudo ip link add {self.bridge} "
+                    f"type bridge && sudo ip link set {self.bridge} up"
+                )
+            elif not self.bridge_is_bridge:
+                steps.append(
+                    f"'{self.bridge}' is not a bridge — choose a different "
+                    f"--bridge name or remove the conflicting interface"
+                )
+            if self.ip_forward_enabled is False:
+                steps.append(
+                    "For internet-sharing (NAP), enable IPv4 forwarding:  "
+                    "sudo sysctl -w net.ipv4.ip_forward=1  and add a NAT rule:  "
+                    "sudo iptables -t nat -A POSTROUTING -o <WAN_IF> -j MASQUERADE"
+                )
+        return steps
+
+
+def check_pan_prerequisites(
+    role: str = "nap",
+    *,
+    server: bool = False,
+    bridge: Optional[str] = None,
+    adapter: Optional[str] = None,
+) -> PanPrereqReport:
+    """Snapshot the host prerequisites for a PAN client connect or NAP server.
+
+    Parameters
+    ----------
+    role : str
+        PAN role (``"nap"``, ``"panu"``, ``"gn"``) — recorded for context.
+    server : bool
+        When True, also probe the NAP/GN/PANU server prerequisites (bridge +
+        IPv4 forwarding).  When False, only the client-connect prerequisites
+        (bnep module + adapter) are probed.
+    bridge : Optional[str]
+        Bridge interface name to probe for the server role (default ``pan0``).
+    adapter : Optional[str]
+        Adapter name (e.g. ``hci0``); defaults to the first available.
+
+    Returns
+    -------
+    PanPrereqReport
+        A read-only snapshot.  This function never mutates host networking.
+    """
+    bridge = bridge or "pan0"
+    report = PanPrereqReport(
+        role=role,
+        server=server,
+        bridge=bridge if server else None,
+        adapter=adapter,
+        bnep_module_loaded=_check_kernel_module(_PAN_KERNEL_MODULE),
+        adapter_ready=require_adapter(adapter),
+    )
+    if server:
+        br = _check_bridge(bridge)
+        report.bridge_exists = br["exists"]
+        report.bridge_is_bridge = br["is_bridge"]
+        report.ip_forward_enabled = _check_ip_forward()
+    return report
+
+
+def print_pan_prereq_summary(report: PanPrereqReport) -> None:
+    """Print a user-friendly PAN prerequisite summary with remediation hints."""
+    kind = "server" if report.server else "client"
+    print_and_log(
+        f"[+] PAN {kind} prerequisites (role={report.role}):", LOG__GENERAL
+    )
+    print_and_log(
+        f"  {'✓' if report.bnep_module_loaded else '✗'} bnep kernel module",
+        LOG__GENERAL,
+    )
+    print_and_log(
+        f"  {'✓' if report.adapter_ready else '✗'} Bluetooth adapter ready",
+        LOG__GENERAL,
+    )
+    if report.server:
+        print_and_log(
+            f"  {'✓' if report.bridge_exists else '✗'} bridge "
+            f"'{report.bridge}' exists",
+            LOG__GENERAL,
+        )
+        if report.bridge_exists:
+            print_and_log(
+                f"  {'✓' if report.bridge_is_bridge else '✗'} "
+                f"'{report.bridge}' is a bridge interface",
+                LOG__GENERAL,
+            )
+        fwd = report.ip_forward_enabled
+        fwd_mark = "✓" if fwd else ("✗" if fwd is False else "?")
+        print_and_log(
+            f"  {fwd_mark} IPv4 forwarding (advisory, needed for NAP internet "
+            f"sharing)",
+            LOG__GENERAL,
+        )
+
+    steps = report.instructions()
+    if steps:
+        print_and_log(
+            "  ⚠ Unmet prerequisites — the BNEP session will likely fail:",
+            LOG__GENERAL,
+        )
+        for step in steps:
+            print_and_log(f"      → {step}", LOG__GENERAL)
+    else:
+        print_and_log("  ✓ All PAN prerequisites satisfied", LOG__GENERAL)

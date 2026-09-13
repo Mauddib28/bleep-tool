@@ -93,6 +93,20 @@ def _uuid_from_char_name(device, name: str) -> Optional[str]:
     if handle is not None and handle in device.ble_device__mapping:
         return device.ble_device__mapping[handle]
 
+    # #14: reuse the enumerated handle→UUID map built by ``services_resolved()``
+    # (``ble_device__handle_uuid_map`` is keyed by both the int handle and its
+    # hex form). This resolves labels like Flag-04's ``char0015`` where the
+    # D-Bus object path uses a different (declaration vs value) handle so the
+    # path-suffix fallback below misses.
+    hmap = getattr(device, "ble_device__handle_uuid_map", None) or {}
+    if handle is not None:
+        if hmap.get(handle):
+            return hmap[handle]
+        from bleep.bt_ref.utils import handle_int_to_hex
+        hx = handle_int_to_hex(handle)
+        if hmap.get(hx):
+            return hmap[hx]
+
     # Fallback: search by DBus object path suffix (works even without Handle property)
     suffix = f"/{name.lower()}"
     for svc in getattr(device, "_services", []):
@@ -148,8 +162,8 @@ def ble_ctf__scan_and_enumeration() -> Tuple["_LEDevice", Dict[int, str]]:  # ty
     # The BLE-CTF device has a fixed set of characteristics with known UUIDs
     # Ensure our mapping contains these regardless of what BlueZ reports
     ctf_uuids = {
-        0x0029: "0000ff01-0000-1000-8000-00805f9b34fb",  # Flag-Score
-        0x002b: "0000ff02-0000-1000-8000-00805f9b34fb",  # Flag-Write
+        0x0029: "0000FF01-0000-1000-8000-00805F9B34FB",  # Flag-Score
+        0x002b: "0000FF02-0000-1000-8000-00805F9B34FB",  # Flag-Write
     }
     
     # Update mapping with known UUIDs
@@ -232,8 +246,8 @@ def ble_ctf__read_characteristic(
                                 if characteristic_name.lower().startswith('char'):
                                     char_id = characteristic_name.lower()[4:]
                                     if char_id == '003d':  # Flag-10 "Read me 1000 times"
-                                        service_uuid = '000000ff-0000-1000-8000-00805f9b34fb'
-                                        char_uuid = '0000ff0b-0000-1000-8000-00805f9b34fb'
+                                        service_uuid = '000000FF-0000-1000-8000-00805F9B34FB'
+                                        char_uuid = '0000FF0B-0000-1000-8000-00805F9B34FB'
                                         print_and_log(f"[INFO] Direct insert into database for {characteristic_name}", LOG__GENERAL)
                                         insert_char_history(mac, service_uuid, char_uuid, raw, 'read')
                             
@@ -296,15 +310,15 @@ def ble_ctf__read_characteristic(
             mac = user_device.address if hasattr(user_device, 'address') else None
             
             # If we don't have a MAC but we're working with the BLECTF characteristic, use the known MAC
-            if not mac and uuid == '0000ff0b-0000-1000-8000-00805f9b34fb':
+            if not mac and uuid.upper() == '0000FF0B-0000-1000-8000-00805F9B34FB':
                 mac = 'CC:50:E3:B6:BC:A6'
             
             if mac:
                 service_uuid = None
                 
                 # For known BLECTF UUIDs, we know the service UUID
-                if uuid.startswith('0000ff'):
-                    service_uuid = '000000ff-0000-1000-8000-00805f9b34fb'
+                if uuid.upper().startswith('0000FF'):
+                    service_uuid = '000000FF-0000-1000-8000-00805F9B34FB'
                 
                 # If we still don't have a service UUID, use a placeholder
                 if not service_uuid:

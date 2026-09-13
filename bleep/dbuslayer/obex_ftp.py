@@ -35,7 +35,10 @@ from bleep.bt_ref.constants import (
 from bleep.dbuslayer._obex_common import (
     poll_obex_transfer as _poll_transfer,
     unwrap_dbus as _unwrap,
+    obex_session_error as _obex_session_error,
 )
+from bleep.core.errors import BLEEPError, map_dbus_error
+from bleep.bt_ref.constants import RESULT_ERR_WRONG_STATE
 
 
 class FtpSession:
@@ -56,9 +59,10 @@ class FtpSession:
             client_obj = self._bus.get_object(_OBEX_SERVICE, OBEX_ROOT_PATH)
             self._client = dbus.Interface(client_obj, _OBEX_CLIENT_IFACE)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
+            raise BLEEPError(
                 f"BlueZ obexd not running or D-Bus error: "
-                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
+                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}",
+                RESULT_ERR_WRONG_STATE,
             ) from exc
 
         print_and_log(f"[FTP] Creating session → {self.mac}", LOG__DEBUG)
@@ -67,9 +71,8 @@ class FtpSession:
                 self.mac, {"Target": "ftp"}
             )
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"FTP CreateSession failed: {exc.get_dbus_name()}: "
-                f"{exc.get_dbus_message() or ''}"
+            raise _obex_session_error(
+                exc, self.mac, profile="FTP", service_hint="OBEX-FTP (0x1106)",
             ) from exc
 
         session_obj = self._bus.get_object(_OBEX_SERVICE, self._session_path)
@@ -98,20 +101,14 @@ class FtpSession:
         try:
             self._ftp.ChangeFolder(folder)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"FTP ChangeFolder({folder!r}) failed: "
-                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
 
     def create_folder(self, folder: str) -> None:
         """Create a new folder on the remote device."""
         try:
             self._ftp.CreateFolder(folder)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"FTP CreateFolder({folder!r}) failed: "
-                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
 
     def list_folder(self) -> List[Dict[str, Any]]:
         """Return the current folder listing as a list of dicts.
@@ -122,10 +119,7 @@ class FtpSession:
         try:
             raw = self._ftp.ListFolder()
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"FTP ListFolder failed: "
-                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
         return [_unwrap(entry) for entry in raw]
 
     # -- file transfer --------------------------------------------------------
@@ -144,10 +138,7 @@ class FtpSession:
         try:
             transfer_path, _props = self._ftp.GetFile(local_dest, remote_file)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"FTP GetFile failed: "
-                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
 
         result = _poll_transfer(
             self._bus, transfer_path, timeout or self._timeout, label="FTP"
@@ -179,10 +170,7 @@ class FtpSession:
         try:
             transfer_path, _props = self._ftp.PutFile(local_file, remote_name)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"FTP PutFile failed: "
-                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
 
         return _poll_transfer(
             self._bus, transfer_path, timeout or self._timeout, label="FTP"
@@ -195,27 +183,18 @@ class FtpSession:
         try:
             self._ftp.CopyFile(source, target)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"FTP CopyFile({source!r} → {target!r}) failed: "
-                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
 
     def move_file(self, source: str, target: str) -> None:
         """Move *source* to *target* on the remote device."""
         try:
             self._ftp.MoveFile(source, target)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"FTP MoveFile({source!r} → {target!r}) failed: "
-                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
 
     def delete(self, name: str) -> None:
         """Delete a file or folder on the remote device."""
         try:
             self._ftp.Delete(name)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"FTP Delete({name!r}) failed: "
-                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc

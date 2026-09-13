@@ -53,6 +53,7 @@ _FILES = {
     "CODING_FORMAT": "assigned_numbers/core/coding_format.yaml",
     "NAMESPACE": "assigned_numbers/core/namespace.yaml",
     "PSM": "assigned_numbers/core/psm.yaml",
+    "CORE_VERSION": "assigned_numbers/core/core_version.yaml",
 }
 
 # Store the URL mappings in a JSON file for future use
@@ -98,7 +99,7 @@ _HEADER = (
 _SRC_LIST = list(_FILES.values())  # Populated below – declared early for f-string
 
 _OUT_PATH = Path(__file__).with_name("uuids.py")
-_SIG_SUFFIX = "-0000-1000-8000-00805f9b34fb"
+_SIG_SUFFIX = "-0000-1000-8000-00805F9B34FB"
 
 def _save_url_mappings():
     """Save URL mappings to JSON file for future use."""
@@ -366,6 +367,28 @@ def _gen_dict_block(var: str, yaml_data: dict, *, key_style: str = "uuid") -> st
                     key = f"0x{val:04x}"
                     lines.append(f"\t\"{key}\" : \"{name}\",")
         
+        # Handle core specification version data. These are single-byte LMP/HCI
+        # version values, so they MUST be keyed as 2-digit hex ("0x0c") to match
+        # resolve_core_version()'s f"0x{lmp_version:02x}" lookup — the generic
+        # branch below would emit a 128-bit UUID key (key_style="uuid") or 4-digit
+        # hex, neither of which the resolver can find.
+        elif first_key == "core_version" and var == "SPEC_ID_NAMES__CORE_VERSION":
+            print(f"[*] Processing core specification version data")
+            for entry in yaml_data["core_version"]:
+                if "value" in entry and "name" in entry:
+                    # PyYAML (YAML 1.1) parses ``0x0A`` as the int 10, so
+                    # ``int(str(value), 16)`` would mis-read 10 as 0x10. Only
+                    # re-parse as hex when the value is still a "0x…" string.
+                    raw = entry["value"]
+                    val = (
+                        int(str(raw), 16)
+                        if isinstance(raw, str) and str(raw).lower().startswith("0x")
+                        else int(raw)
+                    )
+                    name = entry["name"].replace("\"", r"\"")
+                    key = f"0x{val:02x}"
+                    lines.append(f"\t\"{key}\" : \"{name}\",")
+
         # Default handling for standard list formats with uuid or value fields
         else:
             for entry in yaml_data.get(first_key, []):
@@ -380,7 +403,7 @@ def _gen_dict_block(var: str, yaml_data: dict, *, key_style: str = "uuid") -> st
                 name = entry.get("name", "").replace("\"", r"\"")
 
                 if key_style == "uuid":
-                    key = f"0000{short:04x}{_SIG_SUFFIX}"
+                    key = f"0000{short:04X}{_SIG_SUFFIX}"
                 else:
                     key = f"0x{short:04x}"
 
@@ -394,23 +417,81 @@ def _gen_dict_block(var: str, yaml_data: dict, *, key_style: str = "uuid") -> st
     lines.append("}\n")
     return "\n".join(lines)
 
+
+def _load_existing_tables() -> dict:
+    """Parse the currently committed ``uuids.py`` into ``{var_name: dict}``.
+
+    Used so a *failed* fetch can preserve the previously generated table instead
+    of overwriting it with an empty dict (the historical offline footgun). The
+    generated module only contains literal dict assignments, so a sandboxed
+    ``exec`` is safe and avoids importing the whole ``bleep`` package.
+    """
+    if not _OUT_PATH.exists():
+        return {}
+    try:
+        ns: dict = {}
+        exec(compile(_OUT_PATH.read_text(encoding="utf-8"), str(_OUT_PATH), "exec"), ns)
+        return {k: v for k, v in ns.items() if isinstance(v, dict) and not k.startswith("__")}
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[!] Could not parse existing {_OUT_PATH.name} for preservation: {e}")
+        return {}
+
+
+def _emit_existing_block(var: str, mapping: dict) -> str:
+    """Re-emit an already-generated table verbatim (same style as ``_gen_dict_block``)."""
+    header_line = "# Specification UUID Definitions" if var.startswith("SPEC_UUID_NAMES") \
+        else "# Specification ID Definitions"
+    header_line += f"\n# {var}\n# [preserved: fetch failed — retained previously generated table]"
+    lines = [header_line, f"{var} = {{"]
+    for k, v in mapping.items():
+        kk = str(k).replace('"', r'\"')
+        vv = str(v).replace('"', r'\"')
+        lines.append(f"\t\"{kk}\" : \"{vv}\",")
+    lines.append("}\n")
+    return "\n".join(lines)
+
+
+def _block_for(var: str, data, key_style: str, existing: dict) -> tuple[str, bool]:
+    """Return (block_text, preserved) for a table.
+
+    On a failed fetch (``data is None``) with a non-empty previously committed
+    table, the existing table is preserved rather than zeroed out.
+    """
+    if data is None and existing.get(var):
+        print(f"[*] Preserving existing {var} ({len(existing[var])} entries) — fetch failed")
+        return _emit_existing_block(var, existing[var]), True
+    return _gen_dict_block(var, data, key_style=key_style), False
+
+
 def regenerate() -> None:
-    """Download all YAML tables and rewrite uuids.py."""
+    """Download all YAML tables and rewrite uuids.py.
+
+    Safety: a failed fetch preserves the previously committed table (see
+    ``_block_for``) so an offline/partial run never zeroes out ``uuids.py``.
+    """
     blocks: list[str] = []
     failed_fetches = []
+    preserved_fetches = []
     successful_fetches = []
-    
+
     print("[*] Starting BLE SIG UUID regeneration process...")
+
+    # Snapshot the committed tables up-front so failed fetches can be preserved.
+    existing = _load_existing_tables()
 
     uuid_keys = ["SERV", "CHAR", "DESC", "MEMB", "SDO", "SERV_CLASS"]
     for key in uuid_keys:
         print(f"\n[*] Processing {key}...")
+        var = f"SPEC_UUID_NAMES__{key}"
         data = _fetch_yaml(key)
         if data is None:
             failed_fetches.append(key)
         else:
             successful_fetches.append(_FILES[key])
-        blocks.append(_gen_dict_block(f"SPEC_UUID_NAMES__{key}", data, key_style="uuid"))
+        block, preserved = _block_for(var, data, "uuid", existing)
+        if preserved:
+            preserved_fetches.append(key)
+        blocks.append(block)
 
     id_map = {
         "COMPANY": "SPEC_ID_NAMES__COMPANY_IDENTS",
@@ -419,6 +500,7 @@ def regenerate() -> None:
         "CODING_FORMAT": "SPEC_ID_NAMES__CODING_FORMATS",
         "NAMESPACE": "SPEC_ID_NAMES__NAMESPACE_DESCS",
         "PSM": "SPEC_ID_NAMES__PSM",
+        "CORE_VERSION": "SPEC_ID_NAMES__CORE_VERSION",
     }
 
     for key, var in id_map.items():
@@ -428,22 +510,38 @@ def regenerate() -> None:
             failed_fetches.append(key)
         else:
             successful_fetches.append(_FILES[key])
-        blocks.append(_gen_dict_block(var, data, key_style="hex"))
+        block, preserved = _block_for(var, data, "hex", existing)
+        if preserved:
+            preserved_fetches.append(key)
+        blocks.append(block)
 
     if failed_fetches:
         print(f"\n[!] Warning: Failed to fetch data for these keys: {', '.join(failed_fetches)}")
-        print("    The output file will contain empty dictionaries for these keys.")
-    
-    if not successful_fetches:
-        print("\n[!] CRITICAL: Could not fetch ANY data. Output will contain only empty dictionaries.")
+        if preserved_fetches:
+            print(f"    Preserved previously committed tables for: {', '.join(preserved_fetches)}")
+        still_empty = [k for k in failed_fetches if k not in preserved_fetches]
+        if still_empty:
+            print(f"    No prior data to preserve for: {', '.join(still_empty)} (empty dict emitted).")
+
+    if not successful_fetches and not preserved_fetches:
+        print("\n[!] CRITICAL: Could not fetch ANY data and no committed tables to preserve.")
         print("    Check network connectivity and ensure BitBucket repository is accessible.")
     
     # Use successful fetches as sources in header, or indicate fallback if none
-    sources = successful_fetches if successful_fetches else ["none - using empty dictionaries"]
+    if successful_fetches:
+        sources = successful_fetches
+    elif preserved_fetches:
+        sources = ["none fetched - preserved previously committed tables"]
+    else:
+        sources = ["none - using empty dictionaries"]
     content = _HEADER.format(timestamp=datetime.now().isoformat(timespec="seconds"), sources=", ".join(sources)) + "\n\n" + "\n".join(blocks)
 
     _OUT_PATH.write_text(content, encoding="utf-8")
-    print(f"\n[+] Regenerated {_OUT_PATH.relative_to(Path.cwd())}")
+    try:
+        shown = _OUT_PATH.relative_to(Path.cwd())
+    except ValueError:
+        shown = _OUT_PATH
+    print(f"\n[+] Regenerated {shown}")
 
 
 if __name__ == "__main__":

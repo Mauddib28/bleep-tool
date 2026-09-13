@@ -10,7 +10,8 @@ Welcome to the official documentation hub for **BLEEP – Bluetooth Landscape Ex
 - [Scan modes](ble_scan_modes.md) — passive, naggy, pokey, brute
 - [GATT enumeration commands](gatt_enumeration.md) — `gatt-enum` and `enum-scan`
 - [Bluetooth Classic mode](bl_classic_mode.md) — BR/EDR scanning, profiles (PBAP, OPP, MAP, FTP, PAN, SPP, etc.)
-  - [MAP bMessage format reference](map_bmessage_format.md) — envelope spec, LENGTH rules, nested envelopes, bulk ops, test corpus
+  - [MAP bMessage format reference](map_bmessage_format.md) — envelope spec, LENGTH rules, nested envelopes, bulk ops, inline examples
+  - [MAP version compatibility](map_version_compatibility.md) — MAP 1.0–1.4 feature negotiation & the `obexd` MAP-1.0-client version-mismatch caveat
 - [Media mode](media_mode.md) — A2DP/AVRCP (`media-enum`, `media-ctrl`)
 - [Audio recon](audio_recon.md) — PulseAudio/PipeWire enumeration, play/record
 - [BLE CTF mode](ble_ctf_mode.md)
@@ -19,19 +20,27 @@ Welcome to the official documentation hub for **BLEEP – Bluetooth Landscape Ex
 - [Analysis mode](analysis_mode.md) — post-process JSON dumps
 - [Agent mode](agent_mode.md) — pairing agent
 - [Pairing agent](pairing_agent.md) — detailed agent architecture
+  - [Agent pairing flow analysis](agent_pairing_flow_analysis.md) — end-to-end pairing call/signal flow walkthrough
 - [Signal capture](signal_capture.md) — characteristic notification monitoring
+- [Advertisement monitor](adv_monitor.md) — kernel-offloaded passive scanning
+- [LE advertising](le_advertising.md) — register/manage local BLE advertisements (`advertise`)
+- [Survey mode](survey_mode.md) — multi-adapter environment survey & metrics
+- [Beacon identification](beacon_identification.md) — iBeacon/Eddystone/vendor beacon identification
 - [Adapter configuration](adapter_config.md)
 
 ### Data & Security
 - [Observation database](observation_db.md)
+  - [Schema reference](observation_db_schema.md)
   - [Real-World Usage Scenarios](observation_db_usage_scenarios.md)
   - [Database in debug mode](debug_mode_db.md)
 - [Assets-of-Interest (AoI) Mode](aoi_mode.md)
   - [AoI Security Analysis Algorithms](aoi_security_algorithms.md)
   - [AoI Customization Guide](aoi_customization_guide.md)
   - [AoI Implementation](aoi_implementation.md)
+  - [AoI Testing Guide](aoi_testing.md) — input-file formats & the `pytest` AoI suite
 
 ### Architecture & Reference
+- [Programmatic API specification](api_specification.md) — package/module hierarchy & observations API reference
 - `bleep/protocols/` — **design-only** package containing L2CAP and OBEX protocol design documents; no runtime code yet
 - [BlueZ D-Bus interface property reference](bluez_interface_properties.md)
 - [D-Bus reliability documentation](dbus_documentation_index.md)
@@ -40,6 +49,7 @@ Welcome to the official documentation hub for **BLEEP – Bluetooth Landscape Ex
 - [Mainloop architecture](mainloop_architecture.md)
 - [Unified D-Bus Event Aggregator](unified_dbus_event_aggregator.md)
 - [Device type classification](device_type_classification.md)
+- [Advertisement dissection](adv_dissection.md) — lossless ServiceData/ManufacturerData decode (iBeacon, Eddystone, Apple Continuity, …)
 - [UUID translation](uuid_translation.md)
 - [Modalias handling](modalias_handling.md)
 - [Network capability](network_capability_summary.md)
@@ -49,6 +59,7 @@ Welcome to the official documentation hub for **BLEEP – Bluetooth Landscape Ex
 ### Project Tracking
 - [Change log](changelog.md)
 - [Central TODO tracker](todo_tracker.md)
+- [Documentation archive](archive/README.md) — historical investigations & completed plans
 
 ---
 

@@ -3,6 +3,7 @@
 import dbus
 import dbus.exceptions
 import functools
+import re
 from typing import Dict, Optional, Tuple, Union, Callable, Any
 
 from bleep.bt_ref.constants import *
@@ -165,6 +166,62 @@ def decode_dbus_error(exc: dbus.exceptions.DBusException) -> int:
             return code
 
     return RESULT_ERR
+
+
+# ATT error code → RESULT_ERR_* for the codes BlueZ leaves in the message text
+# of `org.bluez.Error.Failed` ("Operation failed with ATT error: 0x%02x", see
+# workDir/bluez/src/gatt-client.c:create_gatt_dbus_error default branch, and
+# workDir/bluez/src/shared/att-types.h for the code values). BlueZ already maps
+# 0x02/0x03/0x05/0x06/0x08/0x0c/0x0f to dedicated D-Bus errors, so those rarely
+# reach here; they are included defensively for stacks that surface raw ecodes.
+_ATT_ECODE_TO_RESULT = {
+    0x02: RESULT_ERR_READ_NOT_PERMITTED,
+    0x03: RESULT_ERR_WRITE_NOT_PERMITTED,
+    0x05: RESULT_ERR_INSUFFICIENT_ENCRYPTION,   # Authentication
+    0x08: RESULT_ERR_NOT_AUTHORIZED,            # Authorization
+    0x0C: RESULT_ERR_INSUFFICIENT_ENCRYPTION,   # Encryption key size
+    0x0F: RESULT_ERR_INSUFFICIENT_ENCRYPTION,   # Insufficient encryption
+    0x06: RESULT_ERR_NOT_SUPPORTED,             # Request not supported
+}
+
+_ATT_ECODE_RE = re.compile(r"att error:\s*0x([0-9a-fA-F]{1,2})")
+
+
+def classify_gatt_read_error(exc: "dbus.exceptions.DBusException") -> int:
+    """Classify a GATT read/write ``DBusException`` into a RESULT_ERR_* code.
+
+    Message-aware layer on top of :func:`decode_dbus_error` for the two cases
+    BlueZ encodes in the *message* rather than the error *name*
+    (validated against ``workDir/bluez/src/gatt-client.c`` v5.83):
+
+    * ``org.bluez.Error.NotPermitted`` + "Not paired"  → encryption required
+      (ATT 0x05/0x0c/0x0f). Plain "read/write not permitted" keep their codes.
+    * ``org.bluez.Error.Failed`` + "ATT error: 0xNN"   → the specific ATT code.
+
+    Everything else defers to :func:`decode_dbus_error`. A bare
+    ``org.bluez.Error.Failed`` with no ATT suffix preserves the legacy
+    ``RESULT_ERR_UNKNOWN_CONNECT_FAILURE`` classification (no regression).
+    """
+    name = exc.get_dbus_name() or ""
+    msg = (exc.get_dbus_message() or "")
+    msg_l = msg.lower()
+
+    if name == "org.bluez.Error.NotPermitted":
+        if "not paired" in msg_l:
+            return RESULT_ERR_INSUFFICIENT_ENCRYPTION
+        if "write not permitted" in msg_l:
+            return RESULT_ERR_WRITE_NOT_PERMITTED
+        return RESULT_ERR_READ_NOT_PERMITTED
+
+    if name == "org.bluez.Error.Failed":
+        m = _ATT_ECODE_RE.search(msg_l)
+        if m:
+            ecode = int(m.group(1), 16)
+            return _ATT_ECODE_TO_RESULT.get(ecode, RESULT_ERR_UNKNOWN_CONNECT_FAILURE)
+        # Bare Failed (att_ecode 0 / negative errno) — preserve legacy bucket.
+        return RESULT_ERR_UNKNOWN_CONNECT_FAILURE
+
+    return decode_dbus_error(exc)
 
 
 class system_dbus__error_handling_service:

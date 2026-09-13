@@ -5,18 +5,26 @@ helpers. It trades raw flexibility for **speed and safety**, making it ideal
 for day-to-day reconnaissance or troubleshooting when you don't need every
 single handle in the GATT database.
 
-The user mode provides two interfaces:
-1. A **menu-driven interface** for interactive exploration (default)
-2. A **command-line interface** for automation
+User mode is **menu-only** — an interactive, menu-driven interface for
+exploration. It does **not** provide a command/REPL interface of its own. The
+`scan`/`enum`/`enumn`/`enump`/`enumb` verbs referenced elsewhere are `bleep
+debug` shell commands, not user-mode commands; for one-shot automation use the
+top-level CLI (`bleep scan`, `bleep gatt-enum`, `bleep enum-scan`, …).
 
 ## Menu-driven Interface
 
 The menu interface provides a user-friendly way to interact with Bluetooth devices without needing to memorize commands.
 
 ```bash
-# Launch the menu interface
-python -m bleep.cli user
+# Launch the menu interface (the --menu flag selects the menu UI)
+python -m bleep.cli user --menu
 ```
+
+> **`--menu` is required to open the menu.** In the CLI parser `--menu`
+> defaults to `False`, and `run_user_mode()` only calls `run_menu_mode()` when
+> that flag is set (`if args.menu or not hasattr(args, 'menu')`, user.py ~1375).
+> Running plain `bleep user` (optionally with `--device`/`--scan`) performs the
+> requested connect/scan and then returns **without** opening the menu.
 
 This will display the main menu:
 
@@ -50,11 +58,11 @@ Options:
 ### Starting with a Connected Device
 
 ```bash
-# Launch with automatic scan and connection
-python -m bleep.cli user --scan 5
+# Scan, then open the menu (add --menu to launch the menu UI)
+python -m bleep.cli user --scan 5 --menu
 
-# Connect directly to a specific device
-python -m bleep.cli user --device 00:11:22:33:44:55
+# Connect directly to a specific device, then open the menu
+python -m bleep.cli user --device 00:11:22:33:44:55 --menu
 ```
 
 ---
@@ -66,37 +74,37 @@ python -m bleep.cli user --device 00:11:22:33:44:55
 python -m bleep.cli scan
 
 # 2. Enumerate a target safely (read-only)
-python -m bleep.cli gatt-enum --address AA:BB:CC:DD:EE:FF
+python -m bleep.cli gatt-enum AA:BB:CC:DD:EE:FF
 
 # 3. Compare changes over time (multi-read)
-python -m bleep.cli enum-scan --address AA:BB:CC:DD:EE:FF --variant naggy
+python -m bleep.cli enum-scan AA:BB:CC:DD:EE:FF --variant naggy
 
 # 4. Light write probe (pokey)
-python -m bleep.cli enum-scan --address AA:BB:CC:DD:EE:FF --variant pokey --verify
+python -m bleep.cli enum-scan AA:BB:CC:DD:EE:FF --variant pokey --verify
 
 # 5. Full brute-force of a single characteristic (expert-only)
-python -m bleep.cli enum-scan --address AA:BB:CC:DD:EE:FF --variant brute \
+python -m bleep.cli enum-scan AA:BB:CC:DD:EE:FF --variant brute \
                              --write-char 00002a37-0000-1000-8000-00805f9b34fb \
                              --range 0x00-0x1F --patterns ascii,alt
 ```
 
-All commands write JSON results to `~/.bleep/reports/YYYY-MM-DD/` and append
-human-readable logs to `~/.bleep/logs/user_mode.log`.
+Menu-driven **Export Device Data** writes JSON to `~/.bleep/exports/`
+(`Path.home()/".bleep"/"exports"`, user.py ~1160). Human-readable logs are
+written to `~/.local/share/bleep/logs/usermode.log` (with a legacy
+`/tmp/bti__logging__usermode.txt` symlink kept for backward compatibility; see
+`bleep/core/log.py`). There are no `~/.bleep/reports/`, `~/.bleep/logs/`, or
+`~/.bleep/maps/` directories.
 
 ---
 
 ## Command reference
 
-| Command | Description |
-|---------|-------------|
-| `scan`  | Wrapper around discovery presets – defaults to **passive**; `--variant` flag exposes naggy/pokey/brute. |
-| `enum`  | Passive enumeration (single read). |
-| `enumn` | Multi-read enumeration – default **3** rounds, configurable with `--rounds`. |
-| `enump` | Pokey enumeration – multi-read + 0/1 write probes; `--verify` re-reads after each write. |
-| `enumb` | Brute enumeration – exhaustive writes to one characteristic.  Accepts `--range`, `--patterns`, `--payload-file`, `--force`, `--verify`. |
-
-Safety guardrails are enabled by default: landmine/permission maps are honoured
-unless `--force` is provided.
+User mode has **no command verbs** — all interaction is through the numbered
+menu (see [Menu Interface Workflows](#menu-interface-workflows) below). The
+`scan`/`enum`/`enumn`/`enump`/`enumb` verbs are **`bleep debug` shell
+commands**, not user-mode commands; for one-shot automation use the top-level
+CLI (`bleep scan`, `bleep gatt-enum`, `bleep enum-scan`). See
+[Debug mode](debug_mode.md) and [GATT Enumeration](gatt_enumeration.md).
 
 ---
 
@@ -221,8 +229,8 @@ When errors occur, the User Mode provides:
 ### Example 1: Finding and Reading a Battery Level
 
 ```bash
-# Start the User Mode
-python -m bleep.cli user
+# Start the User Mode (--menu opens the numbered main-menu UI)
+python -m bleep.cli user --menu
 
 # From the main menu:
 # 1. Select "1" to scan for devices
@@ -237,8 +245,8 @@ python -m bleep.cli user
 ### Example 2: Configuring Notifications for Heart Rate
 
 ```bash
-# Start the User Mode with direct connection
-python -m bleep.cli user --device 00:11:22:33:44:55
+# Start the User Mode with direct connection (--menu opens the main-menu UI)
+python -m bleep.cli user --device 00:11:22:33:44:55 --menu
 
 # From the main menu:
 # 1. Select "4" to browse services
@@ -252,8 +260,8 @@ python -m bleep.cli user --device 00:11:22:33:44:55
 ### Example 3: Writing to a Characteristic
 
 ```bash
-# Start the User Mode
-python -m bleep.cli user
+# Start the User Mode (--menu opens the numbered main-menu UI)
+python -m bleep.cli user --menu
 
 # From the main menu:
 # 1. Select "2" to connect to a device manually
@@ -269,8 +277,8 @@ python -m bleep.cli user
 ### Example 4: Setting Up Signal Capture
 
 ```bash
-# Start the User Mode
-python -m bleep.cli user
+# Start the User Mode (--menu opens the numbered main-menu UI)
+python -m bleep.cli user --menu
 
 # From the main menu:
 # 1. Select "5" to configure signal capture
@@ -283,8 +291,8 @@ python -m bleep.cli user
 ### Example 5: Exporting Device Data for Analysis
 
 ```bash
-# Start the User Mode with scan
-python -m bleep.cli user --scan 5
+# Start the User Mode with scan (--menu opens the main-menu UI)
+python -m bleep.cli user --scan 5 --menu
 
 # From the main menu:
 # 1. Select a device from the scan results
@@ -299,8 +307,8 @@ python -m bleep.cli user --scan 5
 The User Mode can be combined with other BLEEP commands for advanced workflows:
 
 ```bash
-# Scan with User Mode then export the data for analysis
-python -m bleep.cli user --scan 10
+# Scan with User Mode then export the data for analysis (--menu for the export UI)
+python -m bleep.cli user --scan 10 --menu
 # Export to JSON then use jq to filter for specific services
 jq '.services[] | select(.uuid | contains("180f"))' ~/.bleep/exports/device_*.json
 
@@ -315,8 +323,8 @@ Start User Mode with specific focuses:
 
 ```bash
 # Focus on signal analysis
-# 1. Start with scanning
-python -m bleep.cli user --scan 8
+# 1. Start with scanning (--menu opens the main-menu UI)
+python -m bleep.cli user --scan 8 --menu
 # 2. Configure signal capture
 # 3. Enable notifications for characteristics of interest
 # 4. Export data after capture session
@@ -327,8 +335,8 @@ python -m bleep.cli user --scan 8
 Use User Mode to collect data, then analyze it with the AoI tools:
 
 ```bash
-# 1. Use User Mode to connect and export device data
-python -m bleep.cli user --device 00:11:22:33:44:55
+# 1. Use User Mode to connect and export device data (--menu for the export UI)
+python -m bleep.cli user --device 00:11:22:33:44:55 --menu
 # 2. Then run AoI analysis on the collected data
 python -m bleep.cli aoi analyze --address 00:11:22:33:44:55
 # 3. Generate a security report
@@ -350,10 +358,10 @@ python -m bleep.cli user --scan 5
 ## Multi-read helpers
 
 Internally `enumn` and `enump` rely on two utilities exported from
-`bleep.ble_ops.enum_helpers`:
+`bleep.ble_ops.le.enum_helpers`:
 
 ```python
-from bleep.ble_ops.enum_helpers import multi_read_characteristic, multi_read_all
+from bleep.ble_ops.le.enum_helpers import multi_read_characteristic, multi_read_all
 
 # read one handle repeatedly
 values = multi_read_characteristic(dev, "00002a37-…", repeats=5)
@@ -372,7 +380,7 @@ Use these helpers in your own scripts when you need change-detection logic.
 Advanced users can craft custom payloads:
 
 ```python
-from bleep.ble_ops.enum_helpers import build_payload_iterator, brute_write_range
+from bleep.ble_ops.le.enum_helpers import build_payload_iterator, brute_write_range
 
 payloads = build_payload_iterator(
     value_range=(0x00, 0x0F),
@@ -396,7 +404,7 @@ results = brute_write_range(
 | Issue | Symptom | Solution |
 |-------|---------|----------|
 | **Controller Stall** | Operations hang or "No Reply" errors | User Mode automatically suggests running `bluetoothctl disconnect <MAC>`. If reconnection fails, restart BlueZ with `sudo systemctl restart bluetooth` or power-cycle your adapter. |
-| **Permission Errors** | "Not authorized" or "Not permitted" messages | Check if characteristic requires authentication. Try pairing with the device using `bluetoothctl`. Landmine and permission maps are logged under `~/.bleep/maps/`. |
+| **Permission Errors** | "Not authorized" or "Not permitted" messages | Check if characteristic requires authentication. Try pairing with the device using `bluetoothctl`. Landmine and permission maps are surfaced in the session output (not written to disk). |
 | **Connection Failures** | "Connection refused" or timeouts | Ensure the device is in range and advertising. If the device was recently connected elsewhere, it may need time to reset. |
 | **Value Reading Errors** | "Value format not recognized" | The characteristic may use a custom format. Try viewing the data in hexadecimal format. |
 | **Notification Issues** | Notifications not appearing | Ensure the characteristic supports notifications and they are properly enabled. Check if other applications are already subscribed. |
@@ -412,7 +420,7 @@ results = brute_write_range(
 
 If you encounter issues not covered here:
 
-1. Check the log files located in `~/.bleep/logs/`
+1. Check the log file at `~/.local/share/bleep/logs/usermode.log` (or its legacy `/tmp/bti__logging__usermode.txt` symlink)
 2. Look for errors in the console output
 3. Try running BLEEP in debug mode for more verbose output:
    ```bash
@@ -422,4 +430,4 @@ BLEEP_LOG_LEVEL=DEBUG python -m bleep.cli user
 
 ---
 
-*Last updated: 2025-07-25 (Extended with UI navigation patterns and workflow examples; corrected command syntax to use python -m bleep.cli)* 
+*Last updated: 2026-09-13 (Corrected to reality against user.py: user mode is menu-only with no REPL; `--menu` is required to open the menu; fixed export path to `~/.bleep/exports/` and the primary log path to `~/.local/share/bleep/logs/usermode.log` with the legacy `/tmp/bti__logging__usermode.txt` symlink; removed nonexistent reports/logs/maps paths.)* 

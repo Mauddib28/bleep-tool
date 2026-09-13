@@ -8,6 +8,7 @@ to continuously check BlueZ service health.
 Based on best practices from BlueZ monitor-bluetooth script.
 """
 
+import subprocess
 import threading
 import time
 from typing import Dict, List, Set, Optional, Callable, Any, Union
@@ -90,7 +91,7 @@ class BlueZServiceMonitor:
                     self._service_available = is_available
                     status_str = "available" if is_available else "unavailable"
                     print_and_log(
-                        f"[{'*' if is_available else '!'} BlueZ service is now {status_str}",
+                        f"[{'*' if is_available else '!'}] BlueZ service is now {status_str}",
                         LOG__GENERAL
                     )
                     self._trigger_availability_callbacks(is_available)
@@ -146,6 +147,11 @@ class BlueZServiceMonitor:
     def _check_service_health(self) -> bool:
         """
         Check if BlueZ service is responsive.
+
+        Uses an out-of-process ``dbus-send`` call so the health-check
+        never iterates the in-process GLib default main context.  This
+        avoids a race with scan rounds that run ``GLib.MainLoop().run()``
+        on the main thread.
         
         Returns
         -------
@@ -154,31 +160,42 @@ class BlueZServiceMonitor:
         """
         if not self._service_available:
             return False
-        
+
         try:
-            # Get a fresh connection to the Object Manager
-            obj = self._bus.get_object(BLUEZ_SERVICE_NAME, "/")
-            mgr = dbus.Interface(obj, DBUS_OM_IFACE)
-            
-            # Time the GetManagedObjects call
             start_time = time.time()
-            mgr.GetManagedObjects()
+            result = subprocess.run(
+                [
+                    "dbus-send", "--system", "--print-reply",
+                    "--dest=org.freedesktop.DBus",
+                    "/org/freedesktop/DBus",
+                    "org.freedesktop.DBus.GetNameOwner",
+                    "string:org.bluez",
+                ],
+                capture_output=True,
+                timeout=5.0,
+            )
             elapsed = time.time() - start_time
-            
-            # Log the elapsed time for performance monitoring
+
             print_and_log(
                 f"[DEBUG] BlueZ health check: {elapsed:.3f}s",
-                LOG__DEBUG
+                LOG__DEBUG,
             )
-            
-            # Update last successful check time
-            self._last_successful_check = time.time()
-            return True
-            
-        except dbus.exceptions.DBusException as e:
+
+            if result.returncode == 0:
+                self._last_successful_check = time.time()
+                return True
+            return False
+
+        except subprocess.TimeoutExpired:
+            print_and_log(
+                "[-] BlueZ health check timed out",
+                LOG__DEBUG,
+            )
+            return False
+        except Exception as e:
             print_and_log(
                 f"[-] BlueZ service health check failed: {e}",
-                LOG__DEBUG
+                LOG__DEBUG,
             )
             return False
     

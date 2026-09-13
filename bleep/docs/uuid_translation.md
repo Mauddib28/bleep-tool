@@ -237,6 +237,71 @@ for match in result['matches']:
     print(f"  {match['category']}: {match['name']}")
 ```
 
+### Display-only convenience: `get_uuid_name`
+
+For display code that only needs a single friendly name (not the full match
+structure), use `get_uuid_name()`. It is a thin wrapper over `translate_uuid()`
+that returns the best (highest-priority) match name, or a caller-supplied
+`default` (empty string by default) when nothing matches — letting callers branch
+on a falsy result:
+
+```python
+from bleep.bt_ref.uuid_translator import get_uuid_name
+
+get_uuid_name("0x110E")   # -> "A/V Remote Control"  (16-bit short form)
+get_uuid_name("180a")     # -> "Device Information Service"
+get_uuid_name("00001800-0000-1000-8000-00805F9B34FB")  # -> "GAP"
+get_uuid_name("ffffffff") # -> ""  (unknown → default)
+get_uuid_name("bad", default="?")  # -> "?"
+```
+
+Because it delegates to `translate_uuid()`, it normalizes 16/32/128-bit input in
+any case, dashed or not. This is the resolver used by the Classic (BR/EDR)
+enumeration output (`classic-enum`, debug `csdp`/`cservices`) to name SDP records
+that lack an explicit SDP Service Name — including the common short-form service
+UUIDs (`0x110E`, `0x1116`, `0x112F`, …) emitted by `sdptool`.
+
+> **Note on `get_name_from_uuid()`:** the older
+> `bleep.bt_ref.utils.get_name_from_uuid()` performs **exact-string** matching
+> only (no short↔long normalization) and returns the sentinel string
+> `"Unknown"`. Prefer `get_uuid_name()` for any path that may receive short-form
+> or mixed-case UUIDs.
+
+### Resolution tiers of `get_name_from_uuid()`
+
+`get_name_from_uuid(uuid, uuid_class=None, *, allow_observed=False)` consults, in
+order:
+
+1. **Custom** — `constants.UUID_NAMES` (includes operator promotions, see below).
+2. **SIG GATT** — service / characteristic / descriptor / member / SDO /
+   service-class tables (`bt_ref/uuids.py`).
+3. **SIG Mesh** — mesh model UUIDs (`bt_ref/mesh_ids.py`, generated from SIG
+   `mesh/mesh_model_uuids.yaml`). 16-bit model IDs live below the GATT ranges so
+   they cannot collide with the tables above.
+4. **Observed (opt-in only)** — when `allow_observed=True` and every
+   authoritative tier misses, the observed-UUID catalogue is consulted and a
+   `"Unknown (seen as: <names>)"` hint is returned. Default (`False`) preserves
+   the historical `"Unknown"` output, so no default caller changes behaviour.
+   This tier is *never* authoritative and never pollutes tiers 1–3.
+
+### Observed-UUID catalogue ("seen in the wild")
+
+`bleep.core.observations.get_observed_uuid_catalogue(limit=None, uuid=None)`
+aggregates every UUID observed on real devices (LE services / characteristics /
+descriptors + Classic services + SDP records), canonicalised to 128-bit so short
+and long forms of the same logical UUID merge, into
+`{uuid, names, count, sources, first_seen, last_seen, sample_macs}` (most-observed
+first). Surface it with `bleep db uuids [--uuid <UUID>]`.
+
+### Promoting an observed UUID
+
+`bleep db uuids --uuid <UUID> --promote "<Name>"` (or
+`bleep.bt_ref.custom_uuids.promote_uuid(uuid, name)`) folds a vendor/proprietary
+UUID into the authoritative **custom** tier. Promotions persist to a JSON overlay
+(`~/.bleep/custom_uuids.json`, override with `BLEEP_CUSTOM_UUIDS`) that
+`constants.UUID_NAMES` merges at import — self-contained and reversible (delete
+the entry/file to undo).
+
 ## Architecture
 
 The UUID translation system is designed with modularity and extensibility in mind:
@@ -290,7 +355,7 @@ If you receive an "Invalid UUID format" error:
 
 ## Related Documentation
 
-- [UUID Translation Plan](uuid_translation_plan.md) - Detailed implementation plan
+- [UUID Translation Plan](archive/uuid_translation_plan.md) - Detailed implementation plan
 - [BLEEP CLI Usage](cli_usage.md) - General CLI documentation
 - [Interactive Mode](user_mode.md) - Interactive mode documentation
 
@@ -303,4 +368,104 @@ python -m bleep.bt_ref.update_ble_uuids
 ```
 
 This will fetch the latest UUID definitions from the Bluetooth SIG and regenerate the internal databases.
+
+Alternatively, use the unified CLI command to refresh every committed
+reference-data module in one step:
+
+```bash
+bleep refresh-refs              # all sources
+bleep refresh-refs --sig-only   # only BT SIG assigned numbers (+ CoD/Mesh + BlueZ SDP)
+bleep refresh-refs --vendor-only
+bleep refresh-refs --oui-only    # only the IEEE OUI vendor database (bt_ref/oui.py)
+bleep refresh-refs --usb-only    # only the USB-IF ID database (bt_ref/usb_ids.py)
+```
+
+`refresh-refs` wraps seven self-contained, network-best-effort updaters (each
+falls back to its committed cache / prior module on failure — a refresh never
+zeroes a table). The scope flags above are mutually exclusive; a bare
+`refresh-refs` runs all seven:
+
+| Source | Updater | Emits |
+|--------|---------|-------|
+| BT SIG assigned numbers | `bt_ref/update_ble_uuids.py` | `bt_ref/uuids.py` |
+| BT SIG CoD + Mesh | `bt_ref/update_extra_refs.py` | `bt_ref/cod.py`, `bt_ref/mesh_ids.py` |
+| **BlueZ SDP universal attribute IDs** | `bt_ref/update_bluez_refs.py` | `bt_ref/sdp_attr_ids.py` |
+| **SIG profile SDP attribute IDs** | `bt_ref/update_sig_sdp_attr_ids.py` | `bt_ref/sdp_profile_attr_ids.py` |
+| Vendor/community adv specs | `bt_ref/update_vendor_specs.py` | `bt_ref/vendor_adv_specs.py` |
+| **IEEE OUI vendor database** (`--oui-only`) | `bt_ref/update_oui.py` | `bt_ref/oui.py` |
+| **USB-IF ID database** (`--usb-only`) | `bt_ref/update_usb_ids.py` | `bt_ref/usb_ids.py` |
+
+### BlueZ-sourced SDP attribute-ID labels
+
+The SDP *attribute-ID* labels are **not** a single machine-readable SIG file (the
+SIG `service_discovery/attribute_ids/` tree is a directory of per-profile YAMLs).
+The canonical, stable source is the upstream BlueZ header `lib/sdp.h`, pulled from
+`https://github.com/bluez/bluez.git` (canonical:
+`git://git.kernel.org/pub/scm/bluetooth/bluez.git`), **pinned** to a specific
+commit for reproducible refreshes and cached at `bt_ref/bluez_cache/sdp.h`.
+
+> **SDP attribute IDs are context-dependent above the universal range.** Only the
+> *universal* attribute IDs `0x0000`–`0x000D` (plus the primary-language string
+> offsets `0x0100`–`0x0102`) carry a single unambiguous label. IDs `>= 0x0200`
+> are **reused across profiles** — BlueZ defines `0x0200` as *all* of `GROUP_ID`,
+> `IP_SUBNET`, `VERSION_NUM_LIST`, `SUPPORTED_FEATURES_LIST`, `GOEP_L2CAP_PSM`,
+> `SPECIFICATION_ID`, `HID_DEVICE_RELEASE_NUMBER`, … — so their meaning depends on
+> the record's service-class UUID.
+
+#### Profile-scoped resolution
+
+`resolve_sdp_attr_id(attr_id, service_class_uuid=None)` resolves context-dependent
+IDs when the service class is known. It first checks the universal table
+(`sdp_attr_ids.py`), then, for `>= 0x0200`, joins the ID to the service class via
+`sdp_profile_attr_ids.py`:
+
+- `SDP_PROFILE_ATTR_IDS = {profile_stem: {"0xNNNN": name}}` — the per-profile
+  attribute-ID labels ingested from the SIG `service_discovery/attribute_ids/*.yaml`
+  tree (generated by `update_sig_sdp_attr_ids.py`, cached under
+  `bt_ref/sig_cache/attribute_ids/`).
+- `SERVICE_CLASS_TO_PROFILE = {"0xNNNN": profile_stem}` — a curated reverse map
+  (grounded in `uuids/service_class.yaml`) that picks the profile for a service
+  class, so e.g. `0x0200` resolves to `HIDDeviceReleaseNumber` under HID
+  (`0x1124`) but `IPSubnet`/PAN under `0x1116`.
+
+Without a service class, `resolve_sdp_attr_id()` still returns universal labels and
+returns `None` for unresolved context-dependent IDs. The SDP XML parser pre-scans a
+record's Service Class ID List (attribute `0x0001`) *before* the main loop so
+labelling is order-independent, then attaches resolved labels to the record's
+`attribute_labels` field as a *lossless, additive* annotation — it never drops raw
+data or overwrites a parsed field. Every ingested profile is reachable (a standing
+test asserts no profile lacks a `SERVICE_CLASS_TO_PROFILE` entry — e.g. the WAP
+`interoperability_requirements` table resolves under service classes `0x1113`/`0x1114`).
+
+#### Sibling tables — string offsets & protocol parameters
+
+`update_sig_sdp_attr_ids.py` also ingests two single-file siblings from
+`assigned_numbers/service_discovery/` (cached under `bt_ref/sig_cache/`) into the
+same generated module:
+
+- `SDP_STRING_ATTR_OFFSETS` (from `attribute_id_offsets_for_strings.yaml`) —
+  `ServiceName`/`ServiceDescription`/`ProviderName` at offsets `0x0000`/`0x0001`/
+  `0x0002`. These are added to a **language base** declared in the record's
+  `LanguageBaseAttributeIDList` (attr `0x0006`, a sequence of uint16 triplets
+  `(code_ISO639, encoding, base_offset)` per BlueZ `sdp.c`). The SDP parser
+  pre-scans attr `0x0006` and labels *secondary-language* string attributes as e.g.
+  `"Service Name (fr)"` (the primary base `0x0100` is already covered by the
+  universal table).
+- `SDP_PROTOCOL_PARAMETERS` (from `protocol_parameters.yaml`) — names the positional
+  parameters inside a ProtocolDescriptorList (attr `0x0004`) per protocol
+  (`L2CAP[1]=PSM`, `RFCOMM[1]=Channel`, `BNEP[1]=Version`, `BNEP[2]=Supported
+  Network Packet Type List`, …). `_extract_protocol_descriptors_xml` attaches these
+  as an additive `parameters` list (`{index, name, value}`) on each descriptor,
+  alongside the existing `uuid`/`name`.
+
+### Core Specification version names
+
+`bt_ref/uuids.py` also carries `SPEC_ID_NAMES__CORE_VERSION` (from SIG
+`core/core_version.yaml`), keyed by the 1-byte LMP/HCI version as 2-digit hex
+(`"0x0c"` → *Bluetooth® Core Specification 5.3*). `resolve_core_version()` and
+`ble_ops/classic/version.py:map_lmp_version_to_spec()` consume it as the
+**primary** name source (the hardcoded `_LMP_VERSION_MAP` is a fallback only for
+values the SIG table lacks). The SIG table also authoritatively corrects LMP
+`0x0E`/`0x0F` to *6.0*/*6.1* (the fallback historically mislabelled them
+"5.5"/"5.6").
 

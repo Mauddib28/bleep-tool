@@ -20,6 +20,9 @@ import hashlib
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 from bleep.ble_ops.le.scan import passive_scan
+
+__all__ = ["run"]
+
 from bleep.ble_ops.le.ctf import (
     BLE_CTF__CHARACTERISTIC_FLAGS, 
     ble_ctf__scan_and_enumeration,
@@ -1080,6 +1083,43 @@ def main():
             
         except Exception as e:
             print_and_log(f"[-] Error: {e}", LOG__GENERAL)
+
+def run(args, output=None) -> int:
+    import sys
+    from bleep.ble_ops.le.ctf import ble_ctf__scan_and_enumeration
+    from bleep.ble_ops.le.ctf_discovery import discover_flags, auto_solve_flags, generate_flag_visualization
+
+    device_mac = args.device
+
+    if args.interactive:
+        return main() or 0
+
+    try:
+        print(f"[*] Connecting to BLE CTF device ({device_mac})...")
+        device, _ = ble_ctf__scan_and_enumeration()
+        print(f"[+] Connected to {device_mac}")
+
+        if args.discover:
+            print("[*] Discovering and analyzing flags...")
+            discover_flags(device)
+
+        if args.solve:
+            print("[*] Automatically solving flags...")
+            auto_solve_flags(device)
+
+        if args.visualize:
+            print("[*] Generating flag visualization...")
+            visualization = generate_flag_visualization(device)
+            print(visualization)
+
+        if not (args.discover or args.solve or args.visualize):
+            return main() or 0
+
+        return 0
+    except Exception as e:
+        print(f"[!] BLE CTF error: {e}", file=sys.stderr)
+        return 1
+
 
 if __name__ == "__main__":
     main()

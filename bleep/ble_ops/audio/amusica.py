@@ -35,7 +35,7 @@ def _device_has_audio_uuids(device_info: Dict[str, Any]) -> bool:
     """Return True if *device_info* advertises at least one audio service UUID."""
     uuids = device_info.get("uuids") or device_info.get("UUIDs") or []
     for u in uuids:
-        if str(u).lower() in AUDIO_SERVICE_UUIDS:
+        if str(u).upper() in AUDIO_SERVICE_UUIDS:
             return True
     return False
 
@@ -43,7 +43,7 @@ def _device_has_audio_uuids(device_info: Dict[str, Any]) -> bool:
 def _audio_uuids_for_device(device_info: Dict[str, Any]) -> List[str]:
     """Return the subset of advertised UUIDs that match known audio services."""
     uuids = device_info.get("uuids") or device_info.get("UUIDs") or []
-    return [str(u) for u in uuids if str(u).lower() in AUDIO_SERVICE_UUIDS]
+    return [str(u) for u in uuids if str(u).upper() in AUDIO_SERVICE_UUIDS]
 
 
 def scan_audio_targets(
@@ -95,7 +95,7 @@ def scan_audio_targets(
             continue
         matched = _audio_uuids_for_device(dev)
         dev["audio_uuids"] = [
-            {"uuid": u, "name": AUDIO_PROFILE_NAMES.get(u.lower(), u)}
+            {"uuid": u, "name": AUDIO_PROFILE_NAMES.get(u.upper(), u)}
             for u in matched
         ]
         targets.append(dev)

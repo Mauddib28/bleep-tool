@@ -210,14 +210,14 @@ def cmd_multiread_all(args: List[str], state: DebugState) -> None:
                         print_and_log(f"[-] No characteristics found for service {svc_uuid}", LOG__GENERAL)
 
                         if svc_uuid in [
-                            '00001801-0000-1000-8000-00805f9b34fb',
-                            '00001800-0000-1000-8000-00805f9b34fb',
-                            '000000ff-0000-1000-8000-00805f9b34fb',
+                            '00001801-0000-1000-8000-00805F9B34FB',
+                            '00001800-0000-1000-8000-00805F9B34FB',
+                            '000000FF-0000-1000-8000-00805F9B34FB',
                         ]:
                             print_and_log(f"[*] Known service UUID detected: {svc_uuid}", LOG__GENERAL)
                             from bleep.dbuslayer.characteristic import Characteristic
-                            if svc_uuid == '00001801-0000-1000-8000-00805f9b34fb':
-                                char_uuid = "00002a05-0000-1000-8000-00805f9b34fb"
+                            if svc_uuid == '00001801-0000-1000-8000-00805F9B34FB':
+                                char_uuid = "00002A05-0000-1000-8000-00805F9B34FB"
                                 char_obj = Characteristic(char_uuid)
                                 char_obj.uuid = char_uuid
                                 char_obj.flags = ['indicate']

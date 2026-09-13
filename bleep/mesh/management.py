@@ -80,6 +80,36 @@ class MeshManagement:
         except dbus.exceptions.DBusException as exc:
             raise map_mesh_dbus_error(exc) from exc
 
+    def reprovision(
+        self, unicast: int, *, options: Optional[dict] = None,
+    ) -> None:
+        """Trigger re-provisioning of a remote node (BZ-25a).
+
+        Initiates one of the Node Provisioning Protocol Interface (NPPI)
+        procedures to refresh a remote node's device key, unicast address,
+        and/or composition.  The remote node must support the Remote
+        Provisioning Server model.
+
+        Results are delivered via ``Provisioner1.RequestReprovData``,
+        ``ReprovComplete``, and ``ReprovFailed`` callbacks.
+
+        Parameters
+        ----------
+        unicast : int
+            Current primary unicast address of the remote node.
+        options : dict, optional
+            Additional options (reserved for future BlueZ extensions).
+        """
+        opts = dbus.Dictionary(options or {}, signature="sv")
+        try:
+            self._iface.Reprovision(dbus.UInt16(unicast), opts)
+            print_and_log(
+                f"[mesh-mgmt] Reprovision requested unicast=0x{unicast:04x}",
+                LOG__GENERAL,
+            )
+        except dbus.exceptions.DBusException as exc:
+            raise map_mesh_dbus_error(exc) from exc
+
     # -- Subnet management -------------------------------------------------
 
     def create_subnet(self, net_index: int) -> None:

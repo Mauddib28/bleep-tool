@@ -25,9 +25,13 @@ from __future__ import annotations
 import argparse
 import signal
 import sys
+from typing import TYPE_CHECKING
 
 import dbus
 import dbus.mainloop.glib  # type: ignore[import-untyped]
+
+if TYPE_CHECKING:
+    from bleep.core.output import OutputContext
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 from bleep.pairing import (
@@ -92,7 +96,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 # Auto-pair helper
 # ---------------------------------------------------------------------
 
-def _ensure_paired(mac: str, timeout: int) -> bool:
+def _ensure_paired(mac: str, timeout: int, adapter_name: str = "hci0") -> bool:
     """Pair with the device if not already paired.  Returns True on success."""
     from bleep.dbuslayer.agent import PairingAgent
     from bleep.dbuslayer.agent_io import create_io_handler
@@ -103,22 +107,22 @@ def _ensure_paired(mac: str, timeout: int) -> bool:
     if not register_pair_agent(io_handler, "KeyboardDisplay"):
         return False
 
-    adapter = Adapter()
+    adapter = Adapter(adapter_name)
     device_path = resolve_device_for_pair(mac, adapter)
     if device_path is None:
-        print(f"[-] Device {mac} not found", file=sys.stderr)
+        print_and_log(f"[-] Device {mac} not found", LOG__GENERAL)
         return False
 
     agent = getattr(_agent_mod, "_DEFAULT_AGENT", None)
     if not isinstance(agent, PairingAgent):
-        print("[-] Default agent is not a PairingAgent", file=sys.stderr)
+        print_and_log("[-] Default agent is not a PairingAgent", LOG__GENERAL)
         return False
 
     success = agent.pair_device(device_path, set_trusted=True, timeout=timeout)
     if success:
         print_and_log(f"[+] Paired with {mac}", LOG__GENERAL)
     else:
-        print(f"[-] Pairing with {mac} failed", file=sys.stderr)
+        print_and_log(f"[-] Pairing with {mac} failed", LOG__GENERAL)
     return success
 
 
@@ -126,68 +130,97 @@ def _ensure_paired(mac: str, timeout: int) -> bool:
 # Entry point
 # ---------------------------------------------------------------------
 
-def main(argv: list[str] | None = None) -> int:
-    """Run the ``bleep classic-connect`` CLI mode."""
-    argv = argv if argv is not None else sys.argv[2:]
-    args = _build_arg_parser().parse_args(argv)
+def run(args: argparse.Namespace, output: OutputContext | None = None) -> int:
+    """Execute classic-connect with parsed args and optional OutputContext.
+
+    This is the canonical entry point for Phase 3+ callers that pass a
+    pre-parsed ``argparse.Namespace`` and an ``OutputContext``.  The older
+    ``main(argv)`` wrapper remains for backward compatibility.
+    """
+    from bleep.core.output import OutputContext
+    from bleep.core.log import set_output_mode
+
+    if output is None:
+        output = OutputContext()
+
+    set_output_mode(output.mode)
 
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     mac = args.address.strip().upper()
 
-    # --check: report status and exit
     if args.check:
         status = check_pair_status(mac)
         report_pair_status(mac, status)
         return 0
 
-    # Ensure device is paired
     status = check_pair_status(mac)
     if not status.get("paired"):
         if args.no_pair:
-            print(f"[-] Device {mac} is not paired (use 'bleep pair' first or remove --no-pair)")
+            print_and_log(f"[-] Device {mac} is not paired (use 'bleep pair' first or remove --no-pair)", LOG__GENERAL)
             return 1
         print_and_log(f"[*] Device {mac} not paired — auto-pairing…", LOG__GENERAL)
-        if not _ensure_paired(mac, args.timeout):
+        if not _ensure_paired(mac, args.timeout, getattr(args, "adapter", "hci0")):
             return 1
 
-    # SDP + RFCOMM connect
     result = classic_connect_sdp_rfcomm(
         mac,
         channel=args.channel,
         open_keepalive=True,
         activate_profiles=args.activate_profiles,
+        adapter_name=getattr(args, "adapter", None),
     )
     svc_map = result["svc_map"]
     sock = result["sock"]
     if result.get("profiles_activated"):
-        print("[+] BlueZ audio profile handlers activated")
+        print_and_log("[+] BlueZ audio profile handlers activated", LOG__GENERAL)
 
     if not svc_map:
-        print(f"[*] No SDP services found for {mac}")
-        print("[*] Device may be out of range or not exposing services")
+        print_and_log(f"[*] No SDP services found for {mac}", LOG__GENERAL)
+        print_and_log("[*] Device may be out of range or not exposing services", LOG__GENERAL)
         return 1
 
-    # Print service summary
     rfcomm_count = sum(1 for v in svc_map.values() if v.get("channel") is not None)
-    print(f"\n[+] Classic connect to {mac} — {len(svc_map)} services ({rfcomm_count} with RFCOMM)")
+    # N3: distinguish services-advertising-RFCOMM from the distinct channel
+    # numbers actually attempted (multiple services often share one channel),
+    # so this count aligns with the "distinct RFCOMM channel(s) attempted"
+    # failure message and the keep-alive loop's de-duplicated candidate list.
+    _distinct_channels = len({
+        v.get("channel") for v in svc_map.values()
+        if isinstance(v, dict) and v.get("channel") is not None
+    })
+    print_and_log(
+        f"\n[+] Classic connect to {mac} — {len(svc_map)} services "
+        f"({rfcomm_count} advertising RFCOMM across {_distinct_channels} distinct channel(s))",
+        LOG__GENERAL,
+    )
 
     if sock and result["channel"] is not None:
-        print(f"[+] RFCOMM channel {result['channel']} connected")
+        print_and_log(f"[+] RFCOMM channel {result['channel']} connected", LOG__GENERAL)
     elif rfcomm_count > 0:
-        print("[*] RFCOMM keepalive could not be established")
-        print("[*] Profile commands (classic-pbap, classic-map, etc.) create their own sessions")
+        print_and_log("[*] RFCOMM keepalive could not be established", LOG__GENERAL)
+        print_and_log("[*] Profile commands (classic-pbap, classic-map, etc.) create their own sessions", LOG__GENERAL)
 
     if not args.keep:
         if sock:
             sock.close()
+            return 0
+        # #13: SDP advertised RFCOMM channel(s) but none could be opened — the
+        # connection attempt failed, so do not report success. (A device with
+        # no RFCOMM channels at all is not a failure of this RFCOMM path.)
+        if rfcomm_count > 0:
+            print_and_log(
+                f"[-] {mac}: {_distinct_channels} distinct RFCOMM channel(s) attempted "
+                f"(from {rfcomm_count} advertising service(s)) — none connectable",
+                LOG__GENERAL,
+            )
+            return 1
         return 0
 
-    # --keep: hold the socket open until Ctrl+C
     if not sock:
-        print("[-] No RFCOMM socket to keep alive — exiting")
+        print_and_log("[-] No RFCOMM socket to keep alive — exiting", LOG__GENERAL)
         return 1
 
-    print(f"[*] Holding RFCOMM keepalive on channel {result['channel']} — Ctrl+C to disconnect")
+    print_and_log(f"[*] Holding RFCOMM keepalive on channel {result['channel']} — Ctrl+C to disconnect", LOG__GENERAL)
 
     def _sigint_handler(sig, frame):
         raise KeyboardInterrupt
@@ -198,13 +231,20 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        print("\n[*] Closing keepalive socket")
+        print_and_log("\n[*] Closing keepalive socket", LOG__GENERAL)
         try:
             sock.close()
         except Exception:
             pass
 
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the ``bleep classic-connect`` CLI mode (backward-compatible wrapper)."""
+    argv = argv if argv is not None else sys.argv[2:]
+    args = _build_arg_parser().parse_args(argv)
+    return run(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

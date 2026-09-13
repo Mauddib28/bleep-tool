@@ -1,3 +1,4560 @@
+## Unreleased
+
+_No unreleased changes yet._
+
+## 3.1.0 (2026-09-13)
+
+### Documentation-fidelity remediation + version bump (2026-09-13)
+
+Version bumped **3.0.0 → 3.1.0** (`bleep/__init__.py`, `setup.py`;
+`bleep --version` now reports `BLEEP 3.1.0 (DB schema v20)`).
+
+All user and internal documentation was audited against the current
+implementation and corrected for fidelity (no code behaviour changed). Notable
+fixes: `ble_scan_modes.md` passive-connect parameters (`connect_wait_timeout`
+min 5, `timeout_services` `max(timeout,15)`, `max_attempts` 2) and the
+debug-shell `enumb`/ROE semantics (single-characteristic, `respect_roeng=False`;
+`all` is CLI-only via `enum-scan --write-char all`); `user_mode.md` menu
+examples now include the required `--menu`; `debug_mode.md` `dbexport [--save]`;
+`bl_classic_mode.md` logging section repointed to `~/.local/share/bleep/logs/*.log`
+(legacy `/tmp/bti__logging__*.txt` symlinks) and PAN `--role`/`copp exchange`
+corrections; `map_bmessage_format.md` source citations refreshed;
+`pan_connection_analysis.md` event-driven `_verify_connected` and archive links;
+agent/pairing docs (`stop_glib_mainloop`/`ensure_glib_mainloop` in
+`debug_state.py`, `--reset`-gated stale-bond removal, `register()` defaults);
+observation-DB docs (getter signatures, `sighting_count` per-run semantics,
+`analysis_details` = `details` sub-dict, `audio_recon` cascade exception,
+`store_aoi_analysis` example nested under `summary`);
+`device_type_classification.md` collector-mode matrix and dual/LE logic;
+`dbus_best_practices.md` log-path symbol; and `survey_mode.md` `--variant` row +
+`--stall-rounds` multi-collector scoping. All 67 markdown files pass internal
+link/anchor and code-fence validation.
+
+### Segmented long surveys + documentation consolidation (2026-09-08)
+
+**New: `--segment-time` (default 1800s = 30 min).** A `--duration` longer than
+one segment is now executed as consecutive segments in **fresh processes** and
+merged into a single census, because a single process stops collecting after
+~80 harvest rounds (~42 min). Ruled out as causes, each by controlled
+measurement: adapter hardware (wedges identically on `hci1`), the enumerator
+(wedges with none configured), long-lived discovery sessions (wedges with
+discovery torn down every round), the GLib loop (all runs loop-free), and
+`dbus-daemon` match-rule/reply limits, socket backpressure, signals-registry
+retention and BlueZ object accumulation. `d-bus-reliability.md` carries the
+table so it is not re-investigated. `--segment-time 0` restores single-process
+behaviour.
+
+Merging folds per-segment `objects` payloads on address: `sightings` sum,
+`rssi_avg` becomes a **sightings-weighted** mean, RSSI extremes widen,
+timestamps span all segments, `uuids`/`seen_by` union, payload dicts combine,
+`is_cached` survives only if no segment saw the device live, and a device seen
+`le` in one segment and `classic` in another becomes `dual`. Per-segment
+outputs and health sidecars are kept beside the merged file, so an interruption
+costs at most one segment. `--then-aoi` runs once on the merged census.
+`format_grouped` was refactored onto a new `SurveyCensus.group_objects()` so the
+merger regroups without a second copy of the bucketing rules. 39 tests in
+`tests/test_survey_segments.py`; verified end-to-end on hardware (two 60s
+segments, 17 devices each, merged to 17 unique with sightings summed 67+67=134).
+
+**Documentation consolidated.** ~780 lines of run-by-run narrative were removed
+from `todo_tracker.md` after relocating the durable knowledge to the documents
+that own those areas: the `GMainContext` data-race root cause and the rule
+against driving GATT from the loop thread to `mainloop_architecture.md`; the
+collector ceiling and its eliminated hypotheses to `d-bus-reliability.md`;
+operator-facing flag behaviour to `survey_mode.md` and `cli_usage.md`, which
+was missing all five of the new flags. The tracker now keeps accepted policies,
+open items, and closed-with-reason entries. Stale cross-references from code
+comments and other docs were repointed to the new homes.
+
+**Dropped as not operationally relevant:** the ~2.1 MB/round retention
+(200 MB/hour on a 15 GB host, and not the stall trigger — one run died at
+197.5 MB where another died at 207.7 MB), plus bounding `manager._devices` and
+the round-cadence item.
+
+### Debt audit of the collector/enumerator work (2026-09-08)
+
+Whole-module audit of everything the collector/enumerator work added. All seven
+new modules have production importers and tests and contain **zero dead
+functions**, so the added code is not bloat; the debt was narrower.
+
+**Removed.** The write-only `_services_resolved_pending` flag (`device_le.py`)
+— two `Store` sites, zero `Load` sites. The `if self._bus_is_private:` branch
+that actually defers the work is kept and its comment corrected: per `mainloop_architecture.md` the
+hazard is driving GATT from the loop thread, not the connection's ownership.
+
+**De-duplicated.** `--max-enum-devices` validation and application existed
+twice, in `survey.py` and `debug_survey.py`, and had already drifted — the CLI
+warned that `0` grows without bound, the debug shell reported "unlimited" with
+no warning. Both now call `device_pool.apply_capacity()`.
+
+**Fixed — recovery that degraded the host.** `adapter.power_cycle()` wrapped
+both `Powered` writes in one `try`, so a failed power-*on* left the adapter off
+and returned a bare `False`. Survey Run E hit exactly this and left `hci0`
+`DOWN` after exit with nothing in the log saying so. The writes are now
+separate, the power-on is retried once, and the survey ladder prints the
+restore command via `_warn_left_powered_off()`. `_power_cycle`'s docstring also
+claimed "the ladder has a rung below it" — it does not; the next step is to end
+the listen phase.
+
+**Fixed — flaky test.** `test_two_workers_get_different_buses` closed the first
+worker's bus before creating the second and compared `id()` snapshots, so
+CPython could reuse the freed address. Both connections are now held open
+across the comparison.
+
+**Correction.** An earlier draft of `todo_tracker.md` claimed `bus.py`'s
+justification was "definitively disproved". That was wrong. `bus.py` never
+claimed to fix the abort — it carries an explicit warning that private
+connections achieve no isolation and that the corruption still reproduces — and
+its stated mechanism ("the GLib main-loop integration ... is not safe against a
+second thread adding and removing watches while the loop iterates them") is
+precisely what Valgrind **confirmed**. The module is kept unchanged.
+
+### Heap-abort root cause identified via Valgrind (2026-09-08)
+
+Documentation only — no behaviour change. The `malloc(): unaligned tcache chunk
+detected` SIGABRT that has driven the loop-free design since B.19 has been
+**root-caused** rather than merely avoided.
+
+**It is not a D-Bus connection race.** Helgrind (418 races, 64 contexts) shows
+the contended object is the **process-global default `GMainContext`** hash
+table, allocated at import by `g_main_context_default()` under
+`DBusGMainLoop(set_as_default=True)` (`core/config.py:95`). Every blocking
+D-Bus call from a worker thread registers a pending-call timeout, and dbus-glib
+attaches/removes that `GSource` **on the default context, from the calling
+thread**, while `bleep-mainloop` is inside `g_main_loop_run()` dispatching the
+same context. Each thread holds only the *libdbus connection* mutex, so two
+threads mutate one GLib hash table under two locks that do not exclude each
+other — which corrupts heap metadata that glibc later reports at an unrelated
+`malloc`.
+
+This explains all four recorded observations: the loop-on/loop-off asymmetry,
+time-to-abort scaling with D-Bus call rate, the abort always landing
+in the enumerator thread inside `call_blocking`, and — previously unexplained —
+**why the private-bus approach (Option A) never fixed it**: `g_main_context_default()`
+is process-global, so a private `DBusConnection` still attaches its watches and
+timeouts to the same context. Per-connection isolation was never going to help,
+because the corrupted object was never the connection.
+
+Memcheck corroborates: 42 rounds / 31 enumeration attempts (~6x the volume that
+normally aborts) across 36 GB of allocation traffic produced **0 errors from 0
+contexts**. Memcheck serializes threads, closing the race window; a
+deterministic overflow would have been caught immediately.
+
+**Consequence for the design.** `--no-mainloop` is now a *proven* fix rather
+than an empirical workaround — but it is only viable for **passive**
+enumeration. Deep enumeration needs loop-dispatched signals, so the loop-free
+mode is an operator-selectable trade, not a universal default. See
+`todo_tracker.md` B.23.
+
+**Memory growth answered.** Run E's in-process sampler measured
+36 MB -> 204 MB at ~2.1 MB/round, linear in *productive harvest rounds* and flat
+in device count, threads, and fds; RSS flatlined the instant discovery died.
+Valgrind classifies it as **0 bytes definitely lost** — Python-level retention,
+not a C leak. The census is exonerated by measurement (1.6 kB/round against
+2100 kB/round observed).
+
+**Retractions.** "Round cadence degrades with census size" is
+**withdrawn** — the 55s rounds are `round_time` plus one 25s D-Bus reply
+timeout, and appear only after the adapter stops answering, with the census
+frozen. `GIVE_UP` 2-vs-3 is **narrowed**: the third attempt is
+reachable for connection/timeout errors and unreachable only for auth-class and
+truly-unknown errors.
+
+### Stall escalation ladder + in-process metrics (2026-09-08)
+
+Corrections from the 2h Run D post-mortem, where stall *detection* worked but
+**21 of 21 re-arms failed** with `Operation timed out` and the collector stayed
+dead for ~70% of the run.
+
+**Escalation ladder.** A re-arm now bounds its D-Bus **reply** wait to 5s
+(`REARM_DBUS_TIMEOUT_S`) instead of inheriting dbus-python's 25s default — a
+wedged bluetoothd returns *no reply at all*, so the old default cost ~25s per
+attempt on the collector thread (~9 minutes across Run D). After **2** failed
+re-arms the run escalates to an adapter power cycle, reusing the existing
+`adapter.power_cycle()`, and **only** when `--auto-recover` is set, since it
+mutates host BT power state; without it the operator is told explicitly that no
+power cycle was attempted. If recovery still fails, the **listen phase ends
+early** and the run proceeds to enumeration and writes output rather than
+burning the remaining clock collecting nothing.
+
+**Diagnostics at each stall.** The previous message asserted "despite active
+discovery" without ever reading `Discovering`, so a 2h stall produced no
+evidence. Each stall now logs real `Powered`/`Discovering` values plus census
+size, pool occupancy, RSS and thread count. An unanswered probe is reported as
+`<no reply>` — that is itself the finding, distinguishing a wedged *daemon* from
+a wedged radio.
+
+**Degraded coverage is now reported.** `_rearm_collectors` returns
+`(succeeded, attempted)`; counting only successes meant 21 consecutive failures
+produced complete silence at run end. Health is also written to a
+`<output>.health.json` sidecar — not into the census, because the
+objects/grouped/simple payloads are top-level *lists* consumed by
+`bleep aoi scan` and wrapping them would be a breaking schema change.
+
+**`--metrics-interval N`** samples RSS, VmSize, threads, fds, census size, pool
+occupancy, round and phase to `<output>.metrics.csv` from a daemon thread inside
+the process. Run D's external sampler died after one sample and silently lost
+the measurement for the whole run; an in-process sampler cannot miss the run,
+and it can record state no external observer can see.
+
+### Collector stall detection + checkpoint coverage (2026-09-07)
+
+**`--stall-rounds`** (default **3**, `0` = off) detects a collector that has gone
+deaf and re-arms it. A stalled discovery keeps `Adapter1.Discovering=true`, so
+nothing noticed and a run could burn hours producing a frozen census that looked
+healthy (a 2h run collected 11 devices, dead from 240s). New
+`SurveyCensus.progress_counters()` returns `(total_sightings,
+total_rssi_reports)`, both of which advance *only* on a live advertisement
+report — a cached `Device1` re-read increments neither — so they freeze on a
+stall while the flag lies. Device count alone is unusable because a static
+environment legitimately plateaus. `_ProgressWatcher` counts report-free rounds
+and `_rearm_collectors()` does stop-then-start per session, warning at
+`LOG__USER` (a re-arm means lost coverage) with a total in the run-end summary.
+
+The fault cannot be injected externally — BlueZ scopes discovery per D-Bus
+client, so an outside `StopDiscovery` returns `No discovery started` and leaves
+the survey's discovery alone. The decision logic is therefore isolated in
+`_ProgressWatcher` and unit-tested directly, including a case driven off a real
+census where cached-only rounds trigger the stall and a live report clears it.
+This also retires the "contradictory" `StopDiscovery failed … No discovery
+started (Discovering=True)` item: per-client discovery makes both the message and
+the flag correct.
+
+**Checkpointing now covers the enumeration tail.** The multi-collector checkpoint
+was gated on `listening`, so it stopped when the listen window closed and never
+protected the enum phase — the longest, riskiest part of a run and where the
+aborts landed. Gate removed.
+
+> Correction to an earlier entry: `--checkpoint-interval` was **not** broken.
+> It fires correctly in both loops. `<output>.partial` is deliberately deleted on
+> successful completion (`survey.py:1323`), and every check for it had been made
+> after the run finished. The claim that checkpointing existed only in the
+> single-adapter loop was also wrong; it is at `survey_multi.py:373`.
+
+### Loop-free survey + bounded enumeration device pool (2026-09-07)
+
+**`--no-mainloop`** (survey) runs the process with no GLib main loop, which is
+what makes long dual collector+enumerator runs survive. The aborts were heap
+corruption (`malloc(): unaligned tcache chunk detected`, SIGABRT 134); under
+`MALLOC_CHECK_=3` the fault appears as a SIGSEGV in the `bleep-mainloop` thread
+while the enumerator thread builds a `DBusException` in `call_blocking` — two
+threads in one connection's message machinery. Time-to-abort tracks D-Bus call
+*rate* (~60s at `--round-time 10`, 54.7 min at 30). With no loop thread that
+pair cannot form: a 2h loop-free run was clean. The survey never needed signal
+delivery (collectors poll `GetManagedObjects`; enumeration waits on the
+`ServicesResolved` property).
+
+The cost is surfaced, not buried: a **`LOG__USER`** warning names every
+capability lost (AdvMonitor callbacks, pairing agent requests, GATT
+notifications, GATT server/advertise). The combinations that would degrade
+*silently* are refused with **exit 2** — `--no-mainloop` with `--listen-monitor`
+or with pair mode. `BLEEP_NO_MAINLOOP=1` remains as a diagnostic override.
+
+**`--max-enum-devices`** (default **10**, `0` = unlimited) bounds live enumeration device
+objects. Root cause of the long-run growth: every `_LEDevice` registers with the
+signals manager in `__init__`, but `signals.unregister_device()` had **no callers
+anywhere in the tree**, so every device ever built stayed pinned with its proxies
+and full resolved GATT tree (`manager._devices` never evicts either) — a 2h run
+peaked at 206 MB. New `bleep/dbuslayer/device_pool.py` holds an LRU of
+enumeration devices and `release()`s what it evicts; new `release()` methods on
+`_LEDevice`/`Service`/`Characteristic`/`Descriptor` unregister from signal
+routing, remove matches, and drop proxies plus GATT/notification caches. Local
+teardown only (no D-Bus I/O, safe post-disconnect) and it does not drop the ACL.
+Scoped to the enumeration path — manager-owned devices are not pooled, since the
+collector would be handed torn-down objects. Verified live: cap 3 over a survey
+produced 28 evictions with enumeration unaffected.
+
+The cap is tunable for later resource work rather than fixed: any `N ≥ 1`,
+`0` for unlimited (warns; for A/B-ing the cap against a suspected fault), and
+**`BLEEP_MAX_ENUM_DEVICES`** for the entry points that have no flag
+(`enum-scan`, `explore`, `gatt-enum`, `aoi`, debug shell), read at pool
+construction. A malformed or negative env value warns and falls back to 10 —
+an env typo must not abort a long survey. The debug shell honours the cap but
+**refuses `--no-mainloop`**, which would kill notifications and pairing for the
+whole interactive session; that follows the existing precedent there of
+refusing flags it cannot honour instead of accepting and ignoring them.
+
+> Object caps do **not** fix the heap corruption (a data race); `--no-mainloop`
+> does. They bound footprint and blast radius.
+
+### Parallel listen + priority enumerator (2026-09-04)
+
+`--duration` is the **listen/admission** window, not a GATT abort. Collectors
+harvest on `--round-time` while a worker thread enumerates on the distinct
+`--enumerator` adapter. GATT is not cut when the listen clock expires; the
+process finishes the in-flight device plus the remaining queue, then writes
+JSON. Pick order is `sighting_count` desc, `last_seen` desc, `rssi_avg` desc.
+A MAC that succeeded (or was attempted) this run is never re-queued when
+collectors increment sightings. Schema **v20** `devices.enumerated_at` plus
+`--enum-cooldown` (default 3600s) skip DB-recent successes (`enum-scan` / AoI
+/ survey stamp the column only on GATT success). `--live` shows
+`enum=<MAC> q=N enumerated_ok=M attempted=N`. ConnectDevice wait stays 15s;
+controller timeouts are not used as a survey budget.
+
+Listen-only proof (2026-09-04): `--collector hci0:le --listen-monitor
+--duration 60 --round-time 10 --live` → 60s, **7 rounds**, 9 LE, overlay 1×7.
+
+Dual listen+enum (2026-09-05) is **not accepted**. Same command with
+`--enumerator hci1:passive -o /tmp/survey_dual.json` ran past listen
+(`listen=60s`, phase `enum`, 22 LE, `enumerated_ok=6 attempted=20`) then
+**SIGABRT 134** (`malloc(): unaligned tcache chunk detected`) on the
+enumerator worker. Python `finally` did not run: JSON was not rewritten
+(`/tmp/survey_dual.json` stayed a prior 2026-09-04 file), leftover ACL
+survived. Immediate `enum-scan --adapter hci1` path-logged correctly but
+**skip-connected** `CC:50:E3:B6:BC:A6`. Terminal scrollback was only the
+enum tail (`round` frozen at 6, 1 Hz `--live`). `enum_controller` still
+GIVE_UPs at attempt 2 while advertising “max 3”. See todo_tracker.
+
+### Enumerator drain budget + `enumerated_by` honesty (2026-09-04)
+
+`--duration` is wall-clock for dual-antenna survey (`deadline = t_start +
+duration`). `drain_enumerator` does not start Connect/enum when remaining time
+is below 15s (`DRAIN_FLOOR_S`, the `ConnectDevice` wait); those MACs stay out
+of `done` so the next harvest round can retry. After a budgeted drain slice
+the collectors harvest again while they stay `Discovering=true`. `--live`
+prints `enumerated_ok=M attempted=N` (GATT success vs drain attempts).
+`enumerated_by` is written to the DB, `DeviceSighting`, and survey JSON **only**
+on `EnumerationResult.success`. Survey `finally` disconnects leftover
+Connected Device1s on the enumerator adapter. `_LEDevice.connect` and
+`enum-scan` log `adapter=hciN path=/org/bluez/hciN/dev_…` (including
+skip-connect).
+
+Unit tests: `tests/test_survey_enum.py`, `format_objects` emission,
+`disconnect_connected_on_session`. Live accept of the 60s dual command is still
+the operator re-run (not claimed here).
+
+### Dual-antenna live gate (2026-09-04)
+
+`bleep survey --collector hci0:le --listen-monitor --enumerator hci1:passive
+--duration 60 --live` **ran**: Flags-OR overlay 1 monitor / 7 patterns on
+hci0, no bluetoothd restart, 9 unique LE with RSSI, `seen_by=["hci0"]` in
+JSON, DB `enumerated_by=hci1` for every drained MAC. GATT succeeded on
+BB-184E, Light Orb, both ESP32s, BLECTF, and `23:35:10:A7:40:2C`; failed
+(still marked enumerated) on Galaxy Buds, `2D:78:C9:54:45:1D`,
+`24:AC:B4:14:2E:70`.
+
+**Not accepted as a complete gate.** Enumerator drain is synchronous and
+unbounded: the 60s survey took **224s / 1 harvest round** (`elapsed
+224s/60s | enumerated=9`). `enumerated=N` counts drain attempts, not GATT
+success. Survey JSON still has no `enumerated_by`. The `enum-scan
+AA:BB:CC:DD:EE:FF --adapter hci1` example is a placeholder — it
+`not_found`'d; path fidelity for this run is the DB radio split, not that
+command. Next work is bounding drain to remaining `--duration`.
+
+### Manufacturer AdvMonitor extras (2026-09-04)
+
+`--listen-manufacturer CID[:HEX]` and `--listen-mfr-string TEXT` (survey) plus
+`--manufacturer` / `--mfr-string` (`advertise-monitor start`) match AD type
+`0xFF`. Company id is little-endian on the wire (`6` → `0600`); optional `:HEX`
+is a payload prefix after the CID; strings memcmp at offset 2 (after the
+2-byte CID), not a substring search.
+
+Live: manufacturer-only `advertise-monitor start --manufacturer 0x0006
+--manufacturer 0xFFFF:5a33 --mfr-string Z3` Activate'd, 2 unique Found
+(`3C:0F:02:E4:F5:F9` ESP32 `5a33`, plus `04:DE:0B:15:BF:8D`). Mixing those
+0xFF patterns onto the Flags-OR child `NoReply`-killed software AdvMonitor;
+extras therefore register as a **second** `or_patterns` child (2 monitors).
+Retry: overlay registered (2 monitors), 6 unique LE, RSSI on all, `advmon_seen`
+on all including a Flags-`00` Microsoft CID-6 device (`0F:17:95:85:B9:F2`)
+that Flags-OR alone had been leaving harvest-only. Completeness stays harvest.
+
+### Flags-OR overlay PoC (Module A, 2026-09-04)
+
+Default `--listen-monitor` / no-`-p` AdvMonitor is **one** child whose
+`or_patterns` are GAP Flags bytes `{00,02,04,05,06,18,1A}`. Live: four of
+those (`00,02,04,06`) Activate'd with 6 unique DeviceFound, sampling 255,
+no bluetoothd restart. Prefix-covers (62×256 and 8×256) remain withdrawn.
+Collectors stay `Discovering=true` while the overlay is registered (same
+`keep_listening` path as `--enumerator`). `RegisterMonitor` failure no longer
+claims missing `-E` when the daemon `NoReply`d.
+
+### AdvMonitor catch-all must not crash bluetoothd (2026-09-04)
+
+Live `--listen-monitor` registered 62 monitors / 15872 patterns and bluetoothd
+disconnected (`NoReply`, service restart). Overlay failure then hit
+`NameError: LOG__GENERAL is not defined` in `survey_multi.py` and aborted the
+census. Catch-all is now 8 high-yield AD-type monitors (software) or 2
+monitors (MSFT, 16 prefixes/type). Overlay `RegisterMonitor` failure is logged
+and survey continues on StartDiscovery harvest.
+
+### AdvMonitor catch-all overlay + HW-2 — Phase 4d (2026-09-04)
+
+AdvertisementMonitor is a **filter overlay**, not a census. Empty `or_patterns`
+is illegal in BlueZ (Release / 0 events); BLEEP no longer claims “no `-p` =
+match all”. `advertise-monitor start` and `scan --monitor` without `-p` inject
+a 1-byte prefix covering of **high-yield** AD types (Flags, manufacturer,
+names, UUID16, service-data-16, UUID128-complete — 8 monitors on the software
+path) so AdvMonitor catches typical adverts without crashing bluetoothd.
+Exhaustive 0x01–0x3D covering (62 monitors) is withdrawn: it `NoReply`-killed
+bluetoothd on this host. Survey completeness is the
+**union** of StartDiscovery Device1 harvest (R1/R2) and `DeviceFound` →
+Device1 `GetAll`. Missing Flags is recorded, never a drop.
+
+Same-adapter AdvMonitor + `StartDiscovery` is **allowed** (BlueZ: Found/Lost
+fire “no matter if there is an ongoing discovery session”). `STOP_CLEARS`
+still applies only to `StopDiscovery`. CLI is `survey --listen-monitor` (not
+`--passive`; that remains `--variant passive` StartDiscovery). Debug shell
+refuses `--listen-monitor`.
+
+HW-2: `bleep --check-env` probes `AdvertisementMonitorManager1` and
+`ConnectDevice` and prints one experimental-mode line + `bluetoothd -E` hint
+(detect-only).
+
+MSFT `controller-patterns` hosts get a reduced catch-all (Flags + manufacturer,
+16 prefixes/type, 2 monitors) with a loud warning; discovery harvest stays
+complete.
+
+### Dual-antenna listen + enumerate — Phase A+B+D (2026-09-03)
+
+Makes collect-on-one-antenna / enumerate-on-another actually work. Device1
+objects are now constructed on the requested controller, `--adapter` reaches
+AoI / gatt-enum / explore / pair / classic-connect, and `bleep survey
+--collector hci0:le --enumerator hci1:passive` keeps collectors in discovery
+while a distinct enumerator radio connects (preferring `Adapter1.ConnectDevice`),
+optionally pairs, GATT-enumerates with `skip_scan`, and disconnects.
+
+- **Phase A (path fidelity).** `_LEDevice` / `ClassicDevice` take `adapter_name`;
+  `find_device_path(mac, adapter=)` filters `/org/bluez/hciN/`; `--then-aoi`
+  forwards `--adapter` (enumerator radio if `--enumerator` was set). Debug-shell
+  `survey` refuses `--enumerator` the same way it already refuses `--collector`.
+- **Phase B (orchestrator).** New `bleep/dbuslayer/enumerator.py` +
+  `bleep/modes/survey_enum.py`. Collector sessions refuse `Pair()`. `brute`
+  enumerator mode maps to `pokey` (no write-char payload in survey).
+- **Phase D (schema v19).** `devices.seen_by` (JSON, union-merged on upsert),
+  `devices.enumerated_by`, `adv_reports.adapter` (part of consecutive-identical
+  dedup). AoI markdown/text reports print `Enumerated via:` / `Seen by:`.
+- **Phase C / HW-2** landed separately as **Phase 4d** (2026-09-04): AdvMonitor
+  catch-all overlay (`survey --listen-monitor`) + `--check-env` experimental
+  probe. Not a `survey --passive` replacement.
+
+Live gate (two controllers): `enum-scan --adapter hci1` must Connect on **hci1**;
+`bleep survey --collector hci0:le --enumerator hci1:passive --duration 60 --live`.
+Live 2026-09-04: overlay + enumerator **ran** (DB `enumerated_by=hci1`,
+`seen_by=hci0`) but drain overran `--duration` (224s vs 60s). See Unreleased.
+
+### Report readability polish — unified count notation, tables, hexdump ASCII (2026-08-27)
+
+Sweeping readability pass over `db report` output so every count-bearing block
+follows one convention and long inventories scan cleanly:
+
+- **Unified `<unique entry> : <count>` notation** across the Reconnaissance
+  Analytics section — the OUI breakdown (`Vendor (OUI) : count`, previously
+  `OUI xN (vendor: …)`), random address types (per-line `RPA (resolvable) : N`,
+  `Static-random : N`, `NRPA (non-resolvable) : N`, previously packed prose), and
+  the Advertisement Data groups (primary `**Vendor (0xID)** : N device(s)` with
+  unique-payload/common-prefix/decoded/repeated detail demoted to sub-bullets).
+  Vulnerability `(×N)` occurrence counts are intentionally left as-is (they signify
+  occurrences, not an inventory).
+- **Markdown tables by default** for the explodable SDP and OUI inventories
+  (aggregate *and* per-device SDP Discovery), with a new **`--report-bullets`**
+  flag to render the unified bullet form instead. Threaded through
+  `AOIAnalyser.generate_aggregate_report(..., bullets=…)`.
+- **Consistent top-N cap** (`_RECON_TOP_N = 50`) on the SDP and OUI inventories
+  with a `(full set in the JSON \`recon\` block)` pointer when truncated.
+- **Part B polish:** UUID short-forms normalized to lower-case Bluetooth notation
+  (`0X1200` → `0x1200`) via the shared `format_uuid_display` conversion helper;
+  Advertisement Dissection ASCII now uses the **hexdump convention**
+  (non-printable bytes → `.`) via `_ascii_from_hex`, killing replacement-character
+  mojibake; empty `## Services` / `## Advertisement Dissection` sections show a
+  simple `- None.`; per-device SDP enrichment (flags/protocols/spec-hint/anomalies)
+  grouped under a **`Flags & enrichment:`** sub-label distinct from the service
+  inventory; thousands separators on large counts. The `Flags & enrichment` block
+  now **collapses repeated security flags and SDP anomalies to unique `… : count`
+  rows** and renders them as their own tables (`| Security flag | Count |` and
+  `| Severity | SDP anomaly | Count |`) — a snapshot-heavy device that previously
+  emitted the same flag 600+ times (once per SDP record) is now two rows.
+  `--report-bullets` renders these as collapsed bullets instead.
+
+Rendering-only (JSON `recon` block unchanged). New tests in
+`tests/test_db_reporting_enhancements.py` (`TestReconRenderMarkdown`) and
+`tests/test_aoi_augmentation.py` (hexdump ASCII, None sections, table/bullet SDP
+inventory, Flags & enrichment). Docs updated (`cli_usage.md`, `observation_db.md`,
+`debug_mode_db.md`, `api_specification.md`).
+
+### Per-device SDP Discovery — aggregate service inventory (2026-08-27)
+
+The per-device `## SDP Discovery` section of the AoI Security Report (both the
+markdown and text renderers, shared by `db report` per-device sections and `aoi`
+single-device reports) now presents a collapsed **service inventory** instead of
+one bullet per stored SDP record. `_analyse_sdp_records()` adds a
+`services_inventory` field (via the new `_aggregate_sdp_inventory` helper) that
+groups records by `(name, uuid, channel)` with an occurrence `count`, sorted by
+descending count — mirroring the DB-9 aggregate SDP inventory but per-device. The
+RFCOMM channel is part of the grouping key, so the same service class on different
+channels stays distinct, and rows render as `Name (UUID, ch N) : count` under an
+`N unique of M records` header. This makes snapshot-heavy devices legible (e.g. a
+real device with **899 SDP records** collapses to 42 readable rows, and the RFCOMM
+channel disambiguates the three `NearbyShare` instances on channels 14/16/20 that
+were previously indistinguishable). `services_found` is retained unchanged for
+JSON/back-compat (additive change). New tests in `tests/test_aoi_augmentation.py`;
+docs updated (`aoi_security_algorithms.md`, `aoi_mode.md`).
+
+### refresh-refs — wire IEEE OUI + USB-IF updaters (2026-08-27)
+
+`bleep refresh-refs` now also regenerates the two external (non-SIG) registries
+that were previously standalone-only: the IEEE OUI vendor database
+(`bt_ref/oui.py`, added in DB-9) and the USB-IF ID database (`bt_ref/usb_ids.py`).
+Both run on a bare `refresh-refs` and gain their own mutually-exclusive scope
+flags **`--oui-only`** and **`--usb-only`** (alongside the existing `--sig-only` /
+`--vendor-only`). Each is an independent, network-best-effort step: a failure is
+reported but never blocks the others, and a failed fetch leaves the committed
+module untouched (`update_oui`/`update_usb_ids` never overwrite with empty data),
+preserving the "a refresh never zeroes a table" invariant. New
+`update_oui.regenerate()` / `update_usb_ids.regenerate()` wrappers adapt the
+bool-returning generators to the shared `regenerate()` convention (raise on
+failure). Docs (`api_specification.md` §3.5.3, `uuid_translation.md`,
+`cli_usage.md`, `observation_db.md`) and `tests/test_refresh_refs.py` updated
+(17 tests, all green).
+
+### DB-9 — Reconnaissance Analytics (`db report --recon`) (2026-08-26)
+
+Adds an opt-in top-level `## Reconnaissance Analytics` section to `db report`,
+aggregating three views across the windowed/filtered selection:
+
+- **SDP inventory** — every unique `(name, uuid)` service item with a per-device
+  count (`Name (UUID) : count`), sorted by prevalence, via a single batched
+  `get_sdp_inventory(macs)` query (no N per-device detail loads).
+- **OUI / address-type breakdown** — public addresses tallied by 24-bit OUI and
+  **IEEE-vendor-decoded** (graceful "vendor unknown"); random addresses
+  sub-classified into RPA (resolvable) / static-random / NRPA and explicitly *not*
+  vendor-decoded (their OUI is a privacy address, not a manufacturer).
+- **Advertisement hex analysis** — manufacturer data (grouped by company id),
+  service data (grouped by UUID) and advertising-data AD structures, each with a
+  unique-payload tally, longest-common-byte-prefix ("pattern"), decoded
+  representative, and a **repeated-payload flag** (identical payload across ≥2
+  devices → possible static/identity leak, also surfaced on the terminal). Reuses
+  the existing `dissect_persisted_record` decoder shared with `db show`.
+
+`--recon-detail` implies `--recon` and additionally folds in characteristic-value
+hex (grouped by characteristic UUID, decoded via `decode_characteristic_value`) via
+a batched `get_characteristic_values(macs)` query. The whole feature is flag-gated,
+read-only, and additive (JSON `recon` sibling block; markdown/text section append).
+
+New IEEE OUI reference module `bleep/bt_ref/oui.py` (~40k MA-L OUIs) plus its
+`bleep/bt_ref/update_oui.py` updater, following the existing `bt_ref`
+updater+generated-module pattern (`usb_ids.py`). Resolver `resolve_oui()` added to
+`bleep/ble_ops/common/conversion.py` (cached, never raises → graceful unknown).
+Only 24-bit MA-L blocks are decoded; MA-M/MA-S (28/36-bit shared prefixes) return
+`None` rather than misattributing a vendor. 11 new tests (57 total in the DB suite).
+
+### DB-8 — Device-name audit (`db list/report --name-audit`) (2026-08-26)
+
+Classifies device names in the windowed/filtered selection into four buckets so an
+operator can pull the *real* observed names out of the sea of MAC-derived default
+aliases, and flags any name that looks like a MAC but is not the device's own.
+
+- **New `classify_name(name, mac)` (`analysis/identity.py`):** returns
+  `placeholder` (MAC-shaped ∧ normalises to own MAC — BlueZ default alias), `real`
+  (genuine name), `empty` (NULL/blank), or `foreign_mac` (MAC-shaped ∧ normalises to
+  a **different** MAC — anomaly). Normalisation strips `:`/`-`/`_` and case, so the
+  dash-separated alias matches the colon-separated `mac` column. Anchored MAC regex —
+  an *embedded* MAC substring stays a `real` name. Also exports `is_mac_shaped`,
+  `normalize_mac`, `NAME_CLASSES`.
+- **`--name-audit` on `db list` and `db report`:** emits per-bucket counts; **full
+  detail** for `empty` and `foreign_mac` rows; the **complete collected record** per
+  `real`-named device (grouped by name) via the DB-5 uncapped `export_device_data`
+  plus a compact advertisement/GATT/SDP `summary` (reusing `db show`'s
+  `adv_dissection`); and a `--name-sample` (default 10) sample of the `placeholder`
+  set. `--name-detail-limit` (default 50; `0`=all) caps how many real names are
+  expanded with full records.
+- **Anomaly awareness:** any `foreign_mac` device is always surfaced — an
+  `[!] ANOMALY` banner on the terminal and a `name_audit.foreign_mac` list / report
+  **Anomalies** section in structured output.
+- **Report integration:** `db report --name-audit` appends a `## Name Audit` section
+  to markdown/text reports and attaches a `name_audit` block to `--json` output
+  (mirrors the `--identity-contrast` pattern). Read-only; no extra query for bucketing.
+- **Tests:** `tests/test_db_reporting_enhancements.py` — `classify_name` units
+  (dash/colon/underscore, case, foreign, embedded, empty) + `db list`/`db report`
+  `--name-audit` integration over a seeded one-of-each-bucket DB (14 new; 35 total).
+- **Docs:** `observation_db.md` (Name audit subsection), `cli_usage.md` (list/report
+  rows), `debug_mode_db.md` (CLI-integration example + flag reference), `todo_tracker.md`.
+
+### DB examination / analysis / reporting enhancements (DB-1…DB-7) (2026-08-23)
+
+Adds first-class collection-date windowing, batch reporting, target-list export,
+heuristic identity collapse, and export uncapping to the `db` surface — all
+additive and reusing existing engines (no new persistence, no schema change).
+
+- **DB-6 — `local_date_range_to_utc()` (`core/time_utils.py`):** converts a local
+  `--since`/`--until` date range (with optional `--tz`) into naive-UTC ISO bounds
+  matching the DB's timestamp convention; `--until` is treated as **exclusive**
+  (whole-day inclusive when a bare date is given).
+- **DB-1 — `get_devices(..., since, until, seen_basis)`:** window filtering against
+  `seen_basis` = `first` (first_seen), `last` (last_seen, default) or `any`
+  (overlap). Purely additive kwargs; existing callers unchanged.
+- **DB-5 — `export_device_data(mac, char_limit=500, adv_limit=100)`:** caps are now
+  parameters; `0` returns the **unbounded** `characteristic_history` / `adv_reports`
+  set. Surfaced via `db export --max-history/--max-adv`.
+- **DB-4 — heuristic identity collapse (`analysis/identity.py`):** groups
+  RPA-rotating rows by stable advertisement attributes (`name`, `name_mfr`,
+  `payload`) reusing `adv_dissect.dissect_advertisement`. **Read-only, opt-in, and
+  honest** — carries `method="heuristic"`, `irk_resolved=False`, and always reports
+  `raw_count` vs `collapsed_count` so the non-collapsed view is preserved for
+  contrast (the delta is itself the signal).
+- **DB-2/DB-3 — `db report` + `--export-targets`:** new `db report` action reuses
+  `AOIAnalyser.generate_aggregate_report()` over any window (advert-only devices are
+  analyzed on the fly and categorized "not reachable"); `db list --export-targets`
+  writes an AoI-ingestable target list. Reports cap at 500 devices unless
+  `--all-in-window` is passed.
+- **New `db list`/`db report` flags:** `--since`, `--until`, `--seen-basis`, `--tz`,
+  `--export-targets`, `--group-identity`, `--identity-contrast`, `--all-in-window`,
+  `--report-format`, `--max-history`, `--max-adv`. Parser logic consolidated into
+  `bleep.cli.parsers.db._add_db_arguments` for CLI/standalone parity.
+- **Tests/Docs:** `tests/test_db_reporting_enhancements.py` (21 tests) plus updated
+  `tests/test_data_pipeline_fixes.py`; docs in `observation_db.md`, `cli_usage.md`,
+  `debug_mode_db.md`, `api_specification.md`, `todo_tracker.md`.
+
+### F5b/F5c — Wire `enum-scan --adapter` and `classic-scan --adapter` (2026-08-13)
+
+Completes F5: the remaining two commands that parsed `--adapter` but ignored it
+now honor the selected controller.
+
+- **F5b (`enum-scan`):** `adapter_name` threaded (keyword-only) through the LE
+  connect/enumerate spine — `EnumerationController(adapter_name=…)` →
+  `connect_and_enumerate__bluetooth__low_energy(adapter_name=…)` for `passive`,
+  and → `naggy_enum`/`pokey_enum`/`brute_enum` → `_base_enum` → same connect
+  primitive for the variant modes. The connect primitive constructs
+  `_Adapter(adapter_name)` (else default) at PRE-FLIGHT 0. `enum_scan.run`
+  validates via `require_adapter(args.adapter)` up-front (non-zero exit, no
+  silent fallback).
+- **F5c (`classic-scan`):** `classic_scan.run` builds `_Adapter(args.adapter)`
+  (else default) for the BR/EDR inquiry; not-ready surfaces the adapter name.
+- **Additive/back-compat:** every new parameter defaults to `None` → default
+  controller (`ADAPTER_NAME`), so existing callers (`aoi`, `user`,
+  `connect_with_monitoring`, `scan_modes`) are unchanged. Default parser value
+  `hci0` keeps single-adapter hosts identical.
+- **Tests:** `tests/test_enum_controller_sr_n3.py` (passive + naggy variant
+  adapter forwarding, default `None`); `tests/test_m7_partial_closure.py`
+  (classic-scan selects requested adapter / not-ready fails).
+- **Docs:** `ble_scan_modes.md`; plan `SCAN_ADAPTER_F5_PLAN.md` status.
+
+### F5 — Wire `scan --adapter` (+ pokey/brute `--transport`) (2026-08-13)
+
+`bleep scan --adapter hciN` previously parsed but was **ignored** — LE discovery
+always used the default controller (`dispatch.py` never forwarded `args.adapter`;
+`_native_scan` hardcoded `_Adapter()`). Now all four variants honor it.
+
+- **Threading:** `adapter_name` added (keyword-only) to `_native_scan`,
+  `passive_scan`, `naggy_scan`, `pokey_scan`, `brute_scan`. `pokey_scan` /
+  `brute_scan` also fixed to forward `transport` (pre-existing sibling defect:
+  `scan --variant pokey/brute --transport le` silently ignored `--transport`).
+  pokey threads adapter+transport into every inner naggy round; brute runs both
+  BR/EDR and LE phases on the selected adapter (transport intrinsic).
+- **Validation:** `dispatch.py` scan branch validates via
+  `core.preflight.require_adapter(args.adapter)` before scanning — a
+  missing/not-ready controller fails with a non-zero exit and **no silent
+  fallback** to the default. `require_adapter` now names the adapter in its
+  diagnostic.
+- **Default unchanged:** parser default `hci0` == `ADAPTER_NAME`, so
+  single-adapter hosts behave exactly as before.
+- **Scope:** F5a only (`scan`). `enum-scan` (F5b) and `classic-scan` (F5c) were
+  landed as follow-ons — see the "F5b/F5c" entry above.
+- **Tests:** `tests/test_scan_variants.py` (variant threading),
+  `tests/test_scan_cli_adapter.py` (CLI thread + readiness gate + default).
+- **Docs:** `ble_scan_modes.md`; plan `SCAN_ADAPTER_F5_PLAN.md` status.
+
+### R1/R2 — Pre-stop harvest + session census for non-connectable beacons (2026-08-13)
+
+Fixes BlueZ `STOP_CLEARS`: unpaired non-connectable `Device1` objects (classic
+iBeacon/Eddystone) are removed immediately on `StopDiscovery`, so post-stop
+`GetManagedObjects` reads never saw them.
+
+- **R1:** `DeviceManager._timeout` snapshots via `_compose_harvest()` **before**
+  `StopDiscovery`; `_native_scan` / `create_and_return__*` consume
+  `take_last_harvest()`; `AdapterSession.harvest` uses
+  `snapshot_discovered_devices()` while Discovering is still true. Shared
+  mapper: `build_discovered_device_dict`.
+- **R2:** Per-session `_session_devices` census from `InterfacesAdded` /
+  `PropertiesChanged` (last-shot mfr/sd); `InterfacesRemoved` marks removed but
+  **keeps** the row until the next `start_discovery`. Harvest merges GMO + census
+  by MAC. Session capture outlives Discovering until `take_last_harvest`.
+- **Tests:** `tests/test_discovery_harvest.py`; stubs updated in
+  `test_survey_multi` / `test_discovery_error_surfacing`.
+- **Docs:** `ble_scan_modes.md`, `survey_mode.md`, `beacon_identification.md`;
+  plan status in `BEACON_DISCOVERY_R1_R2_PLAN.md`.
+- **Operator note:** For nameless classic beacons prefer
+  `beacon-identification --oui …` without `--name '*Beacon*'`.
+- **Live confirmed (2026-08-13):** `beacon-identification` and multi-round naggy
+  harvests identify rotating classic beacons (`10:20:BA:46:AE:D5`) across both
+  Apple iBeacon (`0x004C`) and Eddystone-URL phases (~90s rotation).
+- **iBeacon LE transport:** Classic non-connectable iBeacons require an LE
+  discovery filter (`Transport=le`, or survey/scan LE path). They are not
+  visible on BR/EDR-only inquiry; use `--transport le` / LE survey rounds /
+  `scan --variant naggy` (LE). Default `scan` without an explicit Classic-only
+  transport is fine when the manager filter is LE; do not expect iBeacons from
+  Classic-only collectors.
+
+### Beacon identification plan v1.3.1 — Phase 0 through Phase 3 core (2026-08-12)
+
+Implements `BEACON_IDENTIFICATION_PLAN.md` (reuse-first):
+
+- **S0a+:** `DeviceManager.start_discovery` merges Transport/DuplicateData/Pattern/RSSI/Pathloss in one `SetDiscoveryFilter`; scan/naggy/pokey/connect/scan_modes no longer pre-set partial filters. Naggy uses `DuplicateData=true`; pokey uses colonized `Pattern`.
+- **S0b+:** Survey `DeviceSighting` tracks per-round `payload_history` + signatures; format rotation (compact mfr → FEAA svc) sets `fingerprint_changed`.
+- **S2/S3/S7:** `ibeacon_compact` (`0xFFFF` only), `eddystone_pending`, shared `format_beacon_summary`; classifier includes `ibeacon_compact`.
+- **S1:** `bleep beacon-identification` thin survey wrapper with deterministic scoring + CDU registry row.
+- **S4:** survey `--variant {passive,naggy}` and `--full-payloads`.
+- **S5/S6:** docs/help corrected (`ble_scan_modes.md`, debug `scann`).
+- **S10:** Espressif UUIDs in `constants.UUID_NAMES`.
+- **S11:** `db show` prefers latest `adv_reports.decoded` multi-key dissection.
+- **S8:** `adv_monitor.md` / monitor usage strings synced to `advertise-monitor`.
+- **S9:** still deferred (no Android fixture).
+
+### Hardware-swap gap analysis — Realtek RTL8761B/BU antenna: HW-1 + HW-4 (2026-08-11)
+
+Work arising from swapping in a Realtek RTL8761B/BU controller (HCI/LMP 5.1, dual-mode).
+Full analysis and remaining items live in `docs/todo_tracker.md` (HW-1…HW-6).
+
+- **HW-1 — `media_stream.py` no longer hardcodes `/org/bluez/hci0`.** `MediaStreamManager`
+  built the A2DP/AVRCP device path with a literal `hci0`, so `_cycle_device_connection()`
+  operated on the wrong object on multi-adapter hosts or when the controller enumerates as
+  non-`hci0`. Fix (Option A — resolve from live BlueZ data):
+  - New module-level `_device_base_from_path()` (shared base-extraction helper, also reused by
+    `_collect_media_objects()` — DRY) and `_first_adapter_name()` (lazy-imports
+    `system_dbus__bluez_adapter.list_adapters()` to avoid an import cycle).
+  - New `MediaStreamManager._resolve_device_path()` reads the live `.../dev_<MAC>` path from
+    `GetManagedObjects()`.
+  - `_device_path()` now returns the resolved path, falling back to the first enumerated
+    adapter (never a literal `hci0`) only when the device is absent. No new constructor params;
+    caller unchanged.
+  - Tests: `tests/test_media_helpers.py` +6 (helper, non-`hci0` resolution, first-adapter
+    fallback, `hci0`-only-when-no-adapters, absent→`None`, failing `GetManagedObjects()`→`None`);
+    existing `_cycle_device_connection` tests made hermetic. Full media/audio/preflight/
+    api-surface run green.
+  - Live-verified on `hci0` against a real A2DP sink (DS220 `53:4A:52:FE:01:38`): resolver +
+    `_device_path()` + `_collect_media_objects()` all returned the live path; the changed caller
+    `_cycle_device_connection()` executed a real `Disconnect()`→`Connect()` with no exception.
+- **HW-4 — safe, privilege-aware `btmgmt` preflight probe** (`bleep/core/preflight.py`).
+  `btmgmt` blocks indefinitely on the kernel mgmt socket without `CAP_NET_ADMIN` and drops into
+  an interactive REPL on stdin. Added `BtmgmtStatus` + `run_btmgmt()`/`check_btmgmt()` that use
+  `btmgmt --version` as a socket-free runnable probe, `stdin=DEVNULL` + `--timeout` + a hard
+  subprocess timeout to prevent hangs, and skip the controller query when unprivileged.
+  `_check_bluetooth_tools`/`print_preflight_summary` now surface the privilege-aware status.
+  Tests: `tests/test_preflight.py` +8 (`TestRunBtmgmt`, `TestCheckBtmgmt`).
+- **Live media validation (DS220 A2DP sink).** Confirmed BLEEP's transport-observation and
+  control paths against real hardware: `MediaTransport`/`get_transport_info()` read the live
+  `active` SBC transport (config `11150235` = 48 kHz/JointStereo/16-block/8-subband/Loudness/
+  bitpool 2–53); `MediaControl1` passthrough + absolute-volume round-trip via
+  `MediaStreamManager.set_volume()` (84→40→110→84) all succeeded. BLEEP endpoint-registration
+  mode correctly **lost the AVDTP selection race** to a running `bluealsad --all-codecs`
+  (alongside PulseAudio/PipeWire) and emitted accurate contention diagnostics — a live
+  confirmation of the HW-2 endpoint-contention item (no code change).
+
+### QA: consolidated triple-pass review of OBEX-D2 + ERR-D3 (2026-07-30)
+
+Combined fidelity/no-regression gate over the two error-convention sweeps below. **Result:
+clean — no gaps, issues, or detrimental effects.** Pass 1 (correctness) re-read the full diff
+of all 20 changed source files: every `RuntimeError` conversion is Convention-aligned, no
+orphaned locals, docstrings current. Pass 2 (integration) verified referenced
+symbols/signatures (`get_message` `folder=` kwarg both layers; `detect_opp/ftp/map_service`;
+`build_svc_map`; `list_mas_instances`); confirmed **only 3** `except RuntimeError` handlers
+exist repo-wide and all are coordinated; and confirmed the remaining `raise RuntimeError`
+sites are **exactly** the deferred/excluded scope (`agent_io`, `update_usb_ids`,
+`custom_uuids`) — no over-reach. Pass 3 (runtime): all 20 modules import clean, all
+`bleep.core.errors` classes + `RESULT_*` constants resolve, **96 passed / 14 skipped**
+targeted suites, **0 lint errors**. Scope note: this QA pass covered only the error-convention
+sweeps (OBEX-D2 + ERR-D3). The LR-2c / dedup changes (`manager.py`, `signals.py`,
+`adapter_session.py`, `_history.py`, `survey.py`, the `scan.py` LR-2c hunk, and
+survey/observation tests) were reviewed and validated separately under their own **LR-2c**
+entry below; all of the above shipped together in the same commit.
+
+### ERR-D3: codebase-wide `RuntimeError` → `BLEEPError` convergence (2026-07-30)
+
+Accepted 2026-07-30 (Tier 1 + Tier 2 + the `error_map` Tier-3 component; `agent_io`
+deferred; `update_usb_ids.py`/`custom_uuids.py` excluded). Converges the remaining runtime
+`RuntimeError` raises onto the Convention-aligned `bleep.core.errors` framework. A repo-wide
+scan first proved the entire blast radius: only **three** `except RuntimeError` handlers
+exist in `bleep/`, all updated here.
+
+- **Tier 1 — self-contained** (callers catch broad `Exception`; no type-specific catchers):
+  - `dbuslayer/obex_pbap.py` (7): closes the OBEX-D2 deferral — obexd-not-running →
+    `BLEEPError(WRONG_STATE)`; both `CreateSession` sites → shared `obex_session_error`
+    (`profile="PBAP"`); `Too short header` PullAll → `BLEEPError(WRONG_STATE)` (keeps the
+    power-cycle guidance); generic PullAll → `map_dbus_error`; missing-`Filename`/file →
+    `BLEEPError(RESULT_ERR)`.
+  - `ble_ops/le/scan.py` (4) + `ble_ops/le/enum_helpers.py` (1): native-stack guards →
+    `NotSupportedError`.
+  - `ble_ops/classic/spp.py` (1) + `dbuslayer/spp_profile.py` (3): already-registered →
+    `OperationInProgressError`; no-GLib → `NotSupportedError`; `RegisterProfile` DBus →
+    `map_dbus_error`.
+  - `ble_ops/classic/rfcomm.py` (2): `rfcomm` bind/release failures → `BLEEPError(RESULT_ERR)`.
+- **Tier 2 — coordinated** (`ble_ops/classic/sdp.py`, 7): `_ensure_sdptool` missing →
+  `NotSupportedError`; device unreachable → `ConnectionError`; empty SDP results →
+  `BLEEPError(RESULT_ERR_NOT_FOUND)`; sdptool exit error → `BLEEPError(RESULT_ERR)`. Companion
+  handler updates shipped together: `sdp.py` `_ensure_sdptool` catchers (×2) →
+  `except (RuntimeError, NotSupportedError)`; `modes/debug_classic.py` connectionless catcher
+  → `except (RuntimeError, BLEEPError)` (its `"not reachable"` string-match still fires against
+  `ConnectionError`). `discover_services_sdp` docstring updated.
+- **Tier 3 — `error_map.py` only** (3): `_reconnect_device` failure → `ConnectionError`;
+  `_resolve_services` failure → `ServicesNotResolvedError` (aliased local imports to avoid the
+  `bt_ref.exceptions import *` name collision; best-effort address via `getattr`).
+- **Deferred / excluded (unchanged).** `dbuslayer/agent_io.py` (5) — exceptions cross the
+  BlueZ D-Bus **agent boundary** and drive brute-force control flow; deferred pending dedicated
+  pairing validation. `bt_ref/update_usb_ids.py` (dev script) and `bt_ref/custom_uuids.py`
+  excluded per scope.
+- **Validation.** All touched modules import clean; **no lint errors**; targeted suites green
+  (**24 passed / 15 skipped** classic; **183 passed / 6 skipped** for sdp/scan/error_map/
+  rfcomm/pbap/spp incl. `test_bt_ref_error_map`, `test_scan_variants`,
+  `test_discovery_error_surfacing`, `test_rfcomm_enomem`). Behavioral: `_ensure_sdptool`
+  absence still yields `None` from `discover_service_channel`; `ConnectionError` message still
+  contains `"not reachable"`. Live (OnePlus 15R): `classic-enum` (22 SDP records + RFCOMM
+  channels) and `classic-scan` regression-free.
+
+### OBEX-D2: OPP/FTP/SYNC/BIP error-type convention alignment (2026-07-30)
+
+Accepted 2026-07-30 (BIP via shared mapper + optional OPP/FTP CLI pre-flight). Completes
+the OBEX-layer consistency sweep deferred in MAP-D1 — the four remaining profiles now use
+the same shared `obex_session_error` mapper and `BLEEPError` convention as PBAP/MAP.
+Diagnostics-and-error-type only; no change to control flow, session lifecycle, or any
+successful transfer.
+
+- **Shared mapper reuse** (`bleep/dbuslayer/{obex_opp,obex_ftp,obex_sync,obex_bip}.py`).
+  Every `CreateSession` `DBusException` now routes through `obex_session_error(exc, mac,
+  profile=…, service_hint=…)` (OPP `0x1105`, OBEX-FTP `0x1106`, IrMC Sync `0x1104`, BIP
+  `0x111A/0x111B`) — identical curated messages/codes to PBAP/MAP, zero re-implementation.
+- **`_SHARE_FEATURE` extended + BIP `_EXTRA_HINT`** (`bleep/dbuslayer/_obex_common.py`).
+  Added `SYNC`/`BIP` sharing-feature strings. BIP's `Image1` is `[experimental]`; the
+  mapper's unknown-variant branch now appends a `--experimental` hint for `profile="BIP"`
+  so that guidance survives while BIP still uses the shared path (chosen option).
+- **`RuntimeError` → Convention-aligned errors** across all four layers: obexd-not-running
+  → `BLEEPError(RESULT_ERR_WRONG_STATE)`; per-method D-Bus wraps (ChangeFolder, ListFolder,
+  GetFile/PutFile, SendFile, Properties, Get/GetThumbnail, SetLocation, Get/PutPhonebook,
+  Copy/Move/Delete) → canonical `map_dbus_error(exc)`; OPP logic failures (no vCard / no
+  file written) → `BLEEPError(RESULT_ERR)`; OPP `ExchangeBusinessCards` "not implemented"
+  and BIP `Image1`-unavailable → `NotSupportedError`.
+- **Shared transfer poller** (`bleep/dbuslayer/_obex_common.poll_obex_transfer`). Timeout
+  → `TimeoutError`, non-`complete` status → `BLEEPError(RESULT_ERR)` (previously bare
+  `RuntimeError`). Benefits **all six** OBEX profiles including the already-validated
+  PBAP/MAP; regression-checked below.
+- **CLI parity** (`bleep/modes/classic_profiles.py`). New shared `_warn_if_not_advertised`
+  helper adds a non-fatal SDP pre-flight to `run_opp`/`run_ftp` (mirrors `run_map`), warning
+  when OPP/FTP is absent from the target's service map before attempting anyway.
+- **Docstrings** updated (`Raises RuntimeError` → `BLEEPError`) in the four D-Bus layers,
+  the OPP `ble_ops` wrapper, and `poll_obex_transfer`; BIP module warning now cites
+  `NotSupportedError`.
+- **Docs.** Added `bl_classic_mode.md` §4 rows: OPP/FTP not-advertised pre-flight, the
+  shared "service record not retrievable" CreateSession error, and the BIP `--experimental`
+  `NotSupportedError`.
+- **Deferred at the time (since closed).** `bleep/dbuslayer/obex_pbap.py` was left with its
+  7 `RuntimeError` sites here to honour the OPP/FTP/SYNC/BIP scope. That deferral was
+  **subsequently closed by ERR-D3** (see the ERR-D3 entry above), which converted all 7 to
+  `BLEEPError`/`obex_session_error`/`map_dbus_error`; `obex_pbap.py` no longer raises
+  `RuntimeError`. `bleep-mcp/` untouched.
+
+### MAP-D1: shared OBEX CreateSession error mapper + MAP error-type convention alignment (2026-07-30)
+
+Accepted 2026-07-30 (recommended DRY option; MAP+PBAP scope). Consolidates the
+OBEX session-time diagnostics into one reusable helper and brings MAP up to the same
+Convention-aligned, actionable standard as PBAP. No behavioural change to successful
+transfers.
+
+- **Shared mapper** (`bleep/dbuslayer/_obex_common.py`). New `obex_session_error(exc,
+  mac, *, profile, service_hint)` maps an obexd `CreateSession` `DBusException` to a
+  Convention-aligned `BLEEPError` with a curated, profile-aware message + `RESULT_ERR_*`
+  code for the shared failure modes (`Too short header` → `WRONG_STATE`, `Transport got
+  disconnected` → `NOT_CONNECTED`, `NoReply`/`Timed out` → `NO_REPLY`, `Unable to find
+  service record` → `UNKNOWN_SERVCE`); unknown variants delegate to the canonical
+  `map_dbus_error` (which already handles `NotAuthorized`/`NotReady`/etc.).
+- **PBAP de-duplicated** (`bleep/ble_ops/classic/pbap.py`). `pbap_dump_async`'s inline
+  CreateSession branches (added in PBAP-D1 above) are replaced by a single call to the
+  shared mapper — identical messages/codes, less code.
+- **MAP aligned** (`bleep/dbuslayer/obex_map.py`). `MapSession` CreateSession now raises
+  via the shared mapper (previously a bare `RuntimeError` with no guidance — e.g. the
+  OnePlus 15R `Timed out waiting for response` = unauthorised MAS). obexd-not-running and
+  notification-watch paths now raise `BLEEPError` / `NotSupportedError` /
+  `OperationInProgressError` instead of `RuntimeError`.
+- **MAP monitor** (`bleep/ble_ops/classic/map.py`). "Monitor already active" now raises
+  `OperationInProgressError`.
+- **CLI parity** (`bleep/modes/classic_profiles.py`). `run_map` gains a non-fatal
+  `list_mas_instances` pre-flight that warns when MAP is not advertised in SDP, matching
+  the interactive layer's `detect_map_service` guard.
+- **`Unable to find service record` message honesty (from live validation).** The mapper
+  branch no longer asserts the record *is* advertised (only true for the honeypot/transient
+  case). It now presents both possibilities — target does not support the profile **or**
+  advertised-but-transient SDP failure — since the mapper cannot know which. Surfaced by
+  running the MAP failure path against PhreakMe-Blue (no MAP advertised).
+- **MAP `get --folder` fix (defect found in live validation)** (`bleep/cli/parsers/
+  classic.py`, `bleep/modes/classic_profiles.py`). CLI `classic-map … get` previously had
+  no way to specify the message's folder, so `get_message` could not materialise the
+  `Message1` object and failed with `UnknownObject … Message1 "Get"`. Added `--folder`
+  (mirrors `ftp get --path`) and wired it through. MAP `get` now works end-to-end.
+- **Docs.** Fixed the stale "no multi-instance MAP" note in `obex_map.py`; added MAP
+  troubleshooting rows to `bl_classic_mode.md` §4 (unauthorised MAS / MAP not advertised).
+- **Live validation (OnePlus 15R `78:ED:BC:23:67:96`, attended).** Success path confirmed:
+  `instances` (SMS/MMS ch26), `folders` (full telecom/msg tree), `list` (real inbox MMS),
+  `types` (graceful "none" on BlueZ 5.64), `fields`, and `get` (1182-byte bMessage after
+  the `--folder` fix). Failure path confirmed on PhreakMe-Blue (pre-flight warning +
+  honest `BLEEPError`). `push`/`monitor` not exercised (write/long-running; avoided on a
+  live personal handset).
+- **Unchanged.** `OPP/FTP/SYNC/BIP` CreateSession error handling (deferred consistency
+  sweep), `pan.py`, `bleep-mcp/`.
+
+### PBAP-D1: actionable diagnostic for obexd `Unable to find service record` + PBAP error-type convention alignment (2026-07-30)
+
+Accepted 2026-07-30 (full-consistency option) after a live preliminary scan on the
+PhreakMe-Blue honeypot (`14:89:FD:31:8A:7E`). Documentation-and-diagnostics only — no
+behavioural change to any working PBAP transfer.
+
+- **Root cause (evidence-based, not a BLEEP defect).** `classic-enum --sdp-source
+  merge --analyze` and `sdptool search 0x112F` both find the PBAP PSE record
+  (`browse+xml+records`, ch18) yet obexd's session-time SDP ServiceSearch
+  intermittently fails. Across live attempts the failure was **non-deterministic**,
+  cycling between `Too short header in packet`, `Unable to find service record`, and
+  `Timed out waiting for response` (obexd log: `connect_cb: Timed out` + `Transport got
+  disconnected`) — never reaching the authorisation stage, so no on-device prompt
+  appears.
+- **Confirmed cause-and-fix (attended live validation, 2026-07-30).** The repeated
+  failed OBEX attempts wedge the *Target Device's* OBEX stack. **Restarting the Target
+  Device clears its buffers and fully restores PBAP** — validated live: immediately
+  after a device restart the dump succeeded, pulling **313 vCard lines** from
+  PhreakMe-Blue. Depending on the device implementation a power-cycle may be required
+  rather than a `bluetoothctl disconnect`; users should be aware the Target Device may
+  need restarting. PBAP is therefore *serviceable* on this target — the failures were
+  accumulated device-side stale state, not a permanent refusal.
+- **Diagnostic gap closed** (`bleep/ble_ops/classic/pbap.py`). `pbap_dump_async` now
+  has an actionable branch for `Unable to find service record` (previously fell through
+  to a bare `raise`, surfacing as a cryptic `org.bluez.obex.Error.Failed: …` with no
+  guidance). The new message states the record *is* advertised, that the failure is
+  transient, and to accept any on-device prompt then retry / reconnect.
+- **Error-type convention alignment** (`bleep/ble_ops/classic/pbap.py`). All PBAP
+  `CreateSession` failure paths (`Too short header`, `Transport got disconnected`,
+  `NoReply`/`Timed out`, the new `Unable to find service record`) plus the
+  `dump_phonebook_pbap` fallback now raise the Convention-aligned
+  `bleep.core.errors.BLEEPError` (with mapped `RESULT_ERR_*` codes) instead of bare
+  `RuntimeError`. Callers already catch broad `Exception`, so surfaced messages are
+  unchanged.
+- **Docs.** New `bl_classic_mode.md` §4 troubleshooting row for `Unable to find
+  service record` (device-side, on-device-prompt guidance, non-deterministic posture).
+- **Unchanged.** `obex_map.py`, `map.py` (MAP already pre-flights via
+  `detect_map_service` in the command layers), `pan.py`, the sync `obex_pbap.py`
+  transport, and `bleep-mcp/` (out of scope).
+
+### LR-2c: signal-fed intra-round advertisement-fingerprint rotation detection (2026-07-30)
+
+Additive enhancement (accepted 2026-07-30; re-grafted 2026-07-30 onto the pulled
+multi-adapter D1/D2 baseline). Detects same-length advertisement payload rotations
+that occur **and revert within a single survey round** — invisible to the end-of-round
+`GetManagedObjects()` snapshot that both the census and `adv_reports` consume (the
+residual limitation flagged when LR-2b was retracted). The mechanism mirrors LR-6's
+RSSI capture: the per-advertisement D-Bus signal stream is the only sub-round source.
+Default (no-signal) behaviour and `adv_reports` semantics are unchanged; the new
+detection can only *set* `fingerprint_changed`, never clear it.
+
+- **Phase 0 feasibility gate (passed).** A throwaway probe subscribed to
+  `PropertiesChanged`/`InterfacesAdded` for the Light Orb (`F0:98:7D:0A:05:07`) under
+  realistic survey conditions (`DuplicateData=True`): BlueZ delivered `ServiceData` in
+  **252/252** `PropertiesChanged` events over 90s — it does **not** coalesce
+  `ServiceData`/`ManufacturerData` the way it partly does for RSSI, so a rotation is
+  observable on the signal stream. (No `bleep/` code involved in the probe.)
+- **DeviceManager tracker** (`bleep/dbuslayer/manager.py`). New per-round
+  `_adv_fp_last` (MAC → {(kind,key): payload}) + `_adv_fp_rotated` set under a
+  dedicated lock; reset in `start_discovery` alongside the RSSI cache. State is
+  per-manager, so under the multi-adapter model each adapter's manager tracks only its
+  own devices. `_capture_adv_fingerprint(mac, kind, key, payload)` flags a rotation on
+  `len(new)==len(old) and new!=old` — the exact predicate the per-round census merge
+  uses (`_merge_svc_data`/`_merge_mfr_data`); strictly longer/shorter payloads are
+  left to the snapshot merge. `pop_fingerprint_rotated(mac)` is a one-shot read+clear.
+- **Signal wiring** (`bleep/dbuslayer/signals.py`). New
+  `_capture_device_adv_fingerprint(path, props)` next to `_capture_device_rssi`,
+  called from `_properties_changed` and `_interfaces_added` when the `Device1`
+  interface carries `ServiceData`/`ManufacturerData`. Routed to the owning adapter's
+  manager via `_resolve_manager_for_path` (D1 adapter-aware routing), so a rotation
+  seen on one antenna never lands in another adapter's tracker. Same
+  `is_discovery_active` gating and swallow-all-failures contract as the RSSI path;
+  keys normalised to the census's `str` UUID / `int` company-id.
+- **Scan surface** (`bleep/ble_ops/le/scan.py`). Each returned entry now carries
+  `fingerprint_rotated_in_round = manager.pop_fingerprint_rotated(<path MAC>)`. The pop
+  keys off the D-Bus *path* MAC (which the tracker keyed on) so a bonded device seen
+  via a resolvable-private address — whose resolved identity `address` differs (N4) —
+  is still matched; the census still attributes to the identity-keyed sighting.
+- **Multi-adapter (D2) parity** (`bleep/dbuslayer/adapter_session.py`).
+  `AdapterSession.harvest()` pops `fingerprint_rotated_in_round` from its own manager
+  for each collected device, so `--collector` multi-antenna surveys surface the flag
+  identically to the single-adapter `_native_scan` path.
+- **Census OR-in** (`bleep/modes/survey.py:_merge_entry`). `if
+  entry.get("fingerprint_rotated_in_round"): s.fingerprint_changed = True` — purely
+  additive to the existing snapshot-based detection.
+- **Tests.** `tests/test_adv_fingerprint_rotation.py` (18) covers the manager tracker
+  (same-length flag; identical/longer/shorter/first-sample no-flag; key/MAC isolation;
+  manufacturer path; non-bytes ignored; one-shot pop; clear-on-discovery) and the
+  signals forwarder (svc/mfr rotation, inactive-discovery gate, no-manager,
+  non-device path, missing-accessor swallow, `_interfaces_added` seeding). +3 census
+  OR-in tests in `tests/test_survey.py`.
+
+### Review follow-ups: adv dedup key-order hardening, DB semantics docs (2026-07-30)
+
+Post-acceptance follow-ups from the triple-pass review of the LR-1a/1b/2/3/5/6 +
+F-1/F-2 batch. Additive and default-path-safe; +1 test. (The USB-IDs `\R` escape fix
+from this review batch is already present upstream — hardened independently via a
+`_pystr()` helper in `bleep/bt_ref/update_usb_ids.py` — and is therefore not
+re-applied here.)
+
+- **`adv_reports` dedup is now key-order independent.** `insert_adv`
+  (`bleep/core/observations/_history.py`) compared the incoming `decoded` blob to the
+  last stored row by exact string, but `json_dumps` does not sort keys — so two
+  structurally-identical payloads serialized in a different key order would emit a
+  redundant row. New `_decoded_matches()` keeps the fast exact-string path and adds a
+  structural (`json.loads`) fallback; a parse failure persists the row (never drops
+  a sample). Stored format is unchanged. +1 test
+  (`test_insert_adv_coalesces_regardless_of_decoded_key_order`). Worst prior case was
+  a harmless extra row, so this is hardening, not a correctness fix.
+- **DB counter/history semantics documented.** `bleep/docs/observation_db.md` gains a
+  "Counter & history semantics" section: `adv_reports` is a coalesced change-log
+  (RSSI churn is not persisted there; the newest `ts` can lag `last_seen`, so use
+  `devices.last_seen` for "last seen"), and `devices.sighting_count` is
+  cumulative-across-runs and skips paired/bonded cached re-reads.
+- **LR-2 "data-path gap" (LR-2b) investigated and RETRACTED — not a defect.** The
+  census round-result and `adv_reports` are built from the **same** per-round
+  `GetManagedObjects()` snapshot in `_native_scan`, so the two cannot diverge; the
+  earlier claim of a "per-advertisement signal stream feeding `adv_reports`" was
+  factually wrong. The residual (real, equal-to-both-sinks) limitation — end-of-round
+  snapshot sampling misses a rotation that reverts within one round — was
+  subsequently addressed by **LR-2c** (see the LR-2c entry above).
+
+### CLI ↔ Debug Mode capability uniformity — M7/M8/M9 residual-parity, harness hygiene & anti-drift harmonization (2026-07-29)
+
+- **M7 — residual `partial` rows closed to `full` (classic-scan, agent, aoi).**
+  - **`classic-scan`.** New shared builder
+    `bleep.cli.parsers.classic._add_classic_scan_arguments` (single source for
+    `--timeout/--uuid/--rssi/--pathloss/--debug/--adapter`); the CLI subparser now
+    consumes it. Debug `cscan` (`bleep/modes/debug_classic.py`) no longer inlines a
+    stripped scan — it parses via `parse_as_cli("classic-scan", …)` and delegates
+    to the same `classic_scan.run`, gaining the discovery filters **and**
+    observation-DB persistence (behavior change: debug `cscan` output is now the CLI
+    format).
+  - **`agent`.** Debug `agent` keeps its native session verbs
+    (`status`/`register`/`unregister`) and gains device-management verbs
+    `trust`/`untrust`/`remove-bond <MAC>` and `list-trusted`/`list-bonded`, which
+    translate to the CLI flag form and delegate to the shared `bleep.modes.agent.run`
+    (one-shot ops that return before the agent loop — `agent.py:279`).
+  - **`aoi`.** Debug `aoi` keeps the live `aoi [--save] [MAC]` helper as its default
+    and adds a leading-verb gate: a first token in
+    `scan/analyze/list/report/export/db` delegates to the same `aoi.run` pipeline via
+    `parse_as_cli` + `apply_aoi_subcommand` (a MAC can never equal a subcommand name,
+    so no collision).
+  - Registry rows `classic-scan`/`agent`/`aoi` `partial → full`; **no `partial` rows
+    remain**. New guard `tests/test_m7_partial_closure.py`.
+- **M8 — test-harness hygiene.**
+  - New `pytest.ini` registers the `pbap` and `timeout` marks (silences 23
+    `PytestUnknownMarkWarning`s). `pytest-timeout>=2.3.0` added as a `test` extra in
+    `setup.py` so `@pytest.mark.timeout(N)` is honored rather than a no-op.
+  - Fixed the `DeprecationWarning` in `bleep/ble_ops/classic/sdp.py` — replaced the
+    `seq.find("uint8") or seq.find("uint16") or seq.find("uint32")` chain (which
+    relied on the deprecated `Element.__bool__` truth-value) with explicit
+    `is None` checks (behavior-preserving).
+- **M9 — anti-drift harmonization.** `debug_advmon.cmd_advertise_monitor` now parses
+  through `parse_as_cli("advertise-monitor", …)` instead of a hand-built parser;
+  `_build_parser` removed. This retires the last bespoke debug parser — every ported
+  verb now shares the single `parse_as_cli` seam. `advertise-monitor start` still
+  runs under `foreground_loop_handoff`. `tests/test_advertise_monitor_uniformity.py`
+  gains assertions that the verb routes through `parse_as_cli` and that
+  `_build_parser` is gone.
+
+### CLI ↔ Debug Mode capability uniformity — M6 docs/registry/enforcement reconciliation (2026-07-29)
+
+- **New guard `tests/test_docs_match_registry.py`** — asserts every capability
+  with a non-empty `cli_command` is documented in `bleep/docs/cli_usage.md` and
+  every capability with a non-empty `debug_command` is documented in
+  `bleep/docs/debug_mode.md` (capability-level, code-span parse discipline
+  mirroring `test_cli_hint_convention.py`). Completes the docs/registry/test triad.
+- **Doc-sweep gaps filled in `debug_mode.md`** — added the previously
+  undocumented debug verbs: `crfcomm`/`cbind` (Classic table), a new **Media &
+  Audio** table (`mediaenum`/`mediaprops`/`mediactrl`/`audiorecon`/`audioplay`/
+  `audiorec`), and `survey`/`survey-status` (BLE Scanning table).
+- **New "Methodology & CLI parity" section in `debug_mode.md`** — codifies the two
+  surface contracts (one-shot CLI vs. stateful debug REPL), the anti-drift
+  mechanism (`shared_impl`, `_add_*_arguments`, `parse_as_cli`,
+  `foreground_loop_handoff`), and *why* Class-A (CLI-only) and Class-B
+  (debug-only) commands are intentionally single-surface. Module map gains
+  `debug_cli_adapters.py` (M3) and `debug_advmon.py` (M2).
+- **Hint-convention token list extended** (`tests/test_cli_hint_convention.py`)
+  with the debug-unique verbs `cenum`/`netenum`/`cping`/`uuidtr`/`adaptercfg`/
+  `gattserver`/`devicesets`. `advertise-monitor` and `mesh` are intentionally
+  **omitted** — they are identical to their CLI subcommand names, so a
+  CLI-reachable literal citing them is a legitimate self-reference, not a
+  cross-surface debug reference.
+
+### CLI ↔ Debug Mode capability uniformity — M5 depth parity (2026-07-29)
+
+- **New debug `cenum` verb** (`bleep/modes/debug_stateful_adapters.py`) — the true
+  depth twin of CLI `classic-enum`, delegating to the same `classic_enum.run`
+  (`bleep.analysis.sdp_analyzer`) with full `--version-info` / `--analyze` /
+  `--sdp-source` / `--connectionless` support; MAC defaults to
+  `state.current_device`. The separate `csdp` verb keeps its raw socket-oriented
+  SDP-browse semantics unchanged (accepted 2026-07-29 — do **not** overload `csdp`).
+- **Debug `audiocfg` gains a write sub-surface** (`bleep/modes/debug_media.py`):
+  `audiocfg <show|add|remove|tunnel|backup|restore> [...]` delegates to the same
+  `run_audio_config` core the CLI `audio-config` subcommand uses; no-arg /
+  `--endpoints` / `--profile` keeps the existing read-only backend diagnostics.
+- Both write paths reuse the M3 `parse_as_cli` anti-drift seam, so options can
+  never diverge from their CLI twins and argparse errors can't tear down the shell.
+- **Registry.** `classic-enum` (`debug=("cenum","csdp")`) and `audio-config` flip
+  `partial` → `full`.
+- Docs: `debug_mode.md` (BR/EDR Classic + Utilities tables, module map) + in-shell
+  `help`. New `tests/test_m5_depth_parity.py`.
+
+### CLI ↔ Debug Mode capability uniformity — M4 stateful-core parity verbs (2026-07-29)
+
+- **Eight connection-aware CLI modes ported into the debug shell** (new
+  `bleep/modes/debug_stateful_adapters.py`), each delegating to the same core the
+  CLI dispatch calls and parsing tokens through the real CLI subparser
+  (`parse_as_cli`, promoted from M3's `_parse_as_cli`):
+  - `explore` → `exploration.run`; `audiointercept` → `run_audio_intercept` —
+    both default the target MAC to the live `state.current_device` when omitted
+    (matching the `chid`/`aoi` conventions).
+  - `signal` → `signal.run` — **reuses the live `state.current_device` (no
+    reconnect)** via a new additive `signal.run(..., device=...)` parameter; the
+    lightweight `notify` toggle is unchanged.
+  - `gattserver` → `gatt_server.run`; `advertise` → `advertise.run` — cores that
+    run their own foreground GLib loop, so they run inside the new shared
+    `foreground_loop_handoff` context manager.
+  - `devicesets` → `handle_device_sets`; `mesh` → `handle_mesh`; `ctf` →
+    `blectf.run`.
+- **New shared `foreground_loop_handoff(state)`** (`bleep/modes/debug_state.py`)
+  stops the background debug GLib loop and saves/restores the shell's
+  SIGINT/SIGTERM handlers around any core that runs its own foreground loop.
+  `debug_advmon` (M2) was refactored onto it, removing its inline duplicate.
+- **`refresh-refs` intentionally NOT ported** — stays `cli-only` (batch
+  reference-data maintenance, no session value).
+- **Registry.** `explore`, `signal`, `gatt-server`, `advertise`,
+  `audio-intercept`, `device-sets`, `mesh`, `ctf` flip `cli-only` → `full`.
+- Docs: `debug_mode.md` (Enumeration/GATT tables + new "Local Roles, Broadcast &
+  Advanced" section) + in-shell `help` groups. New `tests/test_m4_stateful_parity.py`.
+- **Verified:** M4 + M3 + M2 + parity/hint guards → `258 passed` (M2 test
+  `test_debug_start_delegates_inside_loop_handoff` updated for the shared
+  `foreground_loop_handoff` refactor). Full adapter-dependent suite pending a host
+  with Bluetooth hardware.
+
+### CLI ↔ Debug Mode capability uniformity — M3 zero-risk utility parity verbs (2026-07-29)
+
+- **Five CLI utilities ported into the debug shell as thin, stateless adapters**
+  (new `bleep/modes/debug_cli_adapters.py`), each delegating to the *same* core
+  the CLI dispatch calls — no logic duplicated:
+  - `uuidtr` → `bleep.modes.uuid_translate.main` (tokens passed straight through).
+  - `adaptercfg` → `bleep.modes.adapter_config.handle_adapter_config`.
+  - `netenum` → `bleep.modes.classic_profiles.run_network_enum`.
+  - `cping` → `bleep.ble_ops.classic.ping.classic_l2ping`.
+  - `db` → `bleep.modes.db.run` (full `list/show/timeline/export/uuids/maintain`
+    surface; terminal `OutputContext`, no shim needed — `db.run` emits via
+    `print_and_log`). Broader than the session-scoped `dbsave`/`dbexport`
+    helpers, which are retained.
+- **Anti-drift mechanism.** `adaptercfg`/`netenum`/`cping`/`db` parse their
+  tokens through the *real* CLI subparser via `build_argument_parser()`
+  (`_parse_as_cli`), so a debug verb can never accept a different option set than
+  its CLI twin. `SystemExit` from argparse (`--help` / parse errors) is contained
+  so it can never tear down the interactive shell (`uuidtr` guards its
+  self-parsing `main()` the same way).
+- **Registry.** `uuid-translate`, `adapter-config`, `network-enum`,
+  `classic-ping` flip `cli-only` → `full`; `db` flips `partial` → `full`
+  (`debug_command` = `db`, `dbsave`, `dbexport`; `shared_impl` → `bleep.modes.db.run`).
+- Docs: `debug_mode.md` (Classic / Database / new Utilities tables) + in-shell
+  `help` groups updated. New `tests/test_m3_utility_parity.py`.
+- **Verified:** M3 suite + M2 + parity/hint guards → `227 passed`. Full
+  adapter-dependent suite pending a host with Bluetooth hardware.
+
+### CLI ↔ Debug Mode capability uniformity — M2 Advertisement Monitor (2026-07-29)
+
+- **CLI hard rename (no alias).** `bleep monitor` → `bleep advertise-monitor`
+  (`caps`/`start`), disambiguating it from the debug device-property `monitor`.
+  `bleep/cli/parsers/utility.py` now exposes the shared
+  `_add_advertise_monitor_start_arguments` builder consumed by both surfaces;
+  the dispatch branch (`bleep/cli/dispatch.py`) matches `advertise-monitor`. The
+  sub-action dest stays `monitor_action`, so `bleep.modes.monitor` is untouched.
+- **Debug parity (new verb).** New thin adapter `bleep/modes/debug_advmon.py`
+  adds the `advertise-monitor` debug verb, delegating to the same
+  `bleep.modes.monitor.run` (terminal `OutputContext`). For `start` it hands the
+  GLib default context to `monitor`'s own foreground loop (stops/restarts the
+  background debug loop) and saves/restores the shell's SIGINT/SIGTERM handlers,
+  so Ctrl-C returns cleanly to the prompt. The debug `monitor` (live
+  `PropertiesChanged`) verb is unchanged and now documented as distinct.
+- **Registry:** `advertisement-monitor` flips `cli-only` → `full`
+  (`cli_command`/`debug_command` = `advertise-monitor`, `shared_args` = the new
+  builder); the parity guard enforces both surfaces + the removed `monitor`
+  subcommand.
+- Docs: `cli_usage.md`, `debug_mode.md` (BLE Scanning table + disambiguation
+  note), and in-shell `help` updated.
+- **Verified:** new `tests/test_advertise_monitor_uniformity.py` + the parity and
+  hint-convention guards pass (`207 passed`). Full-suite (adapter-dependent rows)
+  pending a host with Bluetooth hardware.
+
+### CLI ↔ Debug Mode capability uniformity — M0 registry + M1 drift fixes (2026-07-29)
+
+First implementation slice of the accepted CLI/Debug uniformity plan
+(`bleep/docs/todo_tracker.md` → "CLI ↔ Debug Mode capability uniformity
+CDU-M0..M6"). Both surfaces keep their distinct methodologies (one-shot CLI vs.
+stateful debug shell); parity is achieved by shared implementations + shared
+argument builders, never by duplicating logic.
+
+- **M0 — parity registry + guard.** New `bleep/cli/capability_registry.py`
+  declares every capability and the command name(s) it exposes per surface. New
+  `tests/test_cli_debug_parity.py` asserts every reachable CLI subcommand and
+  every debug dispatch key is declared (and vice-versa: no stale rows), plus
+  per-row parity/rationale/shared-impl invariants. `bleep/cli/parsers/__init__.py`
+  gains `build_argument_parser()` + `iter_cli_subcommands()` (behaviour-preserving
+  refactor; `build_parser()` unchanged).
+- **M1 — Class-C option/default drift eliminated.**
+  - PBAP `--watchdog` unified via `classic.py::_add_pbap_arguments` (canonical
+    default **30 s**; removes the debug shell's 8 s default that aborted long
+    phonebook pulls).
+  - `pair` options unified via `pairing.py::_add_pair_arguments`; the debug
+    shell gains `--no-connect` / `--no-trust`, threaded through the pairing flow.
+  - Debug `scan`/`scann`/`scanp`/`scanb` gained an overridable `--timeout`
+    (historical 10 s / 20 s defaults preserved).
+  - Debug `audioplay` gained `--codec`; debug `audiorec` gained
+    `--hfp` / `--keep-profile` (wired to the same shared calls as the CLI).
+- **Follow-up fix.** The declarative registry legitimately names debug-shell
+  commands (in its command tuples and parity rationale) and emits no user-facing
+  output, so `bleep/cli/capability_registry.py` was added to the
+  `EXEMPT_PATH_PARTS` allow-list of `tests/test_cli_hint_convention.py`.
+- **Verified:** full suite green on a host with a Bluetooth adapter
+  (`1837 passed, 34 skipped`); the parity + hint-convention guards pass
+  (`196 passed`).
+
+### CLI ↔ Debug Mode capability uniformity — M1.5 PAN rename + M1.6 HID dual-variant (2026-07-29)
+
+- **M1.5 — `classic-pan` vocabulary unified (hard rename).** CLI `serve`/`unserve`
+  → `server-reg`/`server-unreg` (no alias). The debug shell's `cpan` gains the
+  same `server-reg`/`server-unreg` primary verbs and keeps the one accepted
+  two-token alias `server register`/`server unregister`. Both surfaces resolve
+  spellings through the new shared `bleep/ble_ops/classic/pan.py::
+  PAN_SERVER_VERBS` / `resolve_pan_server_verb`, and the debug register/
+  unregister logic is factored into a shared `_cpan_server_action` helper.
+- **M1.6 — HID classification available with and without a connection on both
+  surfaces.** New shared evidence builder `bleep/ble_ops/hid.py` assembles the
+  `classify_hid` evidence dict once for both surfaces. CLI `hid-info` gains
+  `--connect` (connected variant → harvests `Input1.ReconnectMode`); debug
+  `chid` gains an optional `[MAC]` (connectionless variant, no live session).
+  Also fixes a latent LE bug where the old debug `chid` LE branch called a
+  non-existent `get_properties()` and therefore always produced empty evidence;
+  it now uses the real `get_device_appearance`/`get_uuids` + `Input1` accessors.
+- Docs: `bleep/docs/device_type_classification.md` gained a
+  connectionless-vs-connected evidence-delta table and a variant matrix;
+  `cli_usage.md`, `debug_mode.md`, and the in-shell `help` were updated. New
+  tests: `tests/test_pan_command_uniformity.py`, `tests/test_hid_dual_variant.py`.
+- **Verified:** full suite green (`1856 passed, 34 skipped, 0 failed`);
+  M1.5/M1.6 + guard subset `215 passed`.
+
+### Live-test remediation: async D-Bus dispatch, defensive accessors, honest verdicts (2026-07-28)
+
+Fixes found during a live CLI/soak test pass. Root-caused, proven with
+contention-independent PoCs, and validated live before/after.
+
+- **P0 — async D-Bus reply dispatch (the `advertise` / `gatt-server` / `monitor`
+  "silent 5 s timeout" bug).** `LEAdvertisingManager.register`,
+  `GattServerManager.register_application`, `AdvMonitorManager.register` (and
+  their unregister siblings) issued an *asynchronous* D-Bus call with
+  `reply_handler`/`error_handler` but then busy-waited with `time.sleep()`, which
+  never lets the GLib loop dispatch the reply — so the registration always timed
+  out even when BlueZ succeeded, and the real error was hidden. Extracted a
+  single shared helper **`bleep/dbuslayer/_dbus_wait.py::call_async_await`** that
+  runs a temporary `GLib.MainLoop` when no background loop owns the default
+  context (the proven `agent.py` pattern), terminates via a GLib timer (immune to
+  clock mocking), and surfaces the real BlueZ error. Wired into all six
+  register/unregister call sites, removing ~12 duplicated busy-wait blocks.
+  *Result:* `gatt-server start` and `advertise --type broadcast` now work;
+  unsupported operations fail fast with the true error instead of hanging.
+- **P1 — defensive optional-property accessors.** `device_le` accessors
+  (`Icon`, `Appearance`, `RSSI`, `TxPower`, `Modalias`, `UUIDs`,
+  `ManufacturerData`, `ServiceData`, `AdvertisingFlags`/`Data`, `Sets`,
+  `PreferredBearer`, `Alias`, `Name`) previously re-raised on
+  `InvalidArgs` ("No such property") — crashing e.g. `media-enum --passive` on
+  devices that don't expose `Icon`. Collapsed into one
+  `_get_optional_property()` helper that maps both `UnknownObject` and
+  `InvalidArgs` to `None` and re-raises anything else.
+- **P1 — advertise payload validation.** BlueZ rejects an advertisement that both
+  sets a property explicitly *and* asks it to auto-include the same field via
+  `Includes` ("Failed to parse advertisement"). `_build_properties` now drops the
+  redundant include when the explicit property is set. Verified against the live
+  conflict matrix: `LocalName`↔`local-name` and `Appearance`↔`appearance` conflict
+  (both fixed); `TxPower`↔`tx-power` does **not** conflict (left untouched).
+- **P1 — `media-enum --passive` object lifecycle.** LE peers using
+  resolvable-private addresses routinely rotate/disappear between discovery and
+  assessment; `assess_media_device` then blew up on a raw `UnknownObject` D-Bus
+  dump at the first state read. It now maps a vanished object to a clean
+  `DeviceNotFoundError` ("Device … not found").
+- **P1 — `classic-enum` device resolution.** A connected-but-non-discoverable
+  (bonded) peer failed the fresh BR/EDR discovery gate. `_target_known()` now
+  consults the object manager first, so already-known devices skip discovery.
+- **P2 — `usb_ids` generator escaping.** `update_usb_ids.py` only escaped quotes,
+  emitting an invalid `\R` escape (`SyntaxWarning`) for the product name
+  `CD\RW 40X`. Added `_pystr()` (escapes `\` then `"`); fixed the one affected
+  generated line (runtime value unchanged).
+- **P3 — output ordering.** `print_and_log` now flushes stdout so piped/redirected
+  output stays in chronological order with the file logs and stderr.
+- **P3 — `agent --list-bonded`.** Renders epoch timestamps as
+  `YYYY-MM-DD HH:MM:SS` and falls back to the observations DB for the device name.
+- **P3 — `--diagnose-audio` verdict.** Now factors in GStreamer SBC codec
+  readiness: reports "routing available but codec plugins incomplete" instead of
+  a blanket "ready".
+- **Advertise include guidance (`--include-appearance` foot-gun).** `--appearance
+  <value>` sends a self-contained Appearance; `--include-appearance` asks BlueZ to
+  source it from the (often-unset) adapter/system value, which then fails with
+  "Failed to register advertisement". `advertise start` now (A) warns before
+  registering when `--include-appearance` is used without `--appearance`, (B)
+  prints a targeted "pass --appearance <value>" hint on that failure, and (C)
+  pre-flights all requested `--include-*` flags against the adapter's
+  `SupportedIncludes` and warns on any it does not advertise. Logic lives in a
+  pure, unit-tested helper `advertise._validate_includes`; flag help text
+  clarified (self-contained vs. sourced). Tests: `tests/test_advertise_includes.py`.
+- **Correction (triple-pass live validation).** The earlier working hypothesis
+  that this CSR 4.0 controller "rejects connectable `peripheral` advertising" was
+  a **misdiagnosis**: with the P0 dispatch fix in place, `peripheral` advertising
+  succeeds reliably (8/8 repeat runs, plus name/appearance variants). The prior
+  failures were orphaned registrations left by the busy-wait bug. The misleading
+  "retry with `--type broadcast`" hint was removed; the mode now points to the
+  real BlueZ error and `advertise caps`.
+- **Docs.** Added/corrected the "Environmental limitations & known constraints"
+  section in `cli_usage.md`: advertising payload conflicts (auto-resolved),
+  `--include-appearance`-without-value controller quirk, AdvertisementMonitor
+  support, WSL `l2ping` capability, and audio codec packages.
+- **Tests:** new `tests/test_dbus_wait.py`, `tests/test_device_le_optional_props.py`,
+  `tests/test_classic_target_known.py`; advertise payload-conflict cases
+  (local-name + appearance drop, tx-power kept); `media-enum --passive`
+  vanished-object cases; `tests/test_advertise_includes.py` (include validation
+  A/B/C); existing register/unregister timeout tests updated to the new helper
+  contract. Full suite: **1653 passed, 34 skipped**.
+
+### DT-1: repo-wide `datetime.utcnow()` deprecation migration (2026-07-28)
+
+`datetime.utcnow()` is deprecated in Python 3.12+. Migrated all **29 call sites
+across 13 files** to a central helper, **preserving the on-disk naive-UTC string
+format** the observation DB and its comparison queries depend on — so there is
+**zero behavioural change** to stored timestamps.
+
+- **New `bleep/core/time_utils.py`** with two helpers:
+  - `utc_now_iso()` → `datetime.now(timezone.utc).replace(tzinfo=None).isoformat()`
+    — a naive-UTC string that is **byte-shape identical** to the legacy
+    `datetime.utcnow().isoformat()` (verified at runtime). Drop-in for all 25 DB
+    string writers.
+  - `utc_now()` → `datetime.now(timezone.utc)` — an aware object for
+    arithmetic/durations only (the 4 `_maintenance.py` VACUUM/ANALYZE timing
+    sites). Never persisted as a string.
+  - Rationale: the `datetime.now(timezone.utc)` form the deprecation warning
+    suggests is *aware* and its `.isoformat()` appends `+00:00`, which breaks
+    lexicographic comparison against SQLite's naive `datetime('now')` and raises
+    `TypeError` when mixed with existing naive rows. `utc_now_iso()` strips
+    `tzinfo` to stay a true drop-in.
+- **Migrated sites:** observations layer (`_connection`, `_services`, `_history`,
+  `_aoi`, `_devices`, `_media`, `_pairing`, `_evidence`, `_maintenance`) plus the
+  four LT-2 writers (`aoi_analyser`, `ble_ops/le/scan`, `modes/classic_enum`,
+  `dbuslayer/device_classic`). Removed now-unused `from datetime import datetime`
+  imports; display/report/filename `datetime.now()` calls and the SQL literal
+  `datetime('now')` were intentionally left unchanged.
+- **Tests/gates:** added `tests/test_time_utils.py` (format/offset/roundtrip/aware
+  assertions). `utcnow(` in `bleep/` is now zero; lint-clean; full suite **1627
+  passed / 27 skipped** (pre-existing gstreamer/audio-codec env failures excluded
+  and proven unrelated by stashing the change set). Live-verified against a temp
+  `BLEEP_DB_PATH`: device/service/adv writes store naive UTC with no offset,
+  `first_seen == last_seen` on insert, recency query and `aoi list` work.
+- **Scope note:** format-preserving — historical rows are not rewritten; the
+  signals `capture_config`/`router` config-file timestamps (separate subsystem,
+  `datetime.now()`, not the observation DB) are out of scope. Full plan + PoC:
+  `bleep/docs/datetime_utc_migration_plan.md`.
+
+### Live-test fixes: explore service-resolution robustness + UTC timestamp normalization (2026-07-27)
+
+Two defects surfaced during multi-antenna live testing against local targets
+(BLE-CTF, Light Orb, a Sphero robot). Both fixes are surgical and behaviour is
+verified live on real hardware.
+
+- **`explore` passive mode spuriously failed `ServicesNotResolved` on rich GATT
+  servers (`bleep/ble_ops/le/scan_modes.py`).** `passive_scan_and_connect`
+  distributed its `--timeout` (default 10 s) as 50/25/25 across scan/connect/
+  resolve, leaving only **5 s** for service resolution with a single attempt. A
+  Sphero robot (6 services / 25 characteristics) *connected* fine but could not
+  resolve within 5 s, so `explore` failed twice where `gatt-enum`/`aoi scan`
+  (which use the stack default 15 s window / retry controller) succeeded on the
+  first attempt. Fixed by aligning the service-resolution floor with the rest of
+  the stack (`max(timeout, 15)` s), scaling the connect floor to 5 s, and adding
+  one bounded connect+resolve retry (`max_attempts=2`, capped backoff) — matching
+  gatt-enum/AoI robustness without turning passive into the aggressive naggy
+  mode. Verified live: the same Sphero now resolves (`Services resolved: True`,
+  6 services / 25 characteristics enumerated).
+- **AoI analysis wrote `devices.last_seen` in local time
+  (`bleep/analysis/aoi_analyser.py`).** Every `aoi ... --analyze` run overwrote
+  `last_seen` via `datetime.now().isoformat()` (local) while the entire
+  observations layer and survey persistence use naive UTC
+  (`datetime.utcnow().isoformat()`). This made AoI-enumerated devices show a
+  `last_seen` earlier than their survey-set `first_seen` in `db list`. Normalized
+  that writer — plus three sibling `version_queried_at` writers that also used
+  local time (`bleep/ble_ops/le/scan.py`, `bleep/modes/classic_enum.py`,
+  `bleep/dbuslayer/device_classic.py`) — to naive UTC. (Normalized to the
+  existing dominant naive-UTC convention rather than tz-aware to avoid breaking
+  lexicographic comparisons against SQLite's naive `datetime('now')`.) Verified
+  live: after `aoi analyze` a device's `last_seen` now records UTC
+  (`23:45` UTC, not local `19:45`), consistent with `first_seen`.
+- **Docs/tracker.** `todo_tracker.md` gains LT-1/LT-2 (resolved) and **DT-1**
+  (planned repo-wide `datetime.utcnow()` deprecation migration).
+  `observation_db_schema.md` now documents the **enforced naive-UTC** timestamp
+  convention (with an explicit "never write local time / tz-aware offset" rule).
+  `explore_mode.md` updated for the new passive timeouts/retry. Added
+  `datetime_utc_migration_plan.md` — DT-1 plan of work with executed PoC and
+  citations (proves the naive-UTC-preserving helper is byte-shape identical to
+  the legacy output and that mixing naive/aware timestamps breaks arithmetic).
+
+### Multi-antenna survey + adapter-aware signal routing D1/D2 (2026-07-26)
+
+Implements concurrent multi-adapter passive collection (Phase 4 groundwork): one
+antenna can sweep LE while another performs BR/EDR inquiry simultaneously, or
+several antennas cover the same transport for spatial coverage. Foundation for
+the collect-on-one-antenna / enumerate-on-another goal. All changes are additive
+and default-path-preserving (single-adapter survey is unchanged); +36 tests
+(routing 15, multi/census 12, loop service 3, DB lock 2, plus existing 10 RSSI
+capture green). Full suite **1600 passed / 34 skipped** (pre-existing 11 failures
+are BlueZ/GStreamer/subprocess env-only, identical on a pristine `HEAD`).
+
+- **D1 — Adapter-aware RSSI routing (`bleep/dbuslayer/signals.py`).** The signals
+  manager previously held a single `_device_manager` slot, so with multiple
+  adapters an RSSI observation could land in the wrong adapter's cache. It now
+  keeps a `_device_managers` dict keyed by `adapter_name`; `_capture_device_rssi`
+  parses the `hciN` out of the D-Bus object path (`_adapter_from_device_path`) and
+  routes to the owning manager. With ≥2 managers and no adapter match the
+  observation is dropped (never mis-routed); with exactly one manager the legacy
+  adapter-blind behaviour is preserved. `register`/`unregister_device_manager`
+  manage the dict, and a compat `_device_manager` property/setter keeps existing
+  single-adapter callers/tests working. `manager.py::_cleanup_after_run` now
+  deregisters on exit.
+- **D1.4 — Shared GLib main-loop service (`bleep/dbuslayer/loop_service.py`, new).**
+  A reference-counted process-wide `MainLoopService` runs one `GLib.MainLoop` on a
+  dedicated daemon thread so N adapter sessions collect concurrently without each
+  blocking a thread on its own loop. A thread-per-collector alternative is
+  documented as a deferred future option (feasibility note in-module).
+- **D1.5 — `AdapterSession` + registry (`bleep/dbuslayer/adapter_session.py`, new).**
+  Thin composition of adapter + role (collector/enumerator) + transport with
+  non-blocking `begin`/`harvest`/`end`; `harvest` filters the global
+  `GetManagedObjects` view by adapter object-path so antennas never double-count.
+  `DeviceManager` gains non-blocking `begin_discovery`/`end_discovery` and
+  `start_discovery(transport=...)` (default `le`, backward compatible).
+- **D2.1 — Observation DB serialization (`bleep/core/observations/_connection.py`).**
+  `_db_cursor()` now acquires `_DB_LOCK` for the whole cursor→commit window (the
+  shared `sqlite3` connection is `check_same_thread=False` and unsafe for
+  concurrent use). `_DB_LOCK` is upgraded to an `RLock` so the ~29 existing
+  `with _DB_LOCK, _db_cursor()` sites (and lazy `_init_db`) remain reentrant
+  rather than self-deadlocking.
+- **D2.2/2.3 — Multi-collector orchestrator + census enrichment
+  (`bleep/modes/survey_multi.py` new; `bleep/modes/survey.py`).** `SurveyCensus`
+  is made thread-safe (`RLock` around merge/filter) and gains a `seen_by` set;
+  `merge_le_results`/`merge_classic_results` accept an `adapter` tag emitted as the
+  `seen_by` output field. `run_multi_collector` drives concurrent per-adapter
+  rounds into one census on the shared loop, with **transport-split** as the
+  default coverage profile and **spatial** (same transport on ≥2 antennas) as an
+  opt-in.
+- **D2.4 — CLI (`bleep/cli/parsers/survey.py`).** Repeatable
+  `--collector hciN[:TRANSPORT]` flag; bare adapters round-robin `le`/`bredr`
+  (transport-split default). `survey.run()` dispatches to the multi path when any
+  collector is given and otherwise runs the unchanged single-adapter loop.
+
+### Survey sighting-count semantics + passive RSSI capture LR-1b/LR-6 (2026-07-25)
+
+Follow-up to the LR-1a/LR-2/LR-3/LR-5 batch below, resolving the two findings that were
+previously deferred pending analysis. Both changes are additive and default-path-safe;
++13 tests (3 survey, 10 signals). Full targeted suites green
+(`test_survey.py` 61, `test_signals_rssi_capture.py` 10, checkpoint/insert_adv/aoi 109).
+
+- **LR-1b — `sightings` now counts live observations, not cached re-reads.**
+  `SurveyCensus._merge_entry` (`bleep/modes/survey.py`) incremented `sighting_count`
+  unconditionally every round, so bonded/paired devices that BlueZ keeps in
+  `GetManagedObjects()` without advertising inflated to ≈rounds (×2 for dual) — live-run
+  confirmed 4 paired devices (`98:3B:8F:EF:FE:EC`, `F4:B6:88:0B:90:22`,
+  `9C:D3:5B:A0:C3:C4`, `43:25:00:6A:0E:CA`) counted 6/6 rounds with RSSI never present.
+  The increment is now gated on the **cached predicate** already used for `is_cached`
+  (no fresh RSSI **and** paired/bonded); a device first seen only as a cache entry seeds
+  `sightings: 0` and is excluded by the default `--min-sightings 1` (consistent with
+  `--resume-db` seeded devices). Gating on the cached predicate rather than raw RSSI is
+  deliberate: passive `DuplicateData=True` drops RSSI for ~4% of genuine adverts
+  (measured: one unpaired advertiser flapped `[None,None,-60]`; naggy 100%), so an
+  RSSI-only gate would undercount real unpaired advertisers. Trade-off: a transient
+  *unpaired* lingering managed object may still be counted, bounded by BlueZ's temporary
+  eviction — chosen over undercounting live devices. `last_seen` still advances on cached
+  re-reads; dual seen live in both phases counts 2/round.
+- **LR-6 — RSSI captured from `InterfacesAdded`, not only `PropertiesChanged`.** The
+  DeviceManager RSSI cache was fed solely by `PropertiesChanged`
+  (`bleep/dbuslayer/signals.py`), so under passive scanning (often a single
+  `InterfacesAdded` per device) a live device could report `rssi=None`. The capture
+  logic is refactored into a shared `_capture_device_rssi(path, rssi)` helper (guards:
+  device path + `is_discovery_active`) now called from both `PropertiesChanged` and
+  `_interfaces_added` (only when `DEVICE_INTERFACE` carries `RSSI`). Radio behavior is
+  unchanged; switching survey rounds to naggy by default was rejected to preserve the
+  passive/quiet character (a future opt-in flag is tracked in `todo_tracker.md`).
+
+### Survey/AoI live-run fixes LR-1a/LR-2/LR-3/LR-5 (2026-07-25)
+
+Four correctness/hygiene fixes surfaced by an agent-executed 4-hour `--transport
+both` survey (`--resume-db --adaptive --exclude-cached --checkpoint-interval 120
+--auto-recover`) followed by `aoi scan --analyze` + `aoi report --all`. All changes
+are additive and default-path-preserving; source-cited verification lives in
+`workDir/LongRun_20260725_070234/`. Full suite **1574 passed / 27 skipped** (+14
+tests). Two run findings were dispositioned without code changes: **LR-1b**
+(`sighting_count` inflated by cached ManagedObjects re-reads) is **deferred** (a fix
+changes the meaning of `sightings` and needs a semantics decision), and **LR-4**
+(pure-Classic discovery ~0 after warm-up) is **disproven** — environmental, the
+`bredr` inquiry path is correct.
+
+- **LR-2 — `fingerprint_changed` now detects same-length payload rotation.**
+  `SurveyCensus._merge_mfr_data`/`_merge_svc_data` (`bleep/modes/survey.py`)
+  previously flagged a change only when the incoming payload was *strictly longer*,
+  so the common iBeacon/Eddystone/status-byte rotation (same length, differing bytes)
+  was silently missed — 0/76 devices flagged across the run despite Light Orb
+  (`F0:98:7D:0A:05:07`) rotating service-data `0210ffff00`→`0210ffff02`. Both helpers
+  now also adopt-and-flag when `len(new)==len(old) and new!=old`. Longest-wins and
+  shorter-ignored semantics are preserved.
+- **LR-1a — `--exclude-cached` now honors DB-resumed devices.** `seed_from_db()`
+  built each `DeviceSighting` without `is_cached`, defaulting it `False`, so
+  `--resume-db --exclude-cached` still emitted bonded devices never seen live this run
+  (`43:25:00:6A:0E:CA`, `98:3B:8F:EF:FE:EC`, …). Seeded sightings are now created with
+  `is_cached=True`; the existing re-sight path clears the flag the moment the device
+  is seen live with RSSI (`survey.py:252-253`), matching the documented
+  `--exclude-cached` semantics.
+- **LR-3 — `adv_reports` coalesces consecutive identical samples.** BlueZ's
+  `GetManagedObjects()` re-reports the same advert every survey round, and `insert_adv`
+  did an unconditional `INSERT` (1807 rows/run, 465 identical rows for BLECTF; the raw
+  `data` blob is almost always empty because `advertising_data` is rarely exposed).
+  `bleep/core/observations/_history.py` now skips the insert when `(data, decoded)`
+  equals the most recent row for that MAC (new `_as_blob_bytes` normalizer for stable
+  BLOB comparison). RSSI-only changes are intentionally not persisted here — RSSI
+  aggregates already live on the `devices` row. Non-consecutive changes (A,B,A) still
+  produce distinct rows.
+- **LR-5 — `aoi report --all` no longer diluted by non-enumerated targets.**
+  `generate_aggregate_report` averaged/tabulated over every loaded device, so dozens
+  of `0/10` LE targets that never enumerated (stale RPAs) dragged the aggregate toward
+  0.6/10. New `AOIAnalyser._device_was_enumerated()` classifies a device as reachable
+  when it exposes GATT services, Classic SDP/pairing data, enumerated characteristics,
+  or any raised concern. Markdown/text reports split the summary into **Analyzed** vs
+  **Not Reachable (no GATT/SDP enumerated)**; the average is computed over analyzed
+  devices only. JSON gains `analyzed_count`/`not_reachable_count` metadata and a
+  per-device `reachable` flag; `device_count` and `avg_security_score` keys are
+  retained (average is now analyzed-only).
+- **Tests (+14).** `tests/test_survey.py`:
+  `test_manufacturer_data_same_length_change_flags_fingerprint`,
+  `test_manufacturer_data_same_length_identical_no_flag`,
+  `test_service_data_same_length_change_flags_fingerprint`,
+  `test_service_data_shorter_does_not_replace`, `test_seed_marks_devices_cached`,
+  `test_seed_cached_excluded_by_exclude_cached`, `test_seed_cached_cleared_when_seen_live`.
+  `tests/test_insert_adv.py`: `test_insert_adv_coalesces_consecutive_identical`,
+  `test_insert_adv_new_row_on_decoded_change`, `test_insert_adv_new_row_on_data_change`,
+  `test_insert_adv_dedup_is_consecutive_only`, `test_insert_adv_coalesces_empty_data`.
+  `tests/test_aoi_augmentation.py`: `test_aggregate_markdown_excludes_not_reachable`,
+  `test_aggregate_json_average_over_reachable_only`.
+
+### SDP XML robustness (F-1) + timeline UUID display normalization (F-2) (2026-07-25)
+
+Two fixes surfaced during real-device validation of the SDP profile-label work
+(PLT V8200 headset `F4:B6:88:0B:90:22`, BlueZ 5.79). Both are additive and leave
+the default operator path byte-for-byte unchanged. Full suite **1560 passed / 27
+skipped** (+4 tests).
+
+- **F-1 — `_parse_browse_xml` tolerates sdptool trailing status text.**
+  `sdptool browse --xml` frequently appends non-XML status lines
+  (`Browsing …`, `Service Search failed: Invalid argument`) *after* `</record>`
+  in the same `<?xml?>`-delimited fragment, making the fragment malformed and
+  previously sinking the whole record on `ET.ParseError`. `ble_ops/classic/sdp.py`
+  adds `_XML_RECORD_RE` and clips each fragment to its `<record>…</record>`
+  span(s) before parsing (`… or [frag]` falls back to the old whole-fragment
+  parse when no `<record>` is present; it also parses multiple records in one
+  fragment). Effect: the XML-only enrichments (attribute labels incl.
+  profile-scoped IDs, additive protocol `parameters`, secondary-language string
+  labels) now actually reach output. Verified on hardware: `source="xml"` returns
+  the DID record with labels `0x0200–0x0205` (previously raised "no records");
+  `source="all"` union changes from `browse+records` to `browse+xml+records`. The
+  `auto` chain (MCP default) is unchanged — plain `browse` text still wins when it
+  returns RFCOMM channels.
+- **F-2 — canonical UUID rendering in `db timeline --sdp`.** Legacy `sdp_records`
+  rows stored short UUIDs with an upper-cased `0X` prefix (`0X1108`). `modes/db.py`
+  adds display-only `_canon_sdp_uuid()` (`0X1108`→`0x1108`, upper-cases hex and
+  dashed 128-bit forms, passes through `None`/non-UUIDs) applied to the
+  `timeline_sdp` grouping key, so legacy rows render canonically **and** fold onto
+  the same group as their lower-case equivalent. Stored data is untouched; the
+  current parser already emits canonical `0x…` forms.
+- **Tests.** `test_sig_sdp_profile_attr_ids.py`:
+  `test_browse_xml_survives_trailing_status_text` (uses the real trailing-junk
+  capture) + `test_browse_xml_multiple_clean_records_still_parse`.
+  `test_db_sdp_timeline.py`: `test_canon_sdp_uuid_forms` +
+  `test_timeline_display_canonicalizes_legacy_uuid`.
+
+### SDP profile-label follow-through: WAP mapping + string offsets + protocol parameters (2026-07-24)
+
+Discharges the two deferred successors of the profile-scoped SDP work. All changes
+are additive/lossless and default-output-preserving; verified against BlueZ
+`lib/sdp.h`/`sdp.c` (`workDir/bluez/`). Full suite **1556 passed / 27 skipped**
+(+12 tests).
+
+- **Item 2 — WAP profile now reachable.** `update_sig_sdp_attr_ids.py` maps
+  `interoperability_requirements` → service classes `0x1113`/`0x1114` (WAP /
+  WAP_CLIENT, SIG `service_class.yaml`), so its WAP attribute table
+  (`0x0306 NetworkAddress` … `0x0309 WAPStackType`) resolves. New standing test
+  `test_no_unmapped_profile` asserts **every** ingested profile has a
+  `SERVICE_CLASS_TO_PROFILE` entry (guards against future unmapped tables).
+- **Item 1b — protocol-parameter names.** Generator ingests the sibling
+  `protocol_parameters.yaml` → `SDP_PROTOCOL_PARAMETERS = {protocol: {index: name}}`
+  (cached at `bt_ref/sig_cache/protocol_parameters.yaml`).
+  `_extract_protocol_descriptors_xml` now emits an additive `parameters` list
+  (`{index, name, value}`) per descriptor, naming positional params
+  (`L2CAP[1]=PSM`, `RFCOMM[1]=Channel`, `BNEP[1]=Version`,
+  `BNEP[2]=Supported Network Packet Type List`) and capturing **all** params (not
+  just the first). Fixed a latent case bug (`_KNOWN_PROTOS` lookup upper-cased the
+  hex UUID so `BNEP`/`AVCTP`/`AVDTP` never matched); existing `uuid`/`name`/`params`
+  fields are untouched.
+- **Item 1a — secondary-language string labels (Option B).** Generator ingests
+  `attribute_id_offsets_for_strings.yaml` → `SDP_STRING_ATTR_OFFSETS`
+  (ServiceName/Description/ProviderName at offsets 0/1/2). `_parse_xml_record`
+  pre-scans the `LanguageBaseAttributeIDList` (attr `0x0006`, uint16 triplets
+  `(code_ISO639, encoding, base_offset)` per BlueZ `sdp_get_lang_attr`) and labels
+  non-primary-base string attributes as e.g. `"Service Name (fr)"` in
+  `attribute_labels`. Primary base `0x0100` stays with the universal table;
+  order-independent; additive.
+- **Generator discipline.** Both siblings are network-best-effort with committed
+  per-file cache and a `_committed()` fallback that preserves prior constants on an
+  empty fetch (never zeroes a table). `refresh-refs` wiring unchanged (already runs
+  the generator in the SIG group).
+
+### Deferred-item follow-through: adv/observed evidence + profile SDP labels + observed seed + SDP change view (2026-07-24)
+
+Four scoped, additive items from the "Directly deferred from the just-finished
+cycle" list. Acceptance decisions: observed-catalogue promotion is **opt-in
+(default off, provenance-tagged)**; the curated seed is **kept separate from the
+classifier**; SDP profile labels emit **per-profile attribute IDs only**. See
+`docs/todo_tracker.md` → "ACCEPTED WORK — Deferred-item follow-through …".
+
+- **Eddystone as STRONG LE evidence (A1).** `analysis/device_type_classifier.py`
+  adds `"eddystone"` to `_LE_INDICATIVE_ADV_PROTOCOLS` and now feeds **both**
+  ManufacturerData and ServiceData through the shared dissector — a decoded
+  Eddystone (ServiceData/0xFEAA) frame classifies a beacon-only device as LE
+  instead of `unknown`. Confidence counts distinct evidence-type presence, so the
+  existing FEAA beacon-block STRONG add is not double-counted.
+- **Opt-in source-aware observed promotion (A2).** New
+  `core/observations/get_observed_uuid_evidence(uuid)` reports which table-kinds a
+  UUID was *measured* in. With promotion enabled
+  (`context["allow_observed_promotion"]` or env
+  `BLEEP_CLASSIFIER_OBSERVED_PROMOTION`), an advertised UUID measured as LE GATT
+  elsewhere adds STRONG `LE_ADVERTISING_DATA` (`observed_le_gatt`); measured as
+  Classic/SDP adds STRONG `CLASSIC_SERVICE_UUIDS` (`observed_classic`), both tagged
+  `promoted=True`. **Default off is byte-identical** to the prior WEAK-only feed
+  (stateless guarantee); verdict functions unchanged.
+- **Profile-scoped SDP attribute-ID labels (B).** New generator
+  `bt_ref/update_sig_sdp_attr_ids.py` pulls the SIG
+  `service_discovery/attribute_ids/*.yaml` per-profile tables (cached under
+  `bt_ref/sig_cache/attribute_ids/`) into `bt_ref/sdp_profile_attr_ids.py`
+  (`SDP_PROFILE_ATTR_IDS` + curated `SERVICE_CLASS_TO_PROFILE`, grounded in SIG
+  `service_class.yaml`). `resolve_sdp_attr_id(attr_id, service_class_uuid=None)`
+  (regenerated in `sdp_attr_ids.py`) now disambiguates context IDs (≥ 0x0200) by
+  service class — e.g. `0x0200` → `HIDDeviceReleaseNumber` for a HID record,
+  `IpSubnet` for PAN. `_parse_xml_record` pre-scans the Service-Class-ID so
+  labelling is order-independent; `attribute_labels` stays additive/lossless.
+  Wired into `refresh-refs` (SIG group).
+- **Curated observed-UUID seed (C).** New committed `bt_ref/observed_seed.py`
+  (Nordic UART trio, Google Nearby vendor base). `get_observed_uuid_catalogue(...,
+  include_seed=True)` (CLI `db uuids --seed`) unions it as a distinct
+  `source="curated_seed"` tier — never fed to the classifier, default output
+  unchanged.
+- **SDP change timeline (D).** New `core/observations/get_sdp_timeline(mac, uuid,
+  limit)` reads the append-only `sdp_records` history; `db timeline --sdp` prints
+  an `[initial]` snapshot then consecutive-snapshot field diffs (incl. handle
+  rotation). Read-only; default `db timeline` (characteristics) unchanged.
+- **Tests.** +32 (`test_classifier_adv_protocol_feed`, `…_observed_promotion`,
+  `test_sig_sdp_profile_attr_ids`, `test_observed_seed`, `test_db_sdp_timeline`);
+  `test_api_surface` observation-symbol count 38→40. Full suite **1544 passed /
+  27 skipped**.
+- **Deferred (future work):** ingesting the SIG
+  `attribute_id_offsets_for_strings.yaml` / `protocol_parameters.yaml` siblings;
+  profiles without a service-class mapping (e.g. `interoperability_requirements`)
+  ship their table but stay unreachable until a mapping is added.
+
+### Classifier feed + SDP attribute-ID labels + core_version emission (2026-07-24)
+
+Three deferred-cycle items, implemented additively. Decisions locked at
+acceptance: BlueZ pull pinned to commit `4c431e5d`; SDP labels use verbose Core
+Spec names; classifier feed is WEAK-only. See `docs/todo_tracker.md` →
+"ACCEPTED WORK — Classifier feed + SDP attr-ID labels + core_version emission".
+
+- **BlueZ-sourced SDP universal attribute-ID labels (Item 2).** New
+  network-best-effort updater `bt_ref/update_bluez_refs.py` pulls upstream BlueZ
+  `lib/sdp.h` (`github.com/bluez/bluez`, canonical
+  `git://git.kernel.org/pub/scm/bluetooth/bluez.git`, pinned commit
+  `4c431e5dae3e7cee4ce3d0720fefc530a2524e0b`) into a committed
+  `bt_ref/bluez_cache/sdp.h` fallback and emits `bt_ref/sdp_attr_ids.py`
+  (`SDP_UNIVERSAL_ATTR_IDS`, `resolve_sdp_attr_id()`). Scope is the **unambiguous
+  universal range** `0x0000–0x000D` plus the primary-language string offsets
+  `0x0100–0x0102`; IDs `>= 0x0200` are profile-context-dependent (BlueZ reuses
+  `0x0200` across GROUP_ID/IP_SUBNET/VERSION_NUM_LIST/SPECIFICATION_ID/HID… ) and
+  resolve to `None`. `ble_ops/classic/sdp.py` `_parse_xml_record` gains a
+  **lossless, additive** `attribute_labels` annotation (labels universal IDs
+  present in a record — including ones it doesn't otherwise parse — without
+  dropping raw data or overwriting parsed fields); the merge/union path unions
+  labels across sources. Wired into `refresh-refs`.
+- **`core_version.yaml` emission into `uuids.py` (Item 3).** New dedicated
+  `core_version` branch in `_gen_dict_block` emits **2-digit** keys (`"0x0c"`) to
+  match `resolve_core_version()`'s `f"0x{lmp_version:02x}"` lookup. Fixed a latent
+  codegen bug: PyYAML parses `0x0A` as the int `10`, so the generic
+  `int(str(value), 16)` path mis-keyed values ≥ `0x0A` (10 → `"0x10"`); the new
+  branch handles the already-parsed-int case. `SPEC_ID_NAMES__CORE_VERSION` is now
+  populated in the committed `uuids.py` (surgically appended — no full-file
+  regen, preserving hand-added CTF/Mesh header content and avoiding SIG data
+  drift). **Behavioural change:** `map_lmp_version_to_spec()` /
+  `query_remote_version()` / `infer_min_bt_version_from_le_features()` now return
+  the richer SIG names (e.g. *"Bluetooth® Core Specification 5.2"*) as the primary
+  source, with `_LMP_VERSION_MAP` as fallback. This also **corrects** LMP
+  `0x0E`/`0x0F`, which the stale fallback mislabelled "5.5"/"5.6", to the
+  authoritative *6.0*/*6.1*. Ten `test_remote_version.py` assertions updated to the
+  SIG strings.
+- **Classifier observed-UUID feed (Item 1).** `LEServiceDataCollector` now adds
+  **WEAK** `LE_ADVERTISING_DATA` evidence for advertised UUIDs found in the
+  observed-UUID catalogue (`get_observed_uuid_names`) but not in the curated
+  beacon/UART sets, tagged `evidence_source="observed_catalogue"`. Additive only:
+  WEAK evidence contributes to confidence/reasoning but **cannot flip a verdict**
+  (`_classify_*` consult only CONCLUSIVE/STRONG), so a mislabelled observation can
+  never mis-type a device. Wrapped so a catalogue/DB error never breaks
+  classification.
+- **Tests.** New `tests/test_sdp_attr_ids_core_version.py` (10) and
+  `tests/test_classifier_observed_feed.py` (5). Docs: `docs/uuid_translation.md`
+  (BlueZ SDP source, context-dependence, core_version), `docs/observation_db.md`
+  (classifier feed).
+
+### SDP source union + Observed-UUID catalogue + CoD/Mesh reference tables (2026-07-24)
+
+Groups three accepted "Future Work" items into one additive, default-preserving
+change set. Existing outputs, DB rows, and `bt_ref/uuids.py` are untouched; new
+reference data lands in *new* generated modules so the SIG tables have zero drift
+risk. See `docs/todo_tracker.md` → "ACCEPTED WORK — SDP union + Observed-UUID
+catalogue + Reference additions (2026-07-24)".
+
+- **Updater safety hardening** (`bt_ref/update_ble_uuids.py`) — a failed fetch
+  now **preserves the previously committed table** instead of emitting an empty
+  dict (closes the offline `regenerate()`/`refresh-refs` footgun that could zero
+  out `uuids.py`). New `_load_existing_tables`/`_emit_existing_block`/`_block_for`
+  helpers; header `sources` reflects preserved-vs-fetched state.
+- **Class-of-Device is now table-driven** — new generated `bt_ref/cod.py`
+  (`COD_SERVICES`, `COD_MAJOR_DEVICE_CLASS`, `COD_MINOR_DEVICE_CLASS`,
+  `COD_SUBMINOR_DEVICE_CLASS`) from SIG `core/class_of_device.yaml`.
+  `decode_class_of_device()` sources every label from it (no more ~150 hardcoded
+  bit→string literals). Triple-pass correction: SIG's historical `core/fhs.yaml`
+  *was* Class-of-Device data; the canonical source today is `class_of_device.yaml`,
+  so "incorporate fhs" is implemented as incorporate-CoD. Golden-parity test plus
+  documented normalisations (e.g. `"LE audio"` casing) and new minor coverage.
+- **Bluetooth Mesh assigned numbers** — new generated `bt_ref/mesh_ids.py`
+  (`MESH_MODEL_UUIDS`, `MESH_BEACON_TYPES`) from SIG `mesh/*.yaml`;
+  `get_name_from_uuid()` gains a final authoritative SIG tier for mesh model
+  UUIDs (additive — only fills names that were `Unknown`).
+- **`refresh-refs`** now regenerates `cod.py` + `mesh_ids.py` alongside the SIG
+  UUID tables (independent failure handling).
+- **SDP source union + provenance** (`ble_ops/classic/sdp.py`) —
+  `discover_services_sdp(..., source=...)` selects the discovery source:
+  `"auto"` (default, unchanged first-success chain), `"dbus"|"browse"|"xml"|
+  "records"` (single source), or `"merge"`/`"all"` (union every source keyed by
+  handle→uuid→name, filling missing fields, preserving *all* raw text under
+  `# source:` headers, and recording per-field `source_conflicts`). Each record
+  carries a `source` provenance label. `classic-enum` gains `--sdp-source`.
+- **DB schema v18** — `sdp_records.source` provenance column (additive migration;
+  existing rows get NULL). `upsert_sdp_record()` stores `source` (excluded from
+  the change-detection tuple so provenance never inflates history).
+- **`SDPAnalyzer`** gains a `source_discrepancy` anomaly (medium) when merged
+  sources disagree on a scalar field.
+- **Observed-UUID catalogue** ("seen in the wild") — new
+  `core/observations/_uuids.py`: `get_observed_uuid_catalogue()` aggregates every
+  UUID observed across LE services/characteristics/descriptors + Classic services
+  + SDP records (canonicalised to 128-bit so short/long forms merge) into
+  `{uuid, names, count, sources, first/last seen, sample_macs}`;
+  `get_observed_uuid_names()` backs an **opt-in** observed tier of
+  `get_name_from_uuid(..., allow_observed=True)` that returns a
+  `"Unknown (seen as: …)"` hint (default output stays `"Unknown"`). New
+  `db uuids` subcommand (list + `--uuid` filter + `--promote NAME`).
+- **UUID promotion path** — new `bt_ref/custom_uuids.py` persists operator
+  promotions to a JSON overlay (`~/.bleep/custom_uuids.json`, `BLEEP_CUSTOM_UUIDS`)
+  that `constants.UUID_NAMES` merges at import (self-contained, reversible).
+- **Deferred (future work, not dropped):** classifier feed of observed
+  UUIDs/`adv_dissection`; SDP universal attribute-ID labels; `core_version.yaml`
+  emission into `uuids.py`.
+- **Tests** — `test_update_ble_uuids_safety.py`, `test_cod_decode.py`,
+  `test_mesh_ids.py`, `test_sdp_source_union.py`, `test_observed_uuid_catalogue.py`;
+  updated `test_refresh_refs.py` and `test_aoi_augmentation.py` (schema v18). Also
+  fixed a pre-existing test-isolation leak in `test_observations_classic.py`
+  (stale `_DB_CONN` to a deleted temp DB poisoned later tests).
+
+### Test-isolation fix: thread-local output-mode leak (2026-07-24)
+
+Fixed a pre-existing full-suite-only failure
+(`test_discovery_error_surfacing::…test_stop_discovery_surfaces_no_discovery_started`,
+which passed in isolation). Root cause: mode `run()` entry points call
+`set_output_mode()`, stored in a `threading.local()` that is never cleared. A test
+running a mode in `json`/`quiet` (e.g.
+`test_db_show_adv_dissection::test_run_json_path_attaches_adv_dissection`) left the
+main thread's mode set, so `print_and_log()` rerouted to stderr for later tests
+asserting on captured stdout. Fix: added an autouse `tests/conftest.py` fixture
+(`_reset_output_mode`) that restores the documented `"terminal"` default around
+every test. No production code changed; full suite now green (1495 passed / 27
+skipped).
+
+### Advertisement dissection surfaced in `db show` (G-7.5) (2026-07-24)
+
+Surfaces the attributed, lossless advertisement dissection in the CLI
+device-detail command, so beacon/vendor payloads are readable for **any scanned
+device**, not just AoI targets — the dissection is recomputed from the persisted
+raw fields rather than requiring a stored block.
+
+- **`analysis/adv_dissect.py`** — new `dissect_persisted_record(record)` shared
+  adapter: reconstructs dissector inputs from persisted device/adv fields
+  (`manufacturer_id`/`manufacturer_data`/`service_data`/`advertising_data`/
+  `uuids`; bytes/hex/JSON/D-Bus-list tolerant; top-level or nested `device` row)
+  and returns the dissection, or `None` when no adv data is present. Never raises.
+- **`analysis/aoi_analyser.py`** — `_render_adv_dissection` now calls the shared
+  adapter instead of its own inlined reconstruction (single source of truth;
+  removed the now-dead `_adv_field` helper). Report output unchanged.
+- **`modes/db.py`** — `db show <mac>` prints an "Advertisement Dissection"
+  section (vendors/protocols, decoded protocols, raw hex + ASCII per entry);
+  `db show --full` / `--json` / `--quiet` attach an `adv_dissection` block.
+  `get_device_detail()` is unchanged (enrichment is done in the show command).
+- **Tests** — `tests/test_db_show_adv_dissection.py` (human section, `--full`
+  JSON, JSON path); `tests/test_adv_dissect.py` adds `dissect_persisted_record`
+  coverage (BLOB/JSON/nested/empty/malformed).
+
+### Advertisement dissection (G-7.5) (2026-07-23)
+
+Adds structured, attributed dissection of BLE advertisement fields
+(`ManufacturerData`, `ServiceData`, advertised UUIDs, `AdvertisingData`) while
+**preserving all captured bytes** (raw hex + printable ASCII). Advertisements
+sometimes carry clear text (e.g. some headsets embed a model string), so the
+dissector never discards data even when a structured decoder also runs.
+
+- **New `bleep/analysis/adv_dissect.py`** — `dissect_advertisement(...)` with
+  two-source attribution (BT SIG + vendor/community specs), lossless raw+ASCII
+  per entry, and protocol decoders for iBeacon, Eddystone (UID/URL/TLM/EID), and
+  Apple Continuity TLVs. Graceful on malformed/short payloads.
+- **New `bleep/bt_ref/update_vendor_specs.py`** + committed
+  **`bleep/bt_ref/vendor_adv_specs.py`** — vendor/community fingerprint updater
+  mirroring the BT SIG updater. Sources from the public `device-library` repo
+  (GitHub tree API + raw), with `--local-path` bootstrap and a
+  `vendor_specs_cache.json` offline fallback. Fully self-contained: no runtime
+  dependency on any external checkout.
+- **`ble_ops/le/scan.py`** — attaches an additive `adv_dissection` block to the
+  persisted advertisement `decoded` payload (no schema change; never blocks the
+  scan).
+- **`analysis/device_type_classifier.py`** — **relabel-only** correction of
+  misattributed beacon/service-data UUIDs (`FCF1`, `FE0F`, `FD6F`, `FE05`, …),
+  now sourced from the single authoritative map in `adv_dissect.py` so the
+  classifier and dissector cannot drift. Evidence type/weight unchanged →
+  classification decisions preserved. See
+  [adv_dissection.md](adv_dissection.md) "Known UUID attribution corrections".
+- **`analysis/aoi_analyser.py`** — new "Advertisement Dissection" report section
+  rendering attributed entries with raw hex + ASCII.
+- **Docs** — new [adv_dissection.md](adv_dissection.md); cross-reference note in
+  [device_type_classification.md](device_type_classification.md).
+- **Tests** — `tests/test_adv_dissect.py` covers iBeacon/Eddystone/Continuity
+  decoders, clear-text preservation, malformed input, lossless invariants, and
+  the corrected UUID labels.
+
+### Unified reference-data refresh command (2026-07-24)
+
+Adds a single `bleep refresh-refs` command that regenerates BLEEP's committed
+reference-data modules, wrapping the two previously module-only updaters.
+
+- **New `bleep/modes/refresh_refs.py`** + `refresh-refs` subparser
+  (`cli/parsers/utility.py`) and dispatch route (`cli/dispatch.py`). Runs both
+  updaters by default; `--sig-only` / `--vendor-only` select one, `--local-path`
+  bootstraps vendor specs from a local `device-library` checkout.
+  - BT SIG assigned numbers → `bt_ref/uuids.py` (`update_ble_uuids.regenerate`).
+  - Vendor/community adv specs → `bt_ref/vendor_adv_specs.py`
+    (`update_vendor_specs.regenerate`).
+- **`cli/main.py`** — `refresh-refs` is exempt from the Bluetooth adapter guard
+  (`_non_bt_modes`); it performs no Bluetooth I/O. Both underlying updaters remain
+  network-best-effort and self-contained (leave committed modules untouched / use
+  cached data on failure).
+- **Tests** — `tests/test_refresh_refs.py` covers flag routing, mutual exclusion,
+  exception handling, and parser/dispatch/adapter-guard wiring.
+
+### Classification blind spots closed (G-7.4) (2026-07-24)
+
+Closes the three device-type classification blind spots, reusing the G-7.5
+dissector instead of re-implementing decode logic in the classifier.
+
+- **`analysis/device_type_classifier.py`** — `LEServiceDataCollector` now feeds
+  `ManufacturerData` through `dissect_advertisement()` and emits STRONG
+  `LE_ADVERTISING_DATA` evidence for BLE-only protocols (`ibeacon`,
+  `apple_continuity`; set `_LE_INDICATIVE_ADV_PROTOCOLS`). Beacon-only devices
+  (no advertised GATT/service-data UUID) now classify as `le` instead of
+  `unknown`. A bare, undecoded company payload is **not** treated as LE evidence
+  (mfg-data also appears in Classic EIR).
+- **`analysis/device_type_classifier.py`** — advertised Classic-profile UUID
+  evidence is now flagged `ground_truth=False` / `source_kind="advertised"`; such
+  a verdict reports `evidence_source="heuristic"` (only measured SDP/GATT promote
+  to `measured_*`). The decision is unchanged; it is now honestly labelled.
+- **`modes/aoi.py`** — `_classify_device` returns the full `ClassificationResult`;
+  `_scan_target` records `device_type_evidence_source` and `device_type_cached`.
+- **`analysis/aoi_analyser.py`** — the markdown report now renders a **Device
+  Type** line annotated with the evidence source, a `cached` marker, and the
+  seed/live source, so an advertised/cached guess is never read as measured.
+- **Tests** — new cases in `tests/test_device_type_integration.py` (iBeacon /
+  Apple Continuity → `le`; bare vendor mfg-data → `unknown`; advertised Classic
+  UUID → `heuristic` + `ground_truth=False`) and
+  `tests/test_aoi_concern_render_sr_n5.py` (Device Type provenance render).
+
+### Survey mode — adapter-drop resilience + opt-in in-run recovery (2026-07-23)
+
+Fixes a fatal crash where a mid-survey adapter drop (controller goes not-ready —
+`hciX DOWN`, rfkill, or a controller reset during LE↔BR/EDR alternation) aborted
+an entire long-running survey with `Error: Bluetooth adapter not ready…`. Root
+cause: `manager.start_discovery()`'s `SetDiscoveryFilter` branch re-raises
+`org.bluez.Error.NotReady` (only `UnknownObject`/`NotSupported` are non-fatal),
+and the survey loop called the scan rounds unguarded, so the mapped
+`NotReadyError` escaped to the CLI catch-all. `dbuslayer/manager.py` is
+intentionally **unchanged** — `connect`/`scan_modes` depend on that raise
+contract (pinned by `tests/test_discovery_error_surfacing.py`); the fix lives at
+the survey call sites, matching their existing `except NotReadyError` precedent.
+
+- **`modes/survey.py`** — the round loop now wraps each transport round in
+  `except BLEEPError`, tracks a per-round `productive` flag, and on a
+  non-productive round (adapter not ready) surfaces a warning, paces the loop via
+  `_interruptible_sleep()` (≤1s slices honouring SIGINT/SIGTERM) so a fast-failing
+  round cannot busy-loop, and continues. A dropped adapter now yields a graceful
+  exit `0` with a partial census plus a prominent final "N/M round(s) skipped"
+  warning and remediation hints, instead of a crash. The `--live` health label is
+  now derived from the round outcome (`BlueZ: adapter not ready` vs `BlueZ: OK`)
+  rather than merely whether the monitor thread started.
+- **`modes/survey.py`** — `_run_classic_round()` now raises `NotReadyError` when
+  the adapter is not ready (was a silent `[]`), so the loop can distinguish
+  "adapter down" from "ready but zero devices" and pace/recover correctly. A
+  dedicated `except NotReadyError: raise` guards it from the function's broad
+  handler. (Private to survey — no external callers.)
+- **`--auto-recover`** (`cli/parsers/survey.py`, default **off**): on a
+  non-productive round, attempt a bounded (≤3) in-run recovery via the existing
+  `system_dbus__bluez_adapter.set_powered(True)` → `power_cycle()` helpers, then
+  resume — an opt-in analogue to Ubuntu's `AutoEnable`. Off by default to honour
+  the non-goal of never mutating host BT state without an explicit command.
+- **`modes/debug_survey.py`** — the debug-shell background worker (a duplicate
+  loop) received the identical resilience treatment, using
+  `survey_stop_event.wait()` for interruptible pacing, plus `--auto-recover`
+  threaded through `cmd_survey`. Prevents an unguarded `NotReadyError` from
+  silently killing the daemon worker thread. (Coexists with the SR-G1
+  `--checkpoint-interval` support added to the same worker below.)
+- Tests: `tests/test_survey.py` (`TestAdapterDropResilience`,
+  `TestClassicRoundNotReady`, `TestAutoRecover`,
+  `TestDebugSurveyWorkerResilience`) — LE not-ready survived with rc 0, pacing
+  engaged, classic-round raises, `--auto-recover` resumes, debug worker survives.
+  Live-validated on real `hci0` (drop/restore, sustained outage pacing, and
+  `--auto-recover` power-cycle).
+
+### Documentation-fidelity pass + SR-G1-FollowUp debug-shell checkpoint fix (2026-07-23)
+
+**Code fix (SR-G1-FollowUp / D3): debug-shell `survey` now honours
+`--checkpoint-interval`.** The debug shell parsed the flag but silently dropped
+it — `cmd_survey` never forwarded `opts.checkpoint_interval` and `_survey_worker`
+had no such parameter, so SR-G1 census checkpointing never ran in Debug Mode (a
+long debug survey that hard-crashed lost the whole aggregated census; only the
+CLI `bleep survey` path honoured it).
+
+- **`bleep/modes/debug_survey.py`**: added a `checkpoint_interval` parameter to
+  `_survey_worker`, forwarded `opts.checkpoint_interval` from `cmd_survey`, and
+  reused the CLI's shared `survey._write_survey_checkpoint()` / `.partial`
+  atomic-write logic in the debug round loop (guarded on `output` set and
+  interval > 0). A small `_ProgressShim` routes the checkpoint's `emit_progress`
+  line to `print_and_log` (the debug shell has no `OutputContext`). The worker
+  now also removes the stale `.partial` after its clean final write, matching the
+  CLI. No atomic-write logic was duplicated.
+- **Tests**: `tests/test_survey_checkpoint_sr_g1.py` gained
+  `TestDebugSurveyCheckpointing` — mid-run checkpoints fire and `.partial` is
+  cleaned up after a clean run, and interval `0` stays a no-op. **7 SR-G1 tests
+  pass.**
+- **Docs**: `survey_mode.md` updated — the `--checkpoint-interval` row, the
+  Census Checkpointing section, and the Debug Shell Integration section now state
+  the flag works in **both** the CLI and the debug shell (the earlier "CLI only"
+  caveat removed). `todo_tracker.md` `SR-G1-FollowUp` flipped to RESOLVED.
+
+**Documentation-fidelity sweep (P0–P3).** A comprehensive audit aligned the
+internal docs with the current codebase (no runtime code changed by this part):
+
+- **Version/schema truth-up**: `api_specification.md` (Schema Version → 17,
+  re-export count → 20, corrected `passive_scan` / classic-enumerate /
+  `query_hci_version` / `maintain_database` signatures, LE-enumerate 4-tuple
+  return, mode entry points), `device_type_classification.md` (schema → v17;
+  GATT-services-resolved moved to *Strong* evidence to match code weighting).
+- **CLI/API sync**: `cli_usage.md` gained a Global-flags section and 8 missing
+  subcommands (`monitor`, `advertise`, `gatt-server`, `device-sets`, `mesh`,
+  `classic-rfcomm`, `network-enum`, `audio-config`) + `db maintain`;
+  `gatt_enumeration.md` dropped the removed `--controlled` flag.
+- **AoI / media / survey docs** corrected to match the shipped
+  implementations (AoI flags + report `reports/` path; media-enum/-ctrl flag &
+  action tables and JSON output shape; AoI security two-branch char rules,
+  weak-PIN rule, SR-N1 pairing analysis, nested `services_mapping`).
+- **Network capability docs**: Phase 5 marked complete; stubbed examples
+  replaced with shipped `find_network_devices` / `network_roles_from_uuids` APIs.
+- **Agent/pairing D-Bus (D1)**: the "methods not registered / empty
+  introspection XML" finding was confirmed a **misdiagnosis** (a process
+  introspecting its own bus object + wrong service name); agent registration and
+  `org.bluez.Agent1` dispatch work end-to-end (running-MainLoop fix, v2.6.2),
+  re-confirmed live. The 8 historical investigation docs were archived with
+  banners pointing to `agent_pairing_flow_analysis.md`.
+- **Tracker hygiene**: `bl_classic_mode.md` §6/§7 completed "Temporary" trackers
+  removed per their own note; the bc-01…bc-11 foundational-task record was
+  migrated into `todo_tracker.md` so no history was lost.
+
+### Audio follow-ups — GStreamer codec-plugin preflight + HFP/HSP microphone capture (2026-07-22)
+
+Two follow-ups to the A2DP capture work below: proactive codec-plugin visibility
+in preflight, and a new voice-capture path for HFP/HSP microphones.
+
+- **GStreamer codec-plugin preflight** (`core/preflight.py`): `bleep --check-env`
+  and `--diagnose-audio` now report which codec pipelines are actually usable,
+  not just whether GStreamer is installed. `_check_gstreamer_codec_plugins()`
+  probes the element factories each pipeline needs (`rtpsbcdepay`/`sbcparse`/
+  `sbcdec` for SBC capture, `avenc_sbc` for playback, MP3/AAC groups, and the
+  shared `appsrc`/`wavenc`/… core), grouped by capability so the summary names
+  the **specific missing element** and an OS-specific install hint. This closes
+  the silent-failure footgun where SBC capture failed at runtime because
+  `gstreamer1.0-plugins-bad` was absent. New `PreflightReport.codec_plugins`
+  field + `can_record_sbc` property. Tests: `tests/test_preflight.py`
+  (`TestGstreamerCodecPlugins`, 6 new).
+- **HFP/HSP microphone capture** (`ble_ops/audio/audio_system.py`,
+  `audio-record --hfp`): A2DP is output-only; the remote **microphone** is only
+  exposed as a SCO source when the device's card is on an HFP/HSP profile. New
+  `system_record_hfp()` switches the card to a headset/hands-free profile
+  (`handsfree-head-unit` / `headset-head-unit`), records the SCO source via the
+  host audio tools, then **restores the original profile** (override with
+  `--keep-profile`). BlueALSA SCO source PCMs are addressed directly (no switch).
+  Voice-grade capture, distinct from the A2DP music path.
+  - **Live E2E PASS** (PLT V8200 Series, PipeWire): `audio-record <MAC> --hfp`
+    switched `a2dp-sink-sbc` → `headset-head-unit`, recorded
+    `bluez_input.…headset-head-unit`, produced a valid WAV (5.93 s, real mic
+    audio), and **restored** the card to `a2dp-sink-sbc`, exit `rc=0`.
+  - Tests: `tests/test_audio_hfp_capture.py` (18 new — profile predicate,
+    BlueALSA SCO resolution, switch/record/restore, already-HFP no-switch,
+    no-HFP-profile rejection, restore-on-failure, `--keep-profile`).
+- Full `tests/` suite: **1407 passed, 27 skipped**.
+
+### A2DP audio capture (`audio-record`) — record-via-codec path made functional + live E2E from a remote source (2026-07-22)
+
+Completed the codebase-gap item **G-2.2** and closed the audio record/decode path
+end-to-end, culminating in the first successful **live** capture from a remote A2DP
+**source** (a Windows desktop streaming to this host). All fixes below were validated
+against real BlueZ; the deterministic pieces are covered by unit/integration tests.
+
+- **Record-via-codec decode path implemented** (`ble_ops/audio/audio_codec.py`):
+  `_decode_with_python_bindings()` was a placeholder that never fed the transport FD
+  into GStreamer. Added a `GLib.io_add_watch` feeder built on the new
+  `_pump_fd_to_sink()` helper (drain-first semantics: read available data before
+  honouring `HUP`/`ERR`, so the final chunk is never dropped). `decode_audio_stream()`
+  and `MediaStreamManager.record_audio()` now honour `--duration`.
+- **RTP encapsulation handled**: BlueZ A2DP transport FDs carry RTP-encapsulated SBC,
+  not raw frames. The SBC decode pipeline now prepends `rtpsbcdepay` with
+  `application/x-rtp` caps, and `_sbc_rtp_clock_rate()` derives the RTP clock-rate from
+  the negotiated SBC configuration (threaded from `media_stream.py`).
+- **Latent decode bugs fixed**: GStreamer bus handler arity (`bus_message(bus, message)`)
+  that had silently dropped EOS/ERROR and hung the mainloop; stale `mp3parse` →
+  `mpegaudioparse`.
+- **`Media1.RegisterEndpoint` object-path marshalling** (`dbuslayer/media.py`):
+  the endpoint path was passed as a bare `str` (signature `sa{sv}`), which BlueZ rejected
+  with `UnknownMethod` (expects `oa{sv}`). Wrapped in `dbus.ObjectPath` for
+  register/unregister. Endpoint registration now succeeds live.
+- **A2DP source-role connection orchestration** (`dbuslayer/media_stream.py`):
+  `_cycle_device_connection()` does `Device1.Disconnect()` → `Connect()` to force
+  `a2dp_discover` to re-select BLEEP's SEP. A remote A2DP **source** must originate the
+  link itself, so the Linux-initiated `Connect()` is refused
+  (`br-connection-create-socket` / `br-connection-unknown`). The cycle now catches the
+  connection-family error (`_REMOTE_INITIATE_ERROR_HINTS`) and enters a **wait-for-
+  remote-initiated-reconnect** mode (up to `_REMOTE_RECONNECT_TIMEOUT` = 30 s) instead of
+  aborting. Non-connection DBus errors still propagate; the sink path (headphones/
+  speakers) is unchanged (10 s wait). Additive by design.
+- **`--system` capture on PipeWire hosts** (`ble_ops/audio/audio_tools.py`):
+  `get_sources_and_sinks_for_card_profile()` relied on `pacmd`, which PipeWire's
+  PulseAudio shim does not implement, breaking `--system` play/record. Added a `pactl`
+  fallback that associates sinks/sources by MAC when the `pacmd` block is empty.
+- **`core/log.py` hardening**: a prior `sudo bleep` run could leave root-owned legacy
+  symlinks in `/tmp`; the cleanup `unlink()`/`touch()` then raised `PermissionError` and
+  crashed **every** `bleep` import. Legacy-path bookkeeping is now fully non-fatal.
+- **Live E2E PASS** (DESKTOP-1APRSIB A2DP source, PipeWire paused): observed
+  `Connect()` refused → remote-reconnect wait → source re-initiated →
+  `SetConfiguration transport=…/fd7` → transport acquired (`fd=18`, MTU 672) → SBC/RTP
+  decode → **2.6 MB WAV, RIFF 16-bit stereo 44.1 kHz, 15.13 s, RMS 4984 / peak 31905**
+  (real audio), exit `rc=0`.
+- **Tests:** `tests/test_audio_codec_pump.py` (drain-first pump), deterministic
+  SBC-over-RTP loopback + `_sbc_rtp_clock_rate` in
+  `tests/test_audio_codec_decode_integration.py`, `RegisterEndpoint` marshalling +
+  4 `_cycle_device_connection` reconnect-semantics tests in `tests/test_media_helpers.py`,
+  and `--system` PipeWire fallback ("Fix 6") in `tests/test_audio_regressions.py`.
+  Full `tests/` suite: **1383 passed, 27 skipped**.
+
+### Survey→AoI live-run fixes — SR-N1: DB SDP/pairing surfaced to analysis (2026-07-22)
+
+Accepted **SR-N1** of the `docs/todo_tracker.md` "Survey → AoI live-run findings"
+plan. A manually-executed 4-hour survey → AoI run showed that every Classic/dual
+device analysed **from the observation DB** scored `0/10` with no SDP or pairing
+findings — even one exposing OBEX/PBAP and bonded with PIN `0000`.
+
+- **Root cause:** `get_device_detail()` returns Classic data under `sdp_records`
+  / `classic_services` / `pairing_events`, but `analyse_device()` only reads
+  `sdp_summary` / `pairing_profile`, and `_hydrate_db_device_data()` never
+  bridged the two — so DB-sourced Classic evidence was silently dropped.
+- **Fix (`analysis/aoi_analyser.py`):**
+  - `_hydrate_db_device_data()` now maps `sdp_records` (falling back to
+    `classic_services`) → `sdp_summary`, and the latest `pairing_events` row →
+    `pairing_profile` via the new `_pairing_event_to_profile()` helper (parses
+    `post_pair_state` for `fully_bonded`). Additive only — never overrides a key
+    live/file-sourced data already set.
+  - `_analyse_pairing_profile()` flags **default/weak pairing PINs** (`0000`,
+    `1234`, all-same-digit, or numeric length < 6) as a medium concern via the
+    new `_is_weak_pin()` helper, and returns the observed PIN for the report.
+  - `_assign_concern_risk()` classifies weak/default-PIN reasons as **medium**.
+  - `_analyse_sdp_records()` hardened against NULL SDP record names.
+- **Effect (verified live):** `14:89:FD:31:8A:7E` (PhreakMe-Blue) now reports
+  **6/10** with an SDP Discovery section (PBAP/OPP/HFP/HSP/BT-DIAG), a Pairing
+  Profile section, and 3 medium concerns (2 exposed Classic profiles + default
+  PIN). LE-only and data-less devices are unaffected (still 0/10).
+- **Tests (`tests/test_aoi_sr_n1_db_hydration.py`, 9 new):** hydrator mapping,
+  no-override guard, pairing derivation (incl. malformed JSON), classic-profile
+  + PIN flagging from DB-shaped data, weak-PIN table, and a clean-device=0/10
+  regression. Full `tests/` suite: **1320 passed, 27 skipped**.
+
+### Survey→AoI live-run fixes — SR-N3: LE enum honours --timeout, caps dual attempts (2026-07-22)
+
+Accepted **SR-N3**. The AoI `--timeout` never reached the LE connect path, and
+seeded ``dual`` targets burnt all 3 LE attempts (≈3×`br-connection-page-timeout`,
+~80 s) before SDP even started.
+
+- **`EnumerationController.enumerate()`** now accepts keyword-only `timeout` and
+  `max_attempts`. In `passive` (base-connect) mode `timeout` is forwarded as
+  `timeout_connect` / `timeout_services` to
+  `connect_and_enumerate__bluetooth__low_energy`; `max_attempts` overrides the
+  per-call retry-loop bound (defaults to the class `MAX_ATTEMPTS=3`). Variant
+  modes (naggy/pokey/brute) run their own timing and ignore `timeout`.
+- **`modes/aoi.py::_scan_target`** passes the resolved `--timeout` and caps
+  seeded ``dual`` targets to a single LE attempt before falling through to SDP
+  (the Classic half will not answer an LE connect). Pure `le`/`unknown` keep the
+  full 3-attempt retry budget.
+- **CLI help:** `aoi --timeout` help clarifies it bounds the LE connect phase too.
+- **Tests (`tests/test_enum_controller_sr_n3.py`, 5 new):** timeout forwarded /
+  omitted-by-default; `max_attempts` caps the loop; default uses `MAX_ATTEMPTS`;
+  AoI dual target → `max_attempts=1`. Full suite **1325 passed, 27 skipped**.
+
+### Survey→AoI live-run fixes — SR-G2: `aoi scan --analyze` (2026-07-22)
+
+Accepted **SR-G2**. Added an opt-in `--analyze` flag to the `aoi` parser
+(`cli/parsers/aoi.py`, `dest=analyze_inline`). When set, the scan command
+(`modes/aoi.py::_run_impl`) runs `AOIAnalyser.analyse_device()` on each target
+immediately after persisting it — so a single `bleep aoi scan targets.json
+--analyze` produces analysis/reports without a separate analyze pass. Analyses
+whatever was persisted (including Classic SDP/pairing), not only LE-successful
+targets. Default off — existing scan behaviour unchanged. CLI help updated.
+2 new tests in `tests/test_aoi_database_integration.py`; full suite **1327
+passed, 27 skipped**.
+
+### Survey→AoI live-run fixes — SR-G1: survey census checkpointing (2026-07-22)
+
+Accepted **SR-G1**. `survey` wrote its census only once (at the end); a late
+crash lost the whole in-memory census/RSSI aggregation (DB rows survived, the
+formatted census did not).
+
+- **`cli/parsers/survey.py`:** new `--checkpoint-interval N` (seconds, default
+  `0` = off; requires `-o/--output`).
+- **`modes/survey.py`:** the round loop now writes the partial census to
+  `<output>.partial` every N seconds via `_write_survey_checkpoint()` (atomic
+  temp-file + `os.replace`); the stale `.partial` is removed after the clean
+  final write. Filtering/formatting is shared with the final write through the
+  new `_format_survey_output()` helper (DRY). Checkpoint failures are logged and
+  swallowed so a bad write never aborts a run. Graceful SIGINT/SIGTERM already
+  fall through to the normal final write, so this specifically hardens against
+  hard crashes.
+- **Tests (`tests/test_survey_checkpoint_sr_g1.py`, 5 new):** atomic partial
+  write, no-op without `-o`, format parity, an end-to-end run that leaves no
+  stale `.partial`, and parser default/parse. Full suite **1332 passed, 27
+  skipped**.
+
+### Survey→AoI live-run fixes — SR-N4: exclude seeded test fixtures from list/report (2026-07-22)
+
+Accepted **SR-N4**. Seeded test-fixture MACs (`AA:BB:CC:DD:EE:*`,
+`11:22:33:44:55:66`, all-zero) leaked into a real DB and polluted the aggregate
+report ("Devices Analyzed: 47") while diluting the average risk score.
+
+- **`analysis/aoi_analyser.py`:** new `_is_synthetic_mac()` helper (narrow set —
+  never matches a legitimate random/private RPA). `list_devices()` gained
+  `include_synthetic=False` and excludes those MACs by default. Filtering lives
+  **only** in `list_devices()`, so direct-address callers
+  (`generate_aggregate_report([...])`, `analyse_device(mac, …)`) are unaffected.
+- **CLI:** `aoi --include-synthetic` restores them for `list` / `report --all`.
+- **Tests (`tests/test_aoi_synthetic_filter_sr_n4.py`, 4 new):** fixture
+  detection, real-MAC negatives, default-exclude / include-synthetic round-trip,
+  explicit-address aggregate still renders synthetic. Full suite **1336 passed,
+  27 skipped**.
+
+### Survey→AoI live-run fixes — SR-N5: concern UUID/handle + de-dup in renders (2026-07-22)
+
+Accepted **SR-N5**. Rendered concerns dropped the characteristic UUID/handle and
+repeated identical lines (e.g. 21× "Custom characteristic accepts
+write-without-response" with no identifier).
+
+- **`analysis/aoi_analyser.py`:** new `_dedup_concerns()` collapses identical
+  `(name, description, risk)` findings and collects the distinct char
+  identifiers (`uuid` or `uuid#handle`, de-duped, order-preserving);
+  `_concern_id_suffix()` renders `[`uuid`]` for singletons or
+  `(×N: id1, id2, …)` for groups. Both markdown and text vulnerability sections
+  use them. The **JSON** report is unchanged (keeps the full per-UUID list).
+- **Tests (`tests/test_aoi_concern_render_sr_n5.py`, 7 new):** grouping + id
+  collection, handle formatting, device-level (no-uuid) concerns, distinct
+  concerns not merged, markdown/text include UUID + `×N`, JSON not collapsed.
+  Full suite **1343 passed, 27 skipped**.
+
+### Survey→AoI live-run fixes — SR-N2/SR-G4/SR-C4 (2026-07-22)
+
+Accepted the remaining Survey→AoI items.
+
+- **SR-N2 — pre-enum refresh scan.** New `aoi --refresh-scan SECS` (default 0 =
+  off). When set, `modes/aoi.py` runs a `SECS`-second `passive_scan()` before the
+  target loop to repopulate BlueZ's object cache, mitigating rotated-RPA
+  staleness when AoI runs hours after a passive survey. Implemented as an
+  explicit-value int (not `nargs='?'`) to avoid argparse consuming a following
+  positional on the flat `aoi` parser.
+- **SR-G4 — actionable empty aggregate.** `report --all` under `--db-only` with
+  no analysed rows now checks for scanned-but-unanalysed devices and prints a
+  clear next step (`bleep aoi analyze …` / `aoi scan … --analyze`) instead of a
+  silent empty report; still returns non-zero.
+- **SR-C4 — docs.** `observation_db_schema.md` documents that a `-`/NULL
+  `rssi_max` means no RSSI was ever observed (typically a bonded/cached device),
+  not an error.
+- **Tests:** 3 new CLI tests (`tests/test_aoi_database_integration.py`) for
+  `--refresh-scan` on/off and the SR-G4 warning.
+
+### AoI risk-score redesign — Batch 5 (F5) (2026-07-16)
+
+Accepted **Batch 5** (F5) of the `docs/todo_tracker.md` AoI plan, implemented as
+**option (a)** (baseline-0 additive integer weights) per explicit user sign-off on
+the acceptance-gated scale decision.
+
+- **F5 — risk score (`analysis/aoi_analyser.py:_calculate_security_score`):** a
+  fully clean device now scores **0/10** instead of the misleading 5/10. The
+  baseline-5 + fractional-weights + `int()`-truncation model (effective range
+  5–10) is replaced by exact integer severity weights: `score = min(10, high×3 +
+  medium×2 + low×1)`. "Higher = more risk" labels are unchanged and now accurate
+  across the full 0–10 range. No schema change; the informational
+  `notable_services`/`unusual_characteristics` lists (F8) still don't feed the
+  score.
+- **Tests (`tests/test_data_pipeline_fixes.py`):** rewrote the pinned
+  `TestCalculateSecurityScore` assertions for the new scale (clean=0, high=3,
+  medium=2, low=1, 2 high+1 medium=8, cap 10) and added an explicit
+  medium/low-weight test. `avg_security_score` remains a float (rounded mean),
+  so that assertion is unaffected.
+- **Docs:** rewrote the `aoi_security_algorithms.md` "Security Score" section
+  (formula, worked examples, and a history note on the prior model).
+
+### AoI docs drift + analysis history — Batch 4 (F10, F7) (2026-07-16)
+
+Accepted **Batch 4** of the `docs/todo_tracker.md` AoI plan. F10 is docs-only; F7
+was implemented as **option (a)** (analysis history table + migration) per explicit
+user sign-off on the schema-gated decision. Full suite green with new tests.
+
+- **F10 — documentation drift (docs-only):** corrected `aoi_implementation.md`'s
+  CLI-parser path (was `bleep/cli.py`; now `bleep/cli/parsers/aoi.py` +
+  `bleep/cli/dispatch.py`, reflecting the F3 consolidation), documented the
+  read-only `report` path and the `db` subcommand, and refreshed
+  `aoi_mode.md`'s Service/Characteristic/SDP feature descriptions to match the
+  Batch 3 (F8/F9) behavior. (F6 pairing note and F1 functional landmine/permission
+  analysis were already reflected from earlier batches.)
+- **F7 — AoI analysis history (schema v16→v17):** `store_aoi_analysis()` now keeps
+  `aoi_analysis` as the single latest row per device (**unchanged** semantics —
+  `get_aoi_analysis`/`has_aoi_analysis` and the existing update test are
+  untouched) **and** appends a timestamped row to a new append-only
+  `aoi_analysis_history` table so re-scans can be compared over time. New public
+  API `get_aoi_analysis_history(mac, limit=None)` returns history newest-first.
+  The v16→v17 migration creates the table (`IF NOT EXISTS`) and backfills the
+  existing latest row as the first history entry (non-destructive). Added 5
+  regression tests (empty/ordering/latest-preservation/limit/migration-backfill)
+  and bumped the `_SCHEMA_VERSION` assertion 16→17.
+
+### AoI notable-service / SDP enrichment — Batch 3 (F8, F9) (2026-07-16)
+
+Accepted **Batch 3** (F8 + F9) of the `docs/todo_tracker.md` AoI plan — additive,
+F5-independent analysis enrichment. `1305 passed, 27 skipped` (full suite, zero
+regressions); `549 passed` across the AoI + SDP-analyzer suites with 8 new tests.
+
+- **F8 — notable-service detection (`analysis/aoi_analyser.py`):** added a curated
+  `_OTA_DFU_SERVICE_UUIDS` set (Nordic Legacy/Secure/Buttonless DFU, TI OAD,
+  Silicon Labs OTA, MCUmgr SMP) and a `_canonical_uuid()` normaliser so vendor
+  firmware-update services with **custom 128-bit UUIDs and no SIG name** are now
+  flagged notable (with the vendor label). The name heuristic now also matches
+  "firmware" ("OTA" stays a case-sensitive acronym to avoid "toyota"-style false
+  positives; "dfu" remains case-insensitive).
+- **F8 — unusual-characteristic heuristics:** replaced the arbitrary
+  "`len(properties) > 3` and `write`+`notify`" rule (which was also
+  case-sensitive against the raw property list) with a case-insensitive
+  **writable + notify/indicate** (bidirectional control channel) rule, and
+  tightened the long-value rule to hex-like strings > 40 chars (≈20 bytes). These
+  feed the informational `unusual_characteristics` list only — **not** the score.
+- **F9 — SDP enrichment (`analysis/aoi_analyser.py`):** `_analyse_sdp_records`
+  now routes records through the comprehensive `SDPAnalyzer.analyze()` and
+  surfaces `protocols`, `rfcomm_channels`, `anomalies`, and an
+  `inferred_spec_version` hint, **preserving** the existing `raw_count` /
+  `services_found` / `security_flags` output. The enrichment is wrapped in a
+  guard (falls back to the shallow summary on any analyzer error) and is rendered
+  in the markdown/text report SDP sections. No new scored concerns are created
+  (anomalies are informational; the authoritative LMP↔SDP cross-validation
+  concern remains separate).
+- **Score safety:** neither item adds `security_concerns`, so `security_score` /
+  `avg_security_score` are unchanged — F5-independent, as required by the plan.
+- **Docs:** `aoi_security_algorithms.md` updated (notable-service rules, refined
+  unusual rules, new SDP-record analysis subsection).
+
+### AoI parser consolidation — Batch 2 (F3) (2026-07-16)
+
+Accepted **Batch 2** (F3) of the `docs/todo_tracker.md` AoI plan: eliminate the
+two divergent AoI argument parsers. There were previously a flat production
+parser (`cli/parsers/aoi.py`, used by `bleep aoi …`) and a *separate* nested
+sub-parser (`modes/aoi.py:_arg_parser`, used only by the standalone `main()` and
+its tests) — duplicated definitions that had already drifted (the production one
+was missing the `--timeout`/`--format` defaults later fixed in Batch 1). The
+suite validated the non-production parser. `1296 passed, 27 skipped` (full suite,
+zero regressions).
+
+- **Single source of truth — `cli/parsers/aoi.py`:** extracted the canonical flag/
+  positional set into `_add_aoi_arguments(parser)` and the subcommand resolution
+  into `apply_aoi_subcommand(args)` (returns whether an explicit subcommand was
+  matched). `register()` now calls `_add_aoi_arguments`. This mirrors the accepted
+  survey dedup pattern (`_add_survey_arguments`).
+- **`cli/dispatch.py`:** the inline subcommand-extraction block was replaced with a
+  call to `apply_aoi_subcommand`; the "no files/subcommand" error path is preserved
+  exactly (explicit-but-empty subcommands still fall through to `_run_impl`, only a
+  bare `aoi` with no args errors at dispatch).
+- **`modes/aoi.py`:** the ~70-line nested `_arg_parser()` was **deleted**; the
+  standalone `main()` now builds from the same `_add_aoi_arguments` + resolves via
+  `apply_aoi_subcommand`, so `python -m bleep.modes.aoi …` and `bleep aoi …` can
+  never diverge again. The now-orphaned `_DEF_WAIT` constant was removed.
+- **Latent export bug fixed:** `_run_impl` export used `os.makedirs(args.output)`;
+  the production flat parser has always passed `--output=None` here (the deleted
+  nested parser's `default="."` only masked it for the standalone path), so a bare
+  `aoi export` would have crashed. `output_dir = args.output or "."` now applies in
+  the one canonical place for both entry points.
+- **Tests — `tests/test_aoi_augmentation.py`:** `TestArgParser` was repointed from
+  the deleted `_arg_parser()` to the canonical `_add_aoi_arguments` +
+  `apply_aoi_subcommand` path (so it validates the parser the runtime actually
+  uses), with added coverage for implicit-scan and the `--format` default. The
+  `main()`-driven db/scan tests (`test_aoi_mode_db_commands.py`,
+  `test_aoi_database_integration.py`) pass unchanged.
+
+> **Note on approach.** The plan's *preferred* wording was "route the real CLI
+> through the subparser-based `_arg_parser()` and delete the flat parser." That
+> direction was **rejected as detrimental**: the flat parser backs documented
+> integrated-CLI behaviour (`bleep aoi targets.json` implicit scan, `aoi --file …`)
+> that strict nested subparsers would break, and `main()` is the tested standalone
+> entry. Consolidating onto the flat parser achieves the same single-source-of-truth
+> goal with zero behaviour change.
+
+### AoI analysis/reporting hardening — Batch 1 (F1, F2, F4, F6) (2026-07-16)
+
+Accepted **Batch 1** of the `docs/todo_tracker.md` "AoI Analysis & Reporting —
+deep review findings F1–F10" plan. All four items are additive/isolated and
+provably non-regressive; `510 passed` across the AoI + data-pipeline + api-surface
+suites, with new regression tests for each finding.
+
+- **F1 — `analysis/aoi_analyser.py`:** new `AOIAnalyser._normalize_security_map()`
+  reads **both** the flat `{uuid: status}` contract and the nested
+  `{obj_type: {issue_type: [uuid, …]}}` shape that live GATT enumeration actually
+  emits (see `dbuslayer/device_le.py`). `_analyse_landmine_map`/
+  `_analyse_permission_map` route through it; the `accessibility` summary keys and
+  the float `accessibility_score` are preserved (consumed by `debug_aoi.py` and
+  recommendations). Fixes nonsense per-UUID analysis when maps were populated.
+- **F2 — `cli/parsers/aoi.py`:** `--timeout` now `type=int, default=30` and
+  `--format` `default="markdown"`. Previously the production parser left both as
+  `None`, so `None` reached SDP/pairing timeouts ("wait forever") and aggregate
+  markdown reports were mislabelled `.txt`.
+- **F4 — `analysis/aoi_analyser.py`:** `analyse_device`/`analyze_device_data` gained
+  a keyword-only `persist: bool = True`; `generate_report` and
+  `generate_aggregate_report` pass `persist=False`. Rendering a report for an
+  un-analysed device no longer persists analysis to the DB as a side effect.
+- **F6 — `modes/aoi.py`:** pairing in `_scan_target` is gated **strictly** behind
+  `--deep`. The annotation-triggered pairing path and the now-unused
+  `_has_auth_annotation()` were removed; a plain scan is non-invasive and never
+  creates a bond. Documented in `aoi_mode.md`. Auth findings still recorded via
+  enumeration annotations.
+- **Test housekeeping (pre-existing drift, confirmed on a clean tree):** removed the
+  obsolete `_normalise_service_element` tests (function removed by the earlier A–E
+  work) and corrected the schema-version assertion `15`→`16` to match
+  `_SCHEMA_VERSION` (the test pre-dated the v15→v16 bump).
+
+### Survey Classic-round dual-device fix (2026-07-16)
+
+Fixes an independent Classic-round classification issue surfaced by the Step-3
+OS #2 evidence packet (`docs/todo_tracker.md`): the BR/EDR inquiry round kept
+only devices typed exactly `"br/edr"`, silently **dropping dual-mode devices**
+(a Classic-capable device that also advertises LE — e.g. an audio headset).
+
+- **`modes/survey.py` `_run_classic_round`:** the round filter now keeps
+  `type in ("br/edr", "dual")` (previously `== "br/edr"`), while still excluding
+  `le`/`unknown` so LE-only devices cached from a prior round are not miscounted
+  as Classic sightings. DB persistence now derives `device_type` from the actual
+  transport (`br/edr`→`classic`, `dual`→`dual`) via `_CLASSIFIER_TYPE_MAP` instead
+  of hardcoding `"classic"` — the hardcoded value bypassed `upsert_device`'s
+  "preserve dual" merge and **downgraded** dual devices to `classic`.
+- **Effect:** a `--transport bredr` survey no longer under-reports Classic-capable
+  devices; `--transport both` is unchanged (superset preserved). No new BlueZ
+  interaction code; census classification (`_resolve_device_type`) already handled
+  `dual` correctly.
+- **Live-verified on BlueZ 5.84 (Kali):** `bredr-only` now returns the discoverable
+  headsets (`PLT V8200`, `Pro PSP1806`) — previously `0`; `both` unchanged at 5
+  devices with both headsets typed `dual`; DB stores both as `device_type=dual`
+  (no downgrade). Existing `tests/test_survey.py` (90) pass with no regression.
+- **Tests (CI-safe, planned for the canonical suite):** mock-adapter round where
+  `get_discovered_devices` returns a `dual` + an `le` device → assert the `dual`
+  is kept and the `le` dropped, `merge_classic_results` keeps it `dual`, and the
+  persisted `device_type` is `dual` (not `classic`).
+
+### Step-3 — LE↔Classic discovery diagnosability: error surfacing (2026-07-16)
+
+Accepted **first deliverable** of the `docs/todo_tracker.md` "Step-3" plan,
+following the OS/BlueZ #1 (5.84) and #2 (5.64 + cross-client contention) evidence
+packets. Version-independent, additive, behaviour-preserving: previously
+swallowed discovery-call failures are now surfaced instead of hidden at DEBUG.
+**No happy-path timing or return values change**, and the reverted
+`Discovering`-settle guard (`bb4cde3`) is **not** reinstated.
+
+- **`dbuslayer/adapter.py`** — new `_note_discovery_error()` helper wired into
+  `run_scan__timed` (`StartDiscovery`), `_discovery_timeout` (`StopDiscovery`),
+  and `set_discovery_filter`. On failure it logs a WARNING with the exact D-Bus
+  error name + current `Discovering` state and records the failure on
+  `self._last_discovery_error`. Return values and control flow are unchanged
+  (the prior `logger.debug` was invisible at the INFO root level).
+- **`dbuslayer/manager.py`** — matching `_note_discovery_error()` helper wired
+  into `start_discovery` (degraded `InProgress`/`WrongState`/`NotFound` no-op
+  **and** the hard-error raise path), `stop_discovery`, and the optional-
+  `SetDiscoveryFilter` branch. Emits a real `LOG__GENERAL` warning + records
+  `_last_discovery_error`; graceful-degrade and raise semantics are preserved.
+  This captures the cross-client `org.bluez.Error.Failed: No discovery started`
+  that the OS #2 contention evidence proved is otherwise silent.
+- **Tests:** `tests/test_discovery_error_surfacing.py` — 9 CI-safe unit tests
+  (no hardware; objects built with `object.__new__` + injected fakes) asserting
+  each site surfaces the error (name + `Discovering` state, via
+  `_last_discovery_error` and the emitted warning) and that happy-path returns
+  are unchanged; covers DBus and non-DBus exceptions, degrade vs. raise, and the
+  filter-unavailable branch.
+- **Live-verification (gate 5, CLOSED on both builds):** the documented
+  re-verification procedure passed identically on **BlueZ 5.84** (Kali 6.12.20)
+  and **BlueZ 5.64** (Ubuntu 22.04) — 12/12 method-level surfacing checks
+  (`InvalidArguments` / `Failed: No discovery started` / `InProgress`, plus the
+  two manager degrade lines), a clean `both`-transport survey (`rc=0`, **0**
+  false-positive discovery warnings), and on-disk persistence in
+  `general.log`. Error names/messages were byte-for-byte identical across builds.
+- **Docs:** `docs/survey_mode.md` gains a "Discovery Error Surfacing (diagnostics)"
+  section describing the surfaced warning, the `_last_discovery_error` record, and
+  the cross-client-contention rationale; `docs/todo_tracker.md` "Step-3" records
+  both live-re-verification packets and closes gate 5. The bounded own-session
+  settle/retry (second deliverable) stays deferred — no build reproduces the race.
+
+### Survey arg dedup + AoI data-pipeline hardening (2026-07-15)
+
+Accepted work from the `docs/todo_tracker.md` "Survey arg dedup + AoI
+data-pipeline hardening" plan (task **#3** + AoI items **A–F**). All changes are
+additive/behaviour-preserving except where noted.
+
+- **#3 — Survey argument dedup:** the survey CLI flag set is now defined once in
+  `_add_survey_arguments()` (`cli/parsers/survey.py`) and consumed by all three
+  parsers (`cli/parsers/survey.py` `register`, `modes/survey.py` `_build_parser`,
+  `modes/debug_survey.py` `cmd_survey`). The debug shell **gains the previously
+  missing `--quiet`**; the three parsers now expose an identical attribute set.
+  Removed a dead `from math import ceil` import.
+- **AoI A+E — characteristic-import fix + single write path:** extracted
+  `AOIAnalyser._persist_device_to_db(mac, data)` and routed `save_device_data`
+  **and** `aoi db import`/`sync` through it. Fixes a bug where import/sync treated
+  the nested `services_mapping` GATT structure as a flat `{char_uuid: svc_uuid}`
+  map and **never imported any characteristics** into the DB. Removed the dead
+  `_normalise_service_element` helper (its string/dict service-element handling is
+  folded into the shared method, preserving the export→sync round-trip).
+- **AoI B — `aoi list` device name:** falls back to the nested `device.name` for
+  DB-hydrated records (previously showed `Unknown` for DB-sourced devices).
+- **AoI C — broader GATT concern detection:** `_analyse_characteristic` now
+  resolves an effective name from explicit `name`/`description` fields and flags
+  **custom (Unknown-UUID) write-without-response, non-authenticated**
+  characteristics as **medium** risk. The three duplicated concern-append sites
+  are centralised in `_char_concern_from_report()`. The numeric score and the
+  existing high-signal rule are unchanged (avoids alert flooding).
+- **AoI D — report label clarity:** the report metric is relabelled from
+  "Security Score" to **"Risk Score … (higher = more risk)"** in the markdown,
+  text, and aggregate renderers. The numeric computation and JSON keys
+  (`security_score`/`avg_security_score`) are unchanged.
+- **AoI F — seed AoI device-type from survey/DB:** `aoi scan` now threads the
+  survey entry's `device_type` into `_scan_target` as `seeded_type`. A concrete
+  live classification always wins; only when the live result is `unknown` is a
+  trustworthy seed adopted (explicit hint first, then the DB record via
+  `observations.get_device_detail`) — via new pure helpers `_resolve_seeded_type`
+  and `_resolve_device_type`. This stops a survey-typed device that is idle at AoI
+  time from regressing to `unknown` and from being probed on an irrelevant
+  transport. Provenance is recorded as `device_type_source` (`"live"`/`"seed"`).
+  Live-verified on real `hci0`: a device the survey typed `le` live-classified
+  `unknown` and correctly adopted the `le` seed (LE-enum ran, SDP skipped;
+  persisted `device_type=le`, no `unknown` regression).
+- **Tests:** added `TestPersistDeviceToDb` (real, isolated-DB regression proving
+  nested `services_mapping` characteristics persist, incl. via the `aoi db import`
+  command path); removed the obsolete `_normalise_service_element` unit tests and
+  repurposed one into a `_persist_device_to_db` dict-service-list test; added
+  `TestSeededDeviceType` covering the F seed-resolution matrix and the
+  `_scan_target` seed-adoption path.
+
+### Bluetooth Networking (PAN/BNEP) — Phase 4: real-time signals + server authorization (2026-07-13)
+
+Fourth phase of the accepted "Full D-Bus Incorporation" plan
+(`docs/todo_tracker.md`). Moves PAN state tracking from polling to events
+(gap **G8**, expansion **E5**) and observes inbound clients while hosting
+(expansion **E7**), plus a scripted peer harness for two-node testing.
+
+- **`NetworkMonitor`** (`dbuslayer/network.py`) — event-driven watcher for
+  `Network1` `PropertiesChanged`. The signal-merge core (`_apply_change`) is
+  pure/unit-tested; `prime()` seeds from a one-shot `GetAll`; `wait_for(predicate,
+  timeout)` and `run(timeout=…)` drive a GLib loop (SIGINT-clean).
+- **Event-driven connect verify (G8):** `NetworkClient.connect()` now confirms
+  `Connected` via the signal (`_verify_connected`, default 2 s) and **falls back**
+  to the historical single 0.5 s poll if the signal path is unavailable — no
+  behaviour change on the success/failure contract.
+- **`classic-pan monitor <MAC> [--adapter] [--timeout]`** (E5): live-streams
+  `Connected`/`Interface`/`UUID` changes (no polling), persisting each to the
+  observation DB. Ops wrapper `pan.monitor(mac, adapter, timeout, on_change)`.
+- **`classic-pan serve --authorize`** (E7): registers a default BlueZ agent
+  (`register_pan_agent`) so inbound BNEP clients trigger `AuthorizeService`
+  (`server.c` `btd_request_authorization`, `BNEP_SVC_UUID`); BLEEP logs the
+  device+service, auto-accepts, runs a GLib loop, and unregisters the agent on
+  teardown alongside the server roles.
+- **Scripted peer harness** `bleep/scripts/pan_peer.py` — standalone (raw BlueZ
+  D-Bus, no BLEEP import) `connect` (PANU client) / `serve` (NAP host) / `monitor`
+  peer to run on a second host/adapter. Documented order-of-operations in
+  `docs/bl_classic_mode.md` §2.9.4.
+- **Tests:** `tests/test_network_pan.py` (+19, 98 total) cover `NetworkMonitor`
+  signal-merge/coercion/invalidation, `wait_for` primed fast-path, connect
+  event/poll fallback, the authorize-observer accept/reject callback, and the
+  peer-harness argparse — all without live D-Bus/GLib.
+
+### Bluetooth Networking (PAN/BNEP) — Phase 3b: multi-role PAN server (2026-07-12)
+
+Server-side hosting round-out (expansion **E2**). Previously `classic-pan serve`
+could register a single role and unregister only that one; a crash mid-setup
+could strand a registration.
+
+- **`NetworkServer` now tracks `{role: bridge}`** for every role it registers,
+  exposes `registered_roles`, and gains **`unregister_all()`** — a best-effort
+  teardown that attempts every role even if one fails (returns `{role: error}`).
+  `unregister()` drops the role from tracking even when the D-Bus call errors.
+- **Ops helpers** in `ble_ops/classic/pan.py`: `register_servers(roles, bridge)`
+  returns the live `NetworkServer` for the caller to hold and tear down, and
+  **rolls back** any partial registration if a later role fails;
+  `unregister_servers(roles)` does out-of-process best-effort removal;
+  `PAN_SERVER_ROLES = ("nap", "gn", "panu")` backs `--all`.
+- **CLI:** `classic-pan serve`/`unserve` take a **repeatable `--role`** and a new
+  **`--all`** flag (host/remove nap+gn+panu). `serve` now guarantees
+  `unregister_all()` in a `finally` block on Ctrl-C or error; `unserve` reports
+  per-role results and only fails if nothing was removed.
+- **Tests:** `tests/test_network_pan.py` (+14, 79 total) cover role/bridge
+  tracking, UUID-role normalization, `unregister_all` continuing past failures,
+  `register_servers` rollback on partial failure, dedup, and invalid/empty role
+  rejection — all with a fake `NetworkServer1` proxy (no live D-Bus).
+
+### Bluetooth Networking (PAN/BNEP) — Phase 3: enumeration + device-class integration (2026-07-12)
+
+Third phase of the accepted "Full D-Bus Incorporation" plan
+(`docs/todo_tracker.md`). Makes PAN capability **discoverable** (gaps **G1, G4**;
+expansions **E4, E8**) — previously a device's network capability was invisible
+outside an explicit `classic-pan` command. Also completed the Phase 0
+boundary-doc precursor.
+
+- **Shared enumeration ops** (`ble_ops/classic/pan.py`): `network_roles_from_uuids()`,
+  `find_network_servers()`, and `find_network_devices()`. All accept a
+  pre-fetched `GetManagedObjects` snapshot (threaded through by callers to avoid
+  D-Bus storms in survey mode) and **never raise** — returning `[]` on error.
+  `find_network_devices()` reads the `Network1` status straight from the OM
+  snapshot (E4-style, no per-device round-trip).
+- **Device-class helpers** (additive, mirror the media-capability pattern) on
+  `device_classic.py` **and** `device_le.py` (dual-mode): `get_network_roles()`,
+  `has_network_uuids()`, `get_network_status()`, `has_network_interface()`,
+  `is_network_device()`.
+- **`get_device_info()`** gains one **additive** `network` key
+  (`{roles, has_interface, status}` or `None`) on both device classes.
+  `check_device_type()` is untouched; no existing key changed.
+- **New `network-enum` CLI command** (+ `run_network_enum()` dispatch): lists
+  adapters with `NetworkServer1` and network-capable devices; `--adapter`,
+  `--json`, `--all-devices` flags.
+- **Refactor:** `scripts/check_network_capabilities.py` is now a thin wrapper over
+  the shared ops (duplicate D-Bus/UUID logic removed). This also **fixed a latent
+  bug** in the old script — it lowercased device UUIDs but compared them against
+  upper-case keys, so `network_uuids` was always empty; the shared helper matches
+  case-insensitively and now correctly reports PANU/NAP/GN.
+- **Non-disruption safeguards honoured:** `check_device_type()` unchanged; survey
+  snapshot paths don't consume `get_device_info()` (verified — survey uses its own
+  `DeviceSighting`); lazy imports (no cycles); helpers falsy-on-error; existing
+  `classic-pan` behaviour unchanged.
+- **Tests:** `tests/test_network_pan.py` (+12, 65 total) enumerate a fixture
+  `GetManagedObjects` covering: adapter with/without `NetworkServer1`, device with
+  `Network1` iface but no PAN UUID (live baseline edge case), UUID-only device
+  (Alias fallback), non-network device filtering, and adapter path filtering.
+
+### Bluetooth Networking (PAN/BNEP) — Phase 2: connect-path correctness (2026-07-12)
+
+Second phase of the accepted "Full D-Bus Incorporation" plan
+(`docs/todo_tracker.md` → "Bluetooth Networking (BlueZ PAN / BNEP)…"). Addresses
+gaps **G3, G6, G7** and D-Bus expansions **E1, E3, E6** — making the PAN connect
+path robust and consistent with the rest of the codebase.
+
+- **Role fidelity (G6/E6).** `dbuslayer/network.py` gains `normalize_pan_role()`
+  and `pan_role_uuid()`. `Network1.Connect` / `NetworkServer1.Register` (and the
+  ops layer) now accept both the short role names (`panu`/`nap`/`gn`,
+  case-insensitive) **and** the full 128-bit PAN UUIDs BlueZ accepts
+  (`profiles/network/connection.c` `get_pan_srv_id`), normalising to the short
+  form. Invalid roles raise `InvalidArgumentError` early.
+- **Error consistency (G7).** Every bare `RuntimeError`/`ValueError` in
+  `network.py` is replaced with the project convention: `map_dbus_error(...)` for
+  D-Bus failures, `ConnectionError` for the post-connect BNEP verification, and
+  `InvalidArgumentError` for bad roles. All are `BLEEPError` subclasses, so broad
+  `except Exception` callers (`run_pan`, `cmd_cpan`) are unaffected.
+- **Bond/trust/SDP precheck (G3/E3).** `ble_ops/classic/pan.py::connect` runs an
+  advisory, non-fatal precheck: warns when the target is not paired or does not
+  advertise a PAN service in its cached SDP (`detect_pan_service` over
+  `Device1.UUIDs`), and — opt-in via `--trust` — marks it Trusted. It never
+  mutates host state otherwise, so the authoritative connect still surfaces the
+  real BlueZ error.
+- **ConnectProfile fallback (E1).** When `Network1.Connect` returns
+  `NotSupported` (common before bluetoothd has probed the profile), connect now
+  retries via `Device1.ConnectProfile(<pan-uuid>)` — which drives BlueZ's SDP
+  probe + profile registration (`org.bluez.Device.rst`, `manager.c`) — then polls
+  `Network1` for the resulting interface. Disable with `--no-fallback`.
+- **CLI.** `classic-pan connect` gains `--trust` and `--no-fallback`, wired
+  through `run_pan()`.
+- **Tests:** `tests/test_network_pan.py` (+23, 53 total) covers role
+  normalisation (short/full-UUID/invalid), `pan_role_uuid`, and `connect()`
+  orchestration (normal path, `NotSupported`→fallback, `--no-fallback` re-raise,
+  UUID-role normalisation, invalid-role early reject) — all D-Bus-free.
+
+### Bluetooth Networking (PAN/BNEP) — Phase 1: prerequisite preflight (2026-07-12)
+
+First phase of the accepted "Full D-Bus Incorporation" plan for BlueZ networking
+(`docs/todo_tracker.md` → "Bluetooth Networking (BlueZ PAN / BNEP)…"). Addresses
+gap **G2** (host prerequisites never checked — the #1 cause of silent PAN connect
+failures per `docs/pan_connection_analysis.md` §3/§5).
+
+- **`classic-pan connect` / `serve` now run a detect-and-instruct preflight.**
+  New `check_pan_prerequisites()` / `PanPrereqReport` / `print_pan_prereq_summary()`
+  in `core/preflight.py` probe the prerequisites BlueZ does **not** manage: the
+  `bnep` kernel module (`/sys/module/bnep` + `/proc/modules`), a powered adapter
+  (reuses `require_adapter`), and — for `serve` — that `--bridge` exists and is a
+  bridge (`/sys/class/net/<b>/bridge`) plus IPv4 forwarding
+  (`/proc/sys/net/ipv4/ip_forward`, advisory). Cross-validated against
+  `workDir/bluez/lib/bnep.h` (BNEP PSM/roles) and `profiles/network/server.c`
+  (bridge attach flow).
+- **Read-only / non-blocking.** The check never mutates host networking (no
+  `modprobe`, bridge creation, or sysctl); it prints actionable remediation steps
+  and continues, so existing success paths are byte-for-byte unchanged. New
+  `--no-preflight` flag skips it.
+- **Tests:** `tests/test_network_pan.py` (30 cases) covers the `/proc`+`/sys`
+  probes (monkeypatched, CI-safe), `PanPrereqReport` readiness/blocking/instruction
+  logic, `check_pan_prerequisites` composition, and `detect_pan_service` matching.
+- **Docs:** `bl_classic_mode.md` §2.9 updated; `todo_tracker.md` planning section
+  added (gaps G1–G9, D-Bus expansions E1–E8, phased plan, Future-Work Option B).
+
+### Multi-Target Enumeration Hardening — Round 2, post-retest follow-ups (2026-07-10)
+
+A full re-test of the Round 1 fixes against all in-range targets surfaced five
+further items (N5 excluded — a known BLECTF advertising artifact). Each was
+cross-validated against BlueZ source before implementation.
+
+- **N1/#7 (P1) — bounded `ENOMEM` back-off on RFCOMM connect.** `classic-connect`
+  against the honeypot failed every RFCOMM channel with `[Errno 12] Cannot allocate
+  memory`: several channels were opened in rapid succession, exhausting host/
+  controller memory. `ble_ops/classic/connect.py::classic_rfccomm_open` now retries
+  **only** `ENOMEM` a bounded number of times (`enomem_retries=2`) with linear
+  back-off (`enomem_backoff=0.3`), recreating the socket each attempt; every other
+  errno raises immediately as before. Validated against `errors.txt:70-74` (ENOMEM =
+  "Failed to allocate memory in either host stack or controller"), `src/error.c:163`
+  (`ERR_BREDR_CONN_MEMORY_ALLOC`, distinct from permanent classes) and the inter-
+  attempt pacing in `tools/rctest.c`. Live: back-off engaged on 3 channels and the
+  terminal error changed from `ENOMEM` to the more-informative `EACCES`.
+- **N2 (P3) — version-info NOTE distinguishes "requested but failed".**
+  `analysis/sdp_analyzer.py::generate_report` gained `version_info_requested`; when
+  `--version-info` was supplied but the remote HCI Read Remote Version returned
+  nothing (`query_remote_version` → `None`, e.g. the honeypot refused / never ACL-
+  connected), the Core-Spec NOTE now reads "remote HCI/LMP version query returned no
+  result (device refused / did not ACL-connect)" instead of misleadingly advising the
+  user to add a flag they already used. `modes/classic_enum.py` passes the flag.
+- **N3 (P3) — `classic-connect` channel-count terminology.** Distinguishes services
+  advertising RFCOMM (e.g. 8) from the de-duplicated distinct channels attempted
+  (e.g. 5): "8 advertising RFCOMM across 5 distinct channel(s)" and "5 distinct RFCOMM
+  channel(s) attempted (from 8 advertising service(s)) — none connectable".
+- **N4 (P3) — scan disambiguates resolved-RPA identities (no dedup).** A bonded
+  device seen via a resolvable-private address yields a second `Device1` object whose
+  path encodes the RPA but whose `Address` is the identity (`org.bluez.Device.rst:226`,
+  "Identity Address after pairing"), printing two identical lines. `ble_ops/le/scan.py`
+  now appends `[identity; adv/RPA <path-mac>]` when the path MAC differs from the
+  resolved `Address`, surfacing the RPA↔identity linkage rather than hiding it.
+- **N6 (test) — `classify_gatt_read_error` coverage.** New `tests/test_gatt_error_classifier.py`
+  (13 cases): `NotPermitted`+"Not paired"→encryption, write/read variants, `Failed`+
+  "ATT error: 0xNN" per-code mapping, unknown-code and bare-`Failed` fallbacks, and
+  deferral to `decode_dbus_error`.
+
+**Tests:** new `tests/test_rfcomm_enomem.py` (3) + `tests/test_gatt_error_classifier.py`
+(13). Full suite: 1181 passed, 27 skipped, 1 failed (pre-existing
+`test_schema_version_is_15` schema drift, unrelated).
+
+### Multi-Target Enumeration Hardening (2026-07-10)
+
+Remediation from a multi-target enumeration campaign (`python3 -m bleep` only; no `bleep-mcp`,
+no DB-derived findings) against the `winbt-honeypot` (`98:3B:8F:EF:FE:EC` + LE RPA
+`47:23:78:E6:8A:16`), BLECTF (`CC:50:E3:B6:BC:A6`) and a Philips Hue bulb (`F0:98:7D:0A:05:07`).
+17 gaps were triaged; each fix was **cross-validated against BlueZ source** (`workDir/bluez/`
+v5.83), which corrected 6 original assumptions before any code change. Full detail with
+BlueZ line references lives in `docs/todo_tracker.md` (Gate 1/2/3/4). #7 (RFCOMM `ENOMEM`
+back-off) and #17 (withdrawn) are **not** part of this change; see tracker.
+
+**P1 — broken features**
+- **#1 `hid-info` / `connect-profile` crash.** `cli/dispatch.py` passed
+  `bluetooth_adapter=` to `system_dbus__bluez_device__classic(mac, adapter_name)` →
+  `TypeError`. Renamed the kwarg to `adapter_name=` at both call sites.
+- **#3 `gatt-enum` empty tree reported success.** A connected-but-empty GATT database (the
+  tell-tale of a dual-mode device whose GATT lives under an LE RPA, or a Classic-only
+  endpoint) now prints a diagnostic hint and returns non-zero (`modes/gatt_enum.py`, new
+  `_has_characteristics` handles both live and canonical mapping shapes).
+
+**P2 — wrong / misleading results**
+- **#4 Auth/encryption GATT reads mis-/un-classified — BlueZ-accurate rewrite.** Added
+  `RESULT_ERR_INSUFFICIENT_ENCRYPTION = 41` (`bt_ref/constants.py`) and a single canonical
+  classifier `core/error_handling.py::classify_gatt_read_error` that is message-aware:
+  `org.bluez.Error.NotPermitted` + `"Not paired"` → encryption-required (ATT 0x05/0x0c/0x0f,
+  per `gatt-client.c:create_gatt_dbus_error`); `org.bluez.Error.Failed` + `"ATT error: 0xNN"`
+  → the specific ATT code; everything else defers to `decode_dbus_error`. Replaced the
+  divergent local `_ERR_MAP`s in `dbuslayer/characteristic.py` and `dbuslayer/device_le.py`
+  with this classifier, and added a `requires_encryption` permission category to
+  `device_le.py::_classify_read_errors`.
+- **#6 `pair --probe` misreported pre-existing bonds.** `modes/pair.py::_do_probe` now
+  pre-checks `check_pair_status`; an already-bonded device short-circuits with
+  "already bonded — run `pair --reset` to re-probe" instead of a misleading `AlreadyExists`
+  "requires explicit auth".
+- **#5 Pairing identity guard.** After `resolve_device_for_pair` / `remove_stale_bond`,
+  `modes/pair.py` verifies the resolved D-Bus path's MAC == requested MAC and aborts
+  otherwise — prevents accidentally bonding an RPA that appeared post-reset. Defensive;
+  the deeper root-cause repro is deferred (destructive).
+- **#8 SDP version inference mislabeled profile versions as core-spec.**
+  `analysis/sdp_analyzer.py::generate_report` now takes `authoritative_spec` / `lmp_version`
+  (from HCI Read Remote Version) and renders the HCI/LMP core spec as authoritative, demoting
+  SDP-derived numbers to a clearly-labelled "profile spec-hint". `modes/classic_enum.py`
+  passes the target's `lmp_spec`/`lmp_version`.
+- **#9 `naggy` mode escaped its retry loop on transient connection errors.**
+  `core/errors.py::map_dbus_error` now maps the **transient** `br-/le-connection-*` variants
+  (`canceled`, `timeout`, `busy`, `abort*`, `unknown`; strings from `workDir/bluez/src/error.h`)
+  under `org.bluez.Error.Failed` to `ConnectionError`, so the existing
+  `except (ConnectionError, ServicesNotResolvedError)` retry path engages and honours
+  `--retries`. Permanent variants (`not-supported`, `key-missing`, `bad-socket`,
+  `adapter-not-powered`, `invalid-arguments`) still fall through to a base `BLEEPError`
+  (fail fast). `connection-refused` unchanged.
+
+**Opt-in feature**
+- **#2 Dual-mode LE identity correlation (`--correlate`).** New non-merging, read-only helper
+  `ble_ops/le/correlate.py::correlate_le_identity` reuses `get_discovered_devices()` to rank
+  candidate LE addresses by Name (required) + Icon + Class + random-addr-type into
+  high/medium/low confidence. `gatt-enum --correlate` (default off) uses it as a fallback when
+  the requested address resolves no GATT (empty tree **or** `ServicesNotResolvedError`),
+  re-enumerating against the top candidate and labelling results as a heuristic correlation
+  (never auto-merged). Without the flag, behaviour is unchanged.
+
+**P3 — polish**
+- **#13 `classic-connect`** returns `1` when SDP advertised RFCOMM channel(s) but none could
+  be opened (`modes/classic_connect.py`).
+- **#14 CTF flag translation** falls back to `ble_device__handle_uuid_map` (int + hex keys)
+  when the service-UUID-keyed lookup misses (`ble_ops/le/ctf.py`).
+- **#15 `classic-ping --timeout`** is now wired to `l2ping -t <timeout>`; the subprocess hard
+  cap is `timeout + 2` (`ble_ops/classic/ping.py`).
+- **#16 `classic-opp --save-dir`** parses whether placed before or after the sub-action, via a
+  shared `argparse.SUPPRESS` parent parser (`cli/parsers/classic.py`).
+- **#10/#11/#12 `scan` output clarity** (`ble_ops/le/scan.py`): shows BlueZ `AddressType`
+  (`[random]`/`[public]`), and tags non-advertising entries `RSSI: n/a [cached, not advertising]`
+  or `[bonded, cached]`.
+
+**Tests:** new `tests/test_le_correlate.py` (7) and transient/permanent connection-error
+mapping params in `tests/test_core_errors_transparency.py` (15). Full suite: 1165 passed,
+27 skipped, 1 failed (pre-existing `test_schema_version_is_15` schema drift, unrelated).
+
+### Re-Enumeration Audit Remediation — SDP versioning, display & query aids (2026-07-10)
+
+Follow-up remediation from a read-only re-enumeration of the `winbt-honeypot` dual-mode
+target (`DESKTOP-1APRSIB`, `98:3B:8F:EF:FE:EC`). Findings F1–F7; F2/F3/F5 fixed, F1
+presentational aids added, F6/F7 documented. Identity correlation (IRK-based) and a
+`db timeline`-style SDP change view are deferred (see `todo_tracker.md`).
+
+**F2 — `sdp_records` is now append-only / versioned (schema v16).**
+- Root cause: `NULL service_record_handle` defeated `ON CONFLICT(mac, service_record_handle)`
+  (SQLite treats NULLs as distinct → unbounded re-inserts on browse-group services), and
+  for *stable* handles the `ON CONFLICT … DO UPDATE` **overwrote history in place** — a
+  latent destructive loss that contradicts the DB's change-over-time purpose.
+- `bleep/core/observations/_connection.py`: bumped `_SCHEMA_VERSION` 15→16; removed the
+  `UNIQUE(mac, service_record_handle)` constraint from `sdp_records` (base DDL for fresh
+  DBs) and added a **non-unique** `idx_sdp_records_mac_handle`. A v15→v16 migration rebuilds
+  the table (rename→create→copy→drop), preserving every existing row.
+- `bleep/core/observations/_services.py` (`upsert_sdp_record`): replaced the overwrite with
+  an append-only `INSERT` that writes a new timestamped snapshot **only when the service
+  content changed** vs the latest snapshot for the same logical service
+  (identity = `mac + uuid + channel`; comparison excludes the volatile
+  `service_record_handle`, `ts`, and `raw_record`). Never UPDATEs, never DELETEs.
+- Effect: identical re-observations (incl. handle-only rotation) no longer bloat the table;
+  genuine changes are retained as distinct `ts`-versioned snapshots. Live: two `classic-enum`
+  passes over the honeypot held the row count at 89 (pre-fix each pass added rows).
+
+**F3 — Short-UUID name resolution in Classic Service Map & RFCOMM table.**
+- `bleep/modes/classic_rfcomm.py` and `bleep/modes/classic_enum.py`: unnamed SDP records
+  keyed by their bare UUID (e.g. `0x111F`) now resolve via `get_uuid_name()` at display time,
+  so the Service Map / RFCOMM table read `0x111F (AG Hands-Free)` instead of raw hex.
+
+**F5 — Filter-aware `scan -d/--device` message.**
+- `bleep/ble_ops/le/scan.py`: when a `-d` filter matches nothing but other devices were
+  seen, prints `No device matching <MAC> found (N other device(s) discovered)`, distinct from
+  a genuinely empty scan.
+
+**F1 (presentational aids only; non-merging).**
+- `bleep/core/observations/_devices.py` (`get_devices`): added an optional `name` substring
+  filter (`name LIKE %value%`), qualified as `d.name` on the media JOIN path.
+- `bleep/modes/db.py` + `bleep/cli/parsers/db.py`: added `db list --name <substr>` (enumerate
+  every RPA identity of one named device without heuristic merging) and a truncation notice
+  when a page is exactly full (RPA rotation can inflate row counts). Identity correlation
+  remains deferred to a future IRK-based design.
+
+**F6/F7 — Documentation only** (`bl_classic_mode.md` troubleshooting table): non-fatal
+`br-connection-create-socket` connect variant; BlueZ echoing `AddressType: public` for a
+structurally-random LE address.
+
+**Tests:** updated `tests/test_data_pipeline_fixes.py` (SDP MAP round-trip now asserts
+append-only semantics; new identical-re-observation test; pagination assertions include the
+new `name` kwarg). Full targeted suite green (415 passed, 8 skipped); no new lint.
+
+### Short-form UUID Name Resolution in Classic SDP Output (2026-07-09)
+
+Follow-up to the BR/EDR remediation below. Live re-run showed SDP records carrying
+16-bit UUIDs (e.g. `0x110E`, `0x1116`, `0x112F`) still printed as bare hex because
+the display path used `get_name_from_uuid()`, which does exact-string matching only
+and never normalizes short↔long forms against the 128-bit-keyed name tables.
+
+**Root cause:** the short/long-aware lookup already existed
+(`bleep/bt_ref/uuid_translator.py::translate_uuid`) but the Classic display code
+called the non-normalizing `get_name_from_uuid()` instead.
+
+**Fixes (no change to `get_name_from_uuid`):**
+- `bleep/bt_ref/uuid_translator.py`: added thin public convenience
+  `get_uuid_name(uuid, default="")` that wraps `translate_uuid()` and returns the
+  best match name (or a falsy default), for display-only call sites.
+- `bleep/modes/classic_enum.py`: record-name and reconciliation (`_name_for`)
+  lookups now use `get_uuid_name()`; removed the ad-hoc manual short→128-bit
+  expansion inside `_name_for` (the translator handles all forms).
+- `bleep/modes/debug_classic.py`: all four `csdp`/`cservices` display lookups now
+  use `get_uuid_name()`.
+
+**Verification:** `get_uuid_name` resolves `0x110E`→`A/V Remote Control`,
+`0x1116`→`NAP`, `0x112F`→`Phonebook Access Server`, `180a`→`Device Information
+Service`, full 128-bit forms, and returns `""` for unknown/empty input; both
+Classic modes import and byte-compile cleanly.
+
+### BR/EDR SDP Enumeration Gap Remediation (2026-07-09)
+
+Closed gaps found by comparing BLEEP's Classic (BR/EDR) enumeration output against
+raw `sdptool browse` ground truth. Previously `classic-enum` / debug `csdp`
+reported only 8–9 SDP records with RFCOMM channels 1–2, missing honeypot services
+(`SPP`/`OPP`/`FTP`/`PBAP`/`MAP` on ch 4–5 and `CDP Proximal Transport` on ch 3).
+
+**Root cause:** `discover_services_sdp()` preferred `sdptool browse --xml`, whose
+stream omits `ProtocolDescriptorList` for browse-group-follow services, so RFCOMM
+channel extraction always failed and the richer record set was discarded in favour
+of `sdptool records`, which truncates mid-enumeration and never reaches the
+honeypot handles.
+
+**Fixes:**
+- `bleep/ble_ops/classic/sdp.py`: added plain `sdptool browse` as the primary
+  discovery command (parsed by existing `_parse_records()`), keeping `browse --xml`
+  and `records` as fallbacks. Fixed `_HANDLE_RE` to match `RecHandle` (no space)
+  so Service Record Handles populate. Guarded `_parse_records()` against emitting
+  empty (`handle_None`) records from stray status lines. Captured L2CAP PSM /
+  RFCOMM channel / protocol versions into `protocol_descriptors[].params` (scoped
+  to the "Protocol Descriptor List:" section). Carried `protocol_descriptors`
+  through `build_svc_map()`. Added shared `format_protocol_descriptors()` helper.
+- `bleep/modes/classic_enum.py`: resolve UUID→name for records lacking an SDP
+  Service Name; display a compact `Protocols:` line; reconcile BlueZ
+  `Device1.UUIDs` against parsed SDP records (advertised-but-not-in-SDP /
+  SDP-but-not-advertised).
+- `bleep/modes/debug_classic.py`: same UUID name resolution + `Protocols:` line in
+  `csdp` and the detailed `cservices` view.
+- `bleep/ble_ops/common/conversion.py`: `decode_class_of_device()` now validates
+  against the fixed 24-bit CoD field instead of `bit_length() != 23`, eliminating a
+  spurious "not of expected length" warning for values with leading zero bits
+  (e.g. `0x2E410C`).
+
+**Verification:** parser-level validation of handles/channels/PSM on plain-browse
+text; Classic/SDP test suites pass (29 passed, 14 skipped hardware-gated). Live
+device re-run pending.
+
+### CLI Help Menu Audit & Fixes (2026-06-03)
+
+Comprehensive audit and correction of all CLI `--help` output across the BLEEP
+command tree. Every parser file (`bleep/cli/parsers/*.py`) and dispatch path was
+cross-referenced against its implementation to ensure help text accurately
+represents available functionality.
+
+**Fixes — hidden or misleading functionality (8):**
+- `bleep scan` help title changed from "Passive BLE scan" → "BLE scan (passive,
+  naggy, pokey, or brute via --variant)" to reflect all supported variants
+- `bleep enum-scan` removed deprecated `--controlled` flag (behaviour is always
+  active since v2.8)
+- `bleep aoi` help now lists `db` as a valid subcommand alongside scan, analyze,
+  list, report, export
+- `bleep aoi` parser added three missing flags: `--db-only`, `--no-db`,
+  `--connectionless` — previously only accessible programmatically
+- `bleep aoi --deep` and `--timeout` help text corrected from "for analyze
+  subcommand" to "for scan and analyze subcommands"
+- `bleep classic-enum --analyze` help clarified: "combine with --version-info
+  for LMP cross-validation"
+- `bleep agent --auto-accept` replaced with `--no-auto-accept`
+  (`action="store_false"`, `default=True`) — the previous `store_true` +
+  `default=True` meant the flag could never be disabled
+- `bleep aoi db` dispatch: added action bridging in `modes/aoi.py` so the `db`
+  subcommand's sub-actions (list, import, export, sync) are correctly routed
+  when invoked from the main CLI; added graceful error for missing action
+
+**New functionality exposed (2):**
+- `bleep db maintain` — new subcommand running `VACUUM` + `ANALYZE` on the
+  observation database, exposing the previously internal-only
+  `maintain_database()` function
+- `bleep --version` now includes database schema version:
+  `BLEEP 3.0.0 (DB schema v15)`
+
+**Error message improvements (2):**
+- `bleep aoi` dispatch error updated to include `db` in the subcommand list
+- `bleep aoi db` with no action emits valid action list instead of
+  `Unknown database action: None`
+
+**Files**: `bleep/cli/parsers/__init__.py`, `bleep/cli/parsers/aoi.py`,
+`bleep/cli/parsers/db.py`, `bleep/cli/parsers/scan.py`,
+`bleep/cli/parsers/classic.py`, `bleep/cli/parsers/pairing.py`,
+`bleep/cli/dispatch.py`, `bleep/modes/aoi.py`, `bleep/modes/db.py`,
+`bleep/modes/agent.py`
+
+---
+
+### Internal Documentation Audit (2026-06-03)
+
+Comprehensive review and update of all internal documentation files to ensure
+accuracy against the BLEEP 3.0.0 codebase.
+
+**`bleep/docs/aoi_security_algorithms.md`:**
+- Added new **Risk Ranking** section documenting `_assign_concern_risk()` logic:
+  keyword matching for HIGH (unauthenticated, no encryption, justworks, mitm,
+  knob, bias), MEDIUM (legacy, weak, outdated, deprecated), LOW (default)
+- Added new **Security Score Calculation** section documenting
+  `_calculate_security_score()`: baseline=5, stacking weights (+1.5/+0.75/+0.25
+  per HIGH/MEDIUM/LOW concern), cap=10, legacy auto-classification
+
+**`bleep/docs/observation_db_schema.md`:**
+- Added Schema v13 migration details (survey metadata columns: `sighting_count`,
+  `first_seen_survey`, `last_seen_survey`, `fingerprint_changed`)
+- Added Schema v14 migration details (Classic version columns: `lmp_version`,
+  `lmp_subversion`, `bt_manufacturer`, `bt_spec_version`, `lmp_features`,
+  `version_queried_at`)
+- Added Schema v15 migration details (DIS columns: `firmware_revision`,
+  `software_revision`, `model_number`, `dis_manufacturer_name`,
+  `pnp_vendor_source`, `pnp_vendor_id`, `pnp_product_id`,
+  `pnp_product_version`)
+
+**Minor fixes:**
+- `changelog.md`: corrected RV test count from 79 → 73
+- `observation_db.md`: schema version reference updated 13 → 15
+- `api_specification.md`: schema version reference updated 13 → 15
+- `device_type_classification.md`: schema version reference updated 13 → 15
+
+**Files**: `bleep/docs/aoi_security_algorithms.md`,
+`bleep/docs/observation_db_schema.md`, `bleep/docs/changelog.md`,
+`bleep/docs/observation_db.md`, `bleep/docs/api_specification.md`,
+`bleep/docs/device_type_classification.md`, `bleep/docs/todo_tracker.md`
+
+---
+
+### Augmented Verification Script — 100-Check Comprehensive Verification (2026-06-03)
+
+**Augmented `workDir/BLEEP_3-0_verify_script.sh` from 12 sections / ~30 checks
+to 23 sections / 100 checks**, covering the full BLEEP 3.0.0 feature surface
+including risk ranking, security scoring, report generation, AoI analysis pipeline,
+survey census structure, SDP analysis, live DB device analysis, and end-to-end
+pipelines with live 120-second surveys.
+
+**Stale assertion fixes (3):**
+- Schema version: `== 13` → `== 15` (schema v14 added LMP columns, v15 added DIS)
+- API surface test count: hardcoded `grep '299 passed'` → threshold `>= 299`
+- Full test suite threshold: `>= 1090` → `>= 1130` (1140 currently passing)
+
+**New offline validation sections (6):**
+- **Risk Ranking Engine** (Sec 10, 8 checks): validates `_assign_concern_risk()`
+  for high/medium/low classification, idempotency, and description propagation
+  per `aoi_security_algorithms.md`
+- **Security Score Calculation** (Sec 11, 6 checks): validates
+  `_calculate_security_score()` baseline (5), stacking (+1.5/+0.75/+0.25 per
+  risk tier), capping at 10, and legacy concern auto-classification
+- **Report Generation & Version Embedding** (Sec 12, 6 checks): markdown risk
+  emojis, text `[HIGH]` prefixes, JSON `metadata.version == "3.0.0"`, aggregate
+  report summary table with Score/High/Med/Low columns
+- **AoI Analysis Pipeline** (Sec 13, 5 checks): `analyse_device()` end-to-end
+  including outdated LMP (< 6) flagging and JustWorks pairing detection
+- **Survey Census Structure** (Sec 14, 7 checks): `SurveyCensus` offline
+  validation of `format_simple`/`format_objects`/`format_grouped`, filter
+  parameters, and dual-mode device detection across LE+Classic rounds
+- **SDP Analyzer** (Sec 15, 4 checks): `SDPAnalyzer` import, `analyze()` return
+  keys, report header, and anomaly severity constraints
+
+**New live data validation sections (3):**
+- **Live DB Device Analysis** (Sec 16, 6 checks): exercises full
+  analyse→report pipeline against real production DB devices (Light Orb
+  F0:98:7D:0A:05:07 with 32 characteristics, OnePlus 78:ED:BC:23:67:96
+  with 211 SDP records)
+- **Live Survey Pipeline** (Sec 17, 3 checks): validates `--format objects`,
+  `--format grouped`, and `--format simple` CLI output structure from live
+  5-second surveys
+- **DB Schema v15 Features** (Sec 18, 4 checks): verifies v14 LMP columns,
+  v15 DIS columns, and survey metadata columns present in `_SCHEMA_SQL`
+
+**New end-to-end pipeline sections (2):**
+- **E2E Survey-to-Report** (Sec 19, 5 checks): 120-second live survey →
+  `analyse_device()` → report generation in all 3 formats (markdown, text, JSON)
+- **E2E DB Aggregate & Individual Reports** (Sec 20, 6 checks): aggregate
+  report across all AoI-analyzed DB devices + individual report on richest
+  device, all 3 formats; output written to `/tmp/bleep_verify_e2e/`
+
+**Infrastructure improvements:**
+- CWD guard: script auto-detects project root from its own location, removing
+  dependency on being invoked from a specific directory
+- Timeout protection: all adapter/CLI commands wrapped with `timeout` to prevent
+  indefinite hangs when Bluetooth hardware is unavailable or unresponsive
+- Original hardware-dependent sections (adapter, DB CLI, test suite) preserved
+  as Sections 21–23
+
+**File**: `workDir/BLEEP_3-0_verify_script.sh`
+
+**Results**: 100/100 passed (all checks green),
+1140 passed in full test suite with 2 failures (known hardware-dependent).
+
+---
+
+### Remote Bluetooth Version Detection — Full Implementation (2026-05-26)
+
+**NEW: Authoritative remote device Bluetooth version identification.**
+Implements the complete Remote Bluetooth Version Detection plan (RV-1 through RV-5),
+enabling BLEEP to definitively identify the Bluetooth Core Specification version
+running on remote devices via multiple complementary methods.
+
+**Phase 1 — Classic BR/EDR version query:**
+- New `query_remote_version(address, adapter)` function in
+  `bleep/ble_ops/classic/version.py` — wraps `hcitool info` to issue HCI Read
+  Remote Version Information, returning LMP version, subversion, manufacturer,
+  and feature pages
+- Graceful failure handling: missing hcitool, timeout, connection refused, unparseable output
+
+**Phase 2 — Database schema extension (v14→v15):**
+- Schema v14: 6 new columns on `devices` table for Classic version data
+  (`lmp_version`, `lmp_subversion`, `bt_manufacturer`, `bt_spec_version`,
+  `lmp_features`, `version_queried_at`)
+- Schema v15: 8 new columns for BLE Device Information Service data
+  (`firmware_revision`, `software_revision`, `model_number`,
+  `dis_manufacturer_name`, `pnp_vendor_source`, `pnp_vendor_id`,
+  `pnp_product_id`, `pnp_product_version`)
+- Idempotent migrations for both schema versions
+
+**Phase 3 — CLI and analysis integration:**
+- `classic-enum --version-info` now displays authoritative remote LMP version
+  alongside local adapter info and SDP profile versions
+- AoI security analysis flags outdated Bluetooth versions:
+  - LMP < 6 (pre-BT 4.0): high-risk — lacks LE Secure Connections
+  - LMP 6–7 (BT 4.0/4.1): high-risk — vulnerable to KNOB/BIAS attacks
+- New `SDPAnalyzer.cross_validate_lmp()` method detects version mismatches
+  between actual LMP and SDP-advertised profile versions (possible firmware
+  spoofing indicator)
+- `device_classic.py` new method `query_and_store_remote_version()` for
+  programmatic access with automatic DB persistence
+
+**Phase 4 — BLE version detection:**
+- GATT Device Information Service (0x180A) extraction during BLE enumeration:
+  reads Firmware Revision (0x2A26), Software Revision (0x2A28), PnP ID (0x2A50),
+  Model Number (0x2A24), Manufacturer Name (0x2A29) and persists to DB
+- New `infer_min_bt_version_from_le_features(features_bytes)` function: maps
+  LE Supported Features bits to minimum BT Core version (20+ feature mappings
+  covering BT 4.2 through 5.3)
+
+**Phase 5 — Reference data integration:**
+- Extended `update_ble_uuids.py` codegen pipeline with `CORE_VERSION` table
+- New `resolve_core_version()` and public `resolve_manufacturer_name()` helpers
+  in `bleep/ble_ops/common/conversion.py`
+- `map_lmp_version_to_spec()` now uses SIG-sourced data as primary with
+  hardcoded map retained as fallback
+
+**Files**: `bleep/ble_ops/classic/version.py`, `bleep/ble_ops/__init__.py`,
+`bleep/ble_ops/le/scan.py`, `bleep/ble_ops/common/conversion.py`,
+`bleep/core/observations/_connection.py`, `bleep/core/observations/_devices.py`,
+`bleep/dbuslayer/device_classic.py`, `bleep/modes/classic_enum.py`,
+`bleep/analysis/aoi_analyser.py`, `bleep/analysis/sdp_analyzer.py`,
+`bleep/bt_ref/update_ble_uuids.py`, `bleep/bt_ref/yaml_cache/core_version.yaml`
+
+**Tests**: ~37 new tests across `tests/test_remote_version.py` (LE features
+inference, manufacturer resolution, remote version parsing, failure modes),
+`tests/test_sdp_analyzer.py` (cross-validation including `TestCrossValidateLmp`),
+`tests/test_aoi_augmentation.py`
+(version security concerns, schema version). Total: 348 passed, 0 failed.
+
+---
+
+### Report & UUID-Translate Fixes (2026-05-25)
+
+**BUG: `### None` headings in report Services section.**
+When a GATT service had `name: None` in the DB row, `service.get("name", fallback)`
+returned `None` (key exists with null value) instead of using the fallback.
+Changed to `service.get("name") or get_name_from_uuid(uuid) or uuid` so null
+names resolve via UUID lookup.
+
+**BUG: Duplicate UUID-translate results for 128-bit BT SIG UUIDs.**
+`UUIDDatabase.search()` performed two search phases: direct normalized lookup
+and short-form expansion. When the input was already a 128-bit BT SIG UUID,
+both phases matched the same entries, producing duplicates. Added a `seen` set
+keyed on `(category, name)` to deduplicate within the search.
+
+**Files**: `bleep/analysis/aoi_analyser.py`, `bleep/bt_ref/uuid_translator.py`,
+`tests/test_data_pipeline_fixes.py`
+
+**Tests**: 5 new tests — 2 for service-name-None rendering, 3 for UUID dedup.
+Total test suite: 1103 passed, 1 failed (CTF hardware), 28 skipped.
+
+---
+
+### Post-Audit Fixes — Verification Script Analysis (2026-05-25)
+
+**BUG: CLI uuid-translate incorrectly gated by adapter guard.**
+`uuid-translate` and `uuid-lookup` CLI modes are pure software operations
+(YAML dictionary lookup) but were blocked by `require_adapter()` in
+`bleep/cli/main.py`.  Added both modes to `_non_bt_modes` set so they
+execute without a Bluetooth adapter.
+
+**BUG: Device name overwritten by placeholder during AoI scan.**
+`save_device_data()` in `aoi_analyser.py` called
+`upsert_device(mac, name="Unknown Device")` as a default when the incoming
+data had no name (e.g., after a failed LE enumeration), destroying the
+previously-stored BlueZ-resolved name (e.g., "PLT V8200 Series").
+Three-layer fix:
+1. `upsert_device()` SQL: ON CONFLICT now uses CASE logic for the `name`
+   column — a resolved name is never downgraded to a placeholder.
+2. `save_device_data()`: only passes `name` when the caller supplied a
+   meaningful one, not "Unknown Device" or "Unknown".
+3. `aoi.py` file-import paths (2 call sites): same placeholder filtering.
+
+**Files**: `bleep/cli/main.py`, `bleep/core/observations/_devices.py`,
+`bleep/analysis/aoi_analyser.py`, `bleep/modes/aoi.py`,
+`tests/test_data_pipeline_fixes.py`
+
+**Tests**: 7 new tests — 2 for adapter guard bypass, 5 for name protection.
+
+---
+
+### Data Pipeline Remediation — Phase 1 (2026-05-24)
+
+**BUG-1 fix: AoI report identity resolution.** Reports now correctly display
+device MAC addresses and names when loaded from the observation database.
+Previously, all devices showed as "Unknown" / "Unnamed Device" because the DB
+returns a nested `{device: {mac, name}}` shape while report generators expected
+flat `{address, name}` keys. Added `_resolve_identity()` helper that handles
+both shapes; applied across markdown, text, JSON, and aggregate report generators.
+
+**BUG-2 fix: Security scoring and risk classification.** Security concerns now
+carry a `risk` field (`high`, `medium`, `low`) enabling the scorer to produce
+meaningful scores above the default 5/10. Previously, `analyse_device()` wrote
+concerns with a `reason` field only, but `_calculate_security_score()` looked
+for `risk` — resulting in a permanently stuck 5/10 score. Added
+`_assign_concern_risk()` helper applied at all concern-append sites; scorer
+retroactively classifies legacy concerns for backward compatibility. Vulnerability
+text in reports now falls back from `description` to `reason` to display properly.
+
+**Files**: `bleep/analysis/aoi_analyser.py`, `tests/test_data_pipeline_fixes.py` (new).
+**Tests**: 32 new tests (all passing), 0 regressions across 432 AoI/API test suite.
+
+### Data Pipeline Remediation — Phase 2 (2026-05-24)
+
+**BUG-3 fix: DB→Analyser characteristic shape mismatch.** Characteristic-level
+security analysis now works for DB-loaded devices. Previously, `get_device_detail()`
+returned `characteristics` as a flat list of row dicts (with comma-separated
+`properties` strings), but `analyse_device()` only handled dict-keyed or
+`services_mapping`-shaped characteristics — silently producing zero findings.
+
+Added `_hydrate_db_device_data()` helper called in `load_device_data()` that
+transforms DB-shaped data at load time: converts the characteristics list to a
+UUID-keyed dict (splitting properties CSV back to lists, converting BLOB values
+to hex), builds a `services_mapping` for grouped analysis, and extracts
+`landmine_map`/`permission_map` from the latest `security_maps` row.
+
+Also added a defensive `isinstance(characteristics, list)` branch in
+`analyse_device()` as a safety net for callers that bypass `load_device_data()`.
+
+**Files**: `bleep/analysis/aoi_analyser.py`, `tests/test_data_pipeline_fixes.py`.
+**Tests**: 21 new tests (53 total, all passing), 0 regressions (1058 passed).
+
+### Data Pipeline Remediation — Phase 3 (2026-05-24)
+
+**BUG-4 fix: `load_device_data()` empty-shell fallback.** When the observation
+database contains a MAC address but no actual device row (e.g., from a partial
+scan), `get_device_detail()` returns `{device: None, services: [], ...}`. This
+was treated as valid data because the dict is truthy, preventing fallback to
+file-based lookup. Changed the truthiness check to
+`if device_data and device_data.get("device"):` so empty shells correctly fall
+through. Logging improved: `info` for empty shell, `warning` for DB exceptions.
+
+**BUG-5 fix: Analysis details persistence.** The `details` block (containing
+per-characteristic analysis, service reports, landmine/permission maps) was
+discarded during `store_aoi_analysis()` — only the summary sub-keys were
+persisted. Added `analysis_details JSON` column to `aoi_analysis` table
+(schema v13 migration), updated `store_aoi_analysis()` to serialize the full
+`details` block, and updated `get_aoi_analysis()` to deserialize it back as
+`result["details"]` on retrieval.
+
+**Files**: `bleep/analysis/aoi_analyser.py`, `bleep/core/observations/_aoi.py`,
+`bleep/core/observations/_connection.py`, `tests/test_aoi_augmentation.py`,
+`tests/test_data_pipeline_fixes.py`.
+**Tests**: 7 new tests (60 total, all passing), 0 regressions (1065 passed).
+**Schema**: v12 → v13.
+
+### Data Pipeline Remediation — Phase 6 (2026-05-25)
+
+**BUG-9 fix: Export data missing AoI analysis and device type evidence.**
+`export_device_data()` returned characteristic history and advertisement reports
+but omitted AoI analysis results and device type classification evidence.  Added
+`get_aoi_analysis(mac)` and `get_device_type_evidence(mac)` calls, including
+the results only when data exists for the device.
+
+**BUG-10 fix: `db list` ignores pagination parameters.** `get_devices()` already
+supported `limit` and `offset` parameters (default 100/0), but the CLI and
+`run()` handler never passed them through.  Added `--offset` argument to the
+CLI parser, changed `--limit` default to `None` (resolved to 100 for list, 50
+for timeline at handler level), and wired both through `list_devices()` and
+the JSON output path.
+
+**Files**: `bleep/core/observations/_devices.py`, `bleep/modes/db.py`,
+`bleep/cli/parsers/db.py`, `tests/test_data_pipeline_fixes.py`.
+**Tests**: 8 new tests (86 total), 0 regressions (1083 passed).
+
+### Data Pipeline Remediation — Phase 5 (2026-05-25)
+
+**BUG-7 fix: SDP MAP columns not persisted.** The `sdp_records` table had
+`mas_instance_id`, `supported_message_types`, and `supported_features` columns
+(added in schema v12), but `upsert_sdp_record()` never included them in its
+INSERT/UPDATE statement.  MAP-specific SDP attributes parsed by the SDP parser
+were silently discarded.  Fixed by adding all three columns to the INSERT column
+list and the ON CONFLICT UPDATE clause.
+
+**BUG-8 fix: Survey→AoI name/type loss.** `_iter_macs()` extracted only MAC
+addresses from survey JSON, discarding `name` and `device_type` metadata
+carried by the survey objects.  Devices were enumerated without the survey-derived
+name as a DB baseline, causing name loss if enumeration failed to connect.
+Fixed by changing `_iter_macs()` to return `List[Dict]` with `mac`, `name`,
+`device_type` keys, and adding a pre-seed `upsert_device()` call in the scan
+loop before enumeration.
+
+**Files**: `bleep/core/observations/_services.py`, `bleep/modes/aoi.py`,
+`tests/test_data_pipeline_fixes.py`, `tests/test_survey.py`,
+`tests/test_aoi_augmentation.py`.
+**Tests**: 10 new tests (78 total), 6 updated tests, 0 regressions (1075 passed).
+
+### Data Pipeline Remediation — Phase 4 (2026-05-24)
+
+**BUG-6 fix: `db show` data truncation.** The `db show` command previously
+emitted only `characteristics_count` and `classic_services_count` integers
+instead of the actual characteristic, classic service, and SDP record data.
+
+JSON output (`--json`/`--quiet`) now emits the full `get_device_detail()` dict
+with bytes→hex conversion for JSON safety. Terminal output has been redesigned
+from a flat JSON dump to a structured summary with expanded sections for
+characteristics (uuid, handle, properties, has_value), classic services
+(uuid, channel, name), and SDP records (service_uuid, service_name, channel).
+
+Added `--full` flag to `db show` for dumping the complete device detail as
+formatted JSON directly in the terminal — an alternative to `db export` without
+the history/adv_reports overhead.
+
+**Files**: `bleep/modes/db.py`, `bleep/cli/parsers/db.py`,
+`tests/test_data_pipeline_fixes.py`.
+**Tests**: 8 new tests (68 total, all passing), 0 regressions (1073 passed).
+
+---
+
+## 3.0.0 (2026-05-22)
+
+**BLEEP v3.0 — API-Ready Architecture**
+
+Version bump from 2.8.4 to 3.0.0 marks the completion of the 7-phase
+expansion plan (Phases 1–7 + PREP-7). All phases are complete.
+
+### Phase 7 — API Surface Definition (2026-05-22)
+
+**Deliverable**: `bleep/docs/api_specification.md` v0.1.0
+
+- **P7-1: Library API Surface Audit** — Programmatically extracted and cataloged
+  all `__all__` exports: 84 modules, 410 symbols. Every symbol classified by
+  type (class/function/constant/module), source module, and description.
+  Function signatures documented for all key entry points.
+- **P7-2: Concurrency Constraints** — Documented GLib.MainLoop requirements
+  (pairing agent, timed scan, GATT server, LE advertising require MainLoop on
+  main thread), single-flight operations (one scan/pairing/connection per
+  adapter), and thread-safety characteristics (DB is thread-safe via `_DB_LOCK`;
+  D-Bus calls require `GLib.idle_add()` from worker threads).
+- **P7-3: Structured Error Response Format** — Mapped all 40 `RESULT_ERR_*`
+  integer codes to stable string identifiers (`ERR_NOT_FOUND`,
+  `ERR_AUTH_TIMEOUT`, etc.) with exception class cross-reference. Defined
+  JSON error response format for programmatic callers.
+- **P7-4: Session Lifecycle Contract** — Documented adapter initialization
+  sequence, BLE device lifecycle (scan → connect → enumerate → read/write →
+  disconnect → persist), Classic device lifecycle (SDP → connect → profile ops →
+  disconnect → persist), and long-running operation management with cancellation
+  and expected duration ranges.
+- **P7-5: Integration Tests** — Created `tests/test_api_surface.py` with 299
+  tests exercising the library API without CLI: module importability (T1),
+  symbol resolution (T2), internal export hygiene (T3), error hierarchy and
+  `.code` attributes (T4), OutputContext contract (T5), observation DB API (T6),
+  preflight API (T7), signals API (T8), pairing API (T9), EnumerationController
+  contract (T10), symbol census (T11), package re-export integrity (T12).
+- **P7-6: API Specification Document** — `bleep/docs/api_specification.md`
+  (8 sections): overview/conventions, package hierarchy, full API catalog with
+  17 subsections covering every public package, concurrency constraints, session
+  lifecycle, data formats, symbol census, and version history.
+
+**Test suite**: 299 new tests (all passing), 0 new failures.
+**Files**: `bleep/docs/api_specification.md` (new), `tests/test_api_surface.py` (new).
+
+### Deferred Item Resolution — P3-E1 & 7B-5c (2026-05-22)
+
+**P3-E1: user.py bare `print()` → `print_and_log()` conversion**
+
+- Converted all 139 bare `print()` calls across 18 functions in `bleep/modes/user.py`
+  to `print_and_log(msg, LOG__USER)` — output now logged to file and respects
+  thread-local routing (stderr in json/quiet mode)
+- Functions converted: `UserMenu.display()`, `translate_uuid_interactive()`,
+  `display_device_info()`, `browse_services()`, `browse_characteristics()`,
+  `characteristic_actions()`, `read_characteristic()`, `write_characteristic()`,
+  `notification_callback()`, `toggle_notifications()`, `multi_read_characteristic_ui()`,
+  `brute_write_characteristic_ui()`, `configure_signal_capture()`,
+  `export_device_data()`, `disconnect_device()`, `scan_and_connect_menu()`,
+  `manual_connect()`, `run_user_mode()`
+- Zero bare `print()` calls remain in any mode module
+
+**7B-5c: Idempotent `devices.uuids` uppercase fixup**
+
+- Added post-migration idempotent step in `_init_db()`:
+  `UPDATE devices SET uuids = UPPER(uuids) WHERE uuids IS NOT NULL AND uuids != UPPER(uuids)`
+- Runs on every DB initialization; only touches rows with lowercase UUID data
+- No schema version bump required — idempotent and non-destructive
+- Closes the last deferred item from PREP-7B UUID normalization
+
+**Test suite**: 706 passed, 28 skipped, 0 new failures.
+
+### Phase 7 Preparation — Pre-Specification Remediation (2026-05-22)
+
+Three infrastructure issues resolved to ensure Phase 7 API surface audit has
+a clean foundation:
+
+**PREP-7A: FW7 Device Type Evidence FK Verification**
+
+- Confirmed `_ensure_device_exists` auto-create path works correctly
+- Added `test_evidence_auto_creates_device_row` and
+  `test_evidence_rejects_invalid_mac` regression tests
+- FW7 marked CLOSED — defensive fix confirmed working
+
+**PREP-7B: Full UUID Uppercase Normalization (UUID-1 + UUID-2)**
+
+- Canonical form: `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` (uppercase, dashed)
+- `update_ble_uuids.py`: generates uppercase keys via `%04X` + uppercase suffix
+- `uuids.py`: regenerated from BT SIG YAML sources — 1,401 uppercase UUID keys,
+  0 lowercase remaining (generated 2026-05-22)
+- `constants.py`: all ~77 UUID string literals uppercased
+- `get_name_from_uuid()`: normalizes input to uppercase before lookup; stale
+  lowercase fallback removed after `uuids.py` regeneration
+- `uuid_utils.py`, `uuid_translator.py`: canonical form changed to uppercase
+- D-Bus boundary: service/char/descriptor UUIDs normalized to uppercase on read
+  from BlueZ (7 D-Bus entry points in adapter, device_le, device_classic,
+  characteristic, descriptor)
+- Runtime comparisons: ~35 production files updated from `.lower()` to `.upper()`
+- DB column: `upsert_device()` normalizes `uuids` list to uppercase
+- D-Bus safety verified: BlueZ accepts any hex case on UUID input
+- ~10 test files updated for uppercase assertions
+- Test suite: 706 passed, 28 skipped, 0 new failures
+
+**PREP-7C: `__all__` API Surface Remediation**
+
+- Added `__all__` to 7 high-priority modules: `bleep/__init__.py`,
+  `core/output.py`, `pairing/__init__.py`, `callbacks/__init__.py`,
+  `ble_ops/classic/sdp.py`, `ble_ops/classic/connect.py`,
+  `analysis/aoi_analyser.py`
+- Added `__all__` to 14 mode entry-point modules and 2 dbuslayer modules
+- Removed 2 underscore-prefixed symbols from existing `__all__` exports
+- Aligned package re-exports: dbuslayer (Classic device), mesh (8 lazy modules),
+  analysis (HIDInfo, classify_hid)
+- Added `TYPE_CHECKING` stubs to `dbuslayer/__init__.py` and `mesh/__init__.py`
+  for static analysis resolution of lazy-loaded names
+- 64 → ~85 modules with `__all__` definitions
+
+### Phase 6 — CLI Decomposition (2026-05-22)
+
+Phase 6 decomposes the monolithic `cli.py` (2,964 lines) into a modular
+`bleep/cli/` package and extracts 19 inline dispatch blocks into dedicated
+mode modules.  No behavioral changes — purely structural relocation.
+
+**Sub-phase 6A: Inline Implementation Extraction**
+
+19 modes with inline implementation blocks (1,811 lines total) were extracted
+into `run()` functions in their respective mode modules:
+
+- New `modes/classic_profiles.py` (688 lines): `run_pbap()`, `run_opp()`,
+  `run_map()`, `run_ftp()`, `run_pan()`, `run_spp()`, `run_sync()`,
+  `run_bip()` — 8 Classic OBEX profile handlers.
+- New `modes/classic_scan.py` (113 lines): `run(args, output)`.
+- New `modes/classic_enum.py` (227 lines): `run(args, output)`.
+- New `modes/classic_rfcomm.py` (65 lines): `run(args, output)`.
+- New `modes/connect.py` (129 lines): `run(args, output)`.
+- New `modes/gatt_enum.py` (68 lines): `run(args, output)`.
+- New `modes/enum_scan.py` (83 lines): `run(args, output)`.
+- Extended `modes/audio.py`: added `run_audio_profiles()`, `run_audio_config()`.
+- Extended `modes/media.py`: added `run_media_enum()`.
+- Extended `modes/blectf.py`: added `run(args, output)`.
+- Fixed `modes/aoi.py` P3-E3: cli.py `main(opts)` dispatch converted to
+  `run(args, output)` pattern, eliminating 63-line subcommand reassembly.
+
+New mode module total: 1,373 lines across 7 new files.
+
+**Sub-phase 6B: Structural Decomposition**
+
+The remaining `cli.py` (1,243 lines after 6A) was fully decomposed into a
+`bleep/cli/` package (1,326 lines across 19 files):
+
+- `cli/__init__.py` (6 lines): re-exports `main`, `parse_args`,
+  `_rebuild_debug_argv` for backward compatibility.
+- `cli/__main__.py` (7 lines): enables `python -m bleep.cli`.
+- `cli/main.py` (86 lines): `main()`, `_rebuild_debug_argv()`, MAC
+  normalization, adapter guard, banner print, `--check-env`,
+  `--diagnose-audio`, `BLEEP_LOG_LEVEL` handling.
+- `cli/dispatch.py` (402 lines): central mode dispatch — 48 explicit mode
+  branches + interactive fallback, all thin delegation to mode `run()`
+  functions.
+- `cli/parsers/__init__.py` (51 lines): `build_parser()`, registers all 14
+  parser modules.
+- 14 domain parser modules in `cli/parsers/`: `scan.py`, `explore.py`,
+  `connect.py`, `gatt.py`, `classic.py` (247 lines, 14 subparsers),
+  `media.py`, `audio.py` (81 lines, 7 subparsers), `pairing.py`,
+  `db.py`, `survey.py`, `aoi.py`, `debug.py`, `utility.py` (146 lines,
+  9 subparsers), `other.py`.
+
+Old `bleep/cli.py` deleted (Python import resolution prefers `bleep/cli/`
+package over `bleep/cli.py` file).
+
+**Entry points preserved:**
+
+- `bleep=bleep.cli:main` (setup.py console_scripts) — via `__init__.py`
+  re-export.
+- `python -m bleep` — via `bleep/__main__.py` → `from bleep.cli import main`.
+- `python -m bleep.cli` — via `bleep/cli/__main__.py`.
+
+**Test suite:** 704 passed, 28 skipped, 2 failed (hardware-dependent CTF),
+0 regressions from pre-Phase 6 baseline.
+
+### Sprint 5E — Deprecated Profile GATT-Level Recognition (BZ-20/21/22/23) (2026-05-22)
+
+Sprint 5E (P4) completes Phase 5 by adding profile-aware recognition and
+structured value interpretation for deprecated BlueZ plugin profiles at the
+GATT level.  Rather than re-implementing the removed BlueZ D-Bus interfaces,
+BLEEP now decodes characteristic values per Bluetooth SIG specifications,
+providing better coverage across all BlueZ versions.
+
+**BZ-20-23a: Profile UUID Constants (`bt_ref/constants.py`):**
+
+- 6 service UUID constants: `HEALTH_THERMOMETER_SVC_UUID` (`0x1809`),
+  `HEART_RATE_SVC_UUID` (`0x180D`), `CSC_SVC_UUID` (`0x1816`),
+  `IMMEDIATE_ALERT_SVC_UUID` (`0x1802`), `LINK_LOSS_SVC_UUID` (`0x1803`),
+  `TX_POWER_SVC_UUID` (`0x1804`).
+- 11 characteristic UUID constants: Temperature Measurement/Type/Intermediate/
+  Interval, HR Measurement/Body Sensor Location, Alert Level, Tx Power Level,
+  CSC Measurement/Feature, Sensor Location.
+- `DEPRECATED_GATT_PROFILE_SVCS` frozenset, `DEPRECATED_GATT_PROFILE_NAMES`
+  dict, `DEPRECATED_GATT_CHR_TO_SVC` mapping.
+
+**BZ-20-23b: Value Decoders (`ble_ops/common/gatt_profile_decode.py`):**
+
+- New module with 11 per-characteristic decoders:
+  - **Temperature Measurement** (0x2A1C / 0x2A1E): IEEE 11073 FLOAT → °C/°F,
+    optional timestamp skip, temperature type enum.
+  - **Temperature Type** (0x2A1D): uint8 → body location enum.
+  - **Measurement Interval** (0x2A21): uint16 → seconds.
+  - **Heart Rate Measurement** (0x2A37): flags-driven uint8/uint16 BPM,
+    sensor contact status, energy expended (kJ), RR intervals (ms).
+  - **Body Sensor Location** (0x2A38): uint8 → location enum.
+  - **Alert Level** (0x2A06): uint8 → No/Mild/High Alert.
+  - **Tx Power Level** (0x2A07): int8 → dBm.
+  - **CSC Measurement** (0x2A5B): flags-driven wheel/crank revolutions +
+    event timestamps.
+  - **CSC Feature** (0x2A5C): uint16 bitmask → feature flags.
+  - **Sensor Location** (0x2A5D): uint8 → 17-value location enum.
+- Internal `_decode_ieee11073_float()` for IEEE 11073-20601 FLOAT type with
+  NaN/NRes/Infinity special-value handling.
+- Public `decode_characteristic_value(uuid, raw)` facade returns decoded
+  string or None.
+
+**BZ-20-23c: Display Integration:**
+
+- `format_gatt_tree()` (`conversion.py`): adds `Decoded:` line after Hex/ASCII
+  when a profile decoder matches.  Affects `gatt-enum`, `enum-scan`, `connect`.
+- `debug_gatt.py` `cmd_read()`: shows `Value (Profile):` line for known UUIDs
+  alongside existing PnP ID and numeric interpretations.
+- `exploration.py`: stores `decoded` field in char_info dict, prints
+  `Decoded:` line in verbose mode.
+- `aoi_analyser.py`: populates `decoded_value` field in characteristic
+  analysis when raw bytes are available.
+
+**BZ-20-23d + BZ-20a: Documentation:**
+
+- `docs/gatt_enumeration.md`: new "Recognized GATT Profiles" section with
+  profile table, decoder output example, and implementation reference.
+- `docs/bluez_interface_properties.md`: new "Intentionally Unsupported:
+  Deprecated BlueZ Profile Plugin APIs" section documenting the four removed
+  interface families and BLEEP's GATT-level approach.
+
+**Tests: 59 tests in `tests/test_sprint5e.py`:**
+
+- `TestSprintEConstants` — 11 tests (service UUIDs, frozenset, names, mappings).
+- `TestIEEE11073Float` — 6 tests (positive, negative exponent, zero, NaN, NRes, short).
+- `TestTemperatureMeasurement` — 5 tests (Celsius, Fahrenheit, type, short, intermediate).
+- `TestTemperatureType` — 3 tests (enum values, empty).
+- `TestMeasurementInterval` — 3 tests (normal, zero, short).
+- `TestHeartRateMeasurement` — 6 tests (uint8/16, contact, energy, RR, short).
+- `TestBodySensorLocation` — 3 tests (enum values, empty).
+- `TestAlertLevel` — 3 tests (enum values, empty).
+- `TestTxPowerLevel` — 3 tests (positive, negative, empty).
+- `TestCSCMeasurement` — 4 tests (wheel, crank, both, no fields).
+- `TestCSCFeature` — 3 tests (all features, none, short).
+- `TestSensorLocation` — 3 tests (enum values, empty).
+- `TestDecodeCharacteristicValue` — 4 tests (unknown UUID, list input, uppercase, corrupt).
+- `TestFormatGattTreeDecoded` — 2 tests (alert level in tree, HR in tree).
+
+**Test suite status:** **704 passed**, 28 skipped, 2 failed (hardware-dependent CTF), 0 errors.
+
+### Sprint 5D — Niche Interfaces (BZ-9/10/16/17/19/24) (2026-05-21)
+
+Sprint 5D (P3) implements the low-priority niche interfaces, completing the
+Battery Provider, Bearer split interfaces, mesh OOB provisioning, HDP
+documentation, and LE Audio Broadcast Assistant wrappers.
+
+**BZ-9a/10a: BatteryProvider1 (`bleep/dbuslayer/battery_provider.py`):**
+
+- New `BatteryProviderObject` — exposes `Percentage`, `Device`, optional
+  `Source` via `BatteryProvider1`.  `update_percentage()` emits
+  `PropertiesChanged`.  Percentage clamped to 0-100.
+- New `BatteryProviderApp` — ObjectManager root for battery provider
+  hierarchy.  `add_battery()`, `GetManagedObjects()`, `remove_all()`.
+- New `BatteryProviderManager` — `register()`/`unregister()` wrappers
+  calling `BatteryProviderManager1.RegisterBatteryProvider()`.
+- Registered as lazy-loaded module in `dbuslayer/__init__.py`.
+
+**BZ-16a–b: Bearer.LE1/Bearer.BREDR1 (`device_le.py`, `device_classic.py`):**
+
+- `device_le.get_device_info()` now reads `Bearer.LE1` properties (`Paired`,
+  `Bonded`, `Connected`) as `bearer_le` dict.  Graceful `None` fallback.
+- `device_classic.get_device_info()` now reads `Bearer.BREDR1` properties
+  as `bearer_bredr` dict.  Same graceful fallback.
+- `bearer_le_connect()`/`bearer_le_disconnect()` methods on LE device.
+- `bearer_bredr_connect()`/`bearer_bredr_disconnect()` methods on Classic device.
+
+**BZ-24a: InteractiveProvisionAgent (`bleep/mesh/interactive_provision_agent.py`):**
+
+- `MeshIOHandler` abstract base class for mesh OOB operations.
+- `CliMeshIOHandler` — interactive terminal prompts for numeric/static OOB.
+- `AutoAcceptMeshIOHandler` — headless handler returning zeros.
+- `InteractiveProvisionAgent` — concrete `MeshProvisionAgent` subclass
+  delegating all `on_*` hooks to pluggable `MeshIOHandler`.
+- `create_mesh_io_handler()` factory.
+
+**BZ-24c: Mesh CLI (`bleep/modes/mesh_provision.py`):**
+
+- `bleep mesh join` — join a mesh network with device UUID.
+- `bleep mesh provision` — provision a remote device (stub; requires active node).
+- `bleep mesh reprovision` — re-provision a remote node by unicast address.
+- Parser and dispatch wired in `cli.py`.
+
+**BZ-17a: HDP Stub (`bleep/dbuslayer/health.py`):**
+
+- Documentation stub explaining HDP removal from BlueZ 5.50+.
+- `HDP_SUPPORTED = False`, legacy interface constants for reference.
+
+**BZ-19a: MediaAssistant1 (`bleep/dbuslayer/media_assistant.py`):**
+
+- `MediaAssistant` — proxy for `MediaAssistant1` (LE Audio Broadcast):
+  `push()`, `get_state()`, `get_metadata()`, `get_qos()`, `get_info()`.
+- `enumerate_media_assistants()` — discover all assistant objects.
+- Registered as lazy-loaded module in `dbuslayer/__init__.py`.
+
+**Constants:**
+
+- Added `BATTERY_INTERFACE`, `BATTERY_PROVIDER_INTERFACE`,
+  `BATTERY_PROVIDER_MANAGER_INTERFACE`, `BATTERY_PROVIDER_BASE_PATH`,
+  `BEARER_LE_INTERFACE`, `BEARER_BREDR_INTERFACE`,
+  `MEDIA_ASSISTANT_INTERFACE` to `bt_ref/constants.py`.
+
+**Tests: 37 mock-based unit tests in `tests/test_sprint5d.py`:**
+
+- `TestBatteryProviderObject` — 7 tests (path, percentage clamping, Device, Source).
+- `TestBatteryProviderApp` — 4 tests (add, GetManagedObjects, empty, remove_all).
+- `TestBatteryProviderManager` — 2 tests (register, unregister).
+- `TestSprintDConstants` — 6 tests (all new interface constants).
+- `TestBearerConstants` — 2 tests (import validation).
+- `TestMediaAssistant` — 5 tests (path, push, state, info, enumerate).
+- `TestInteractiveProvisionAgent` — 6 tests (default IO, custom IO, delegation).
+- `TestMeshIOHandlerFactory` — 3 tests (cli, auto, invalid).
+- `TestHDPStub` — 2 tests (HDP_SUPPORTED, legacy constants).
+
+**Test suite status:** **645 passed**, 28 skipped, 1 failed (hardware-dependent CTF), 0 errors.
+
+### Sprint 5C — Enrichment Interfaces (BZ-5/BZ-13/BZ-14/BZ-15/BZ-25) (2026-05-21)
+
+Sprint 5C (P2) implements the medium-priority enrichment interfaces and closes
+several remaining BlueZ capability gaps: GATT profile auto-connect, device sets,
+admin policy, and mesh reprovisioning.
+
+**BZ-5a: GattProfile1 Auto-Connect (`bleep/dbuslayer/gatt_server.py`):**
+
+- `GattProfileSkeleton` — D-Bus object exposing `UUIDs` (read-only) and
+  `Release()` callback.  Registered alongside GATT services via
+  `GattApplication.GetManagedObjects()`.
+- `GattApplication.add_profile()` — adds profiles to the ObjectManager hierarchy.
+- `GattApplication.remove_all()` — now cleans up profiles alongside services.
+- Reference: `workDir/BlueZDocs/org.bluez.GattProfile.rst`.
+
+**BZ-15a–c: DeviceSet1 Coordinated Sets (`bleep/dbuslayer/device_set.py`, `bleep/modes/device_sets.py`):**
+
+- New `DeviceSet` class wrapping `org.bluez.DeviceSet1` (experimental):
+  `connect()`, `disconnect()`, `get_adapter()`, `get_auto_connect()`,
+  `set_auto_connect()`, `get_devices()`, `get_size()`, `get_info()`.
+- `enumerate_device_sets(bus, adapter_path)` — discovers all DeviceSet1
+  objects via ObjectManager.
+- `bleep device-sets` CLI command with `list`, `connect`, `disconnect`, `info`
+  subcommands (`modes/device_sets.py`).
+- Registered as lazy-loaded module in `dbuslayer/__init__.py`.
+
+**BZ-13a: AdminPolicySet1 (`bleep/dbuslayer/adapter.py`):**
+
+- `set_service_allow_list(uuids)` — calls `AdminPolicySet1.SetServiceAllowList()`
+  on the adapter to restrict allowed services.
+- `get_service_allow_list()` — reads `AdminPolicyStatus1.ServiceAllowList`
+  from the adapter.
+
+**BZ-14a–b: AdminPolicyStatus1 (`bleep/dbuslayer/device_le.py`, `device_classic.py`):**
+
+- Both `device_le.get_device_info()` and `device_classic.get_device_info()` now
+  read `AdminPolicyStatus1.IsAffectedByPolicy` as `is_affected_by_policy`.
+- Graceful degradation: returns `None` when BlueZ lacks `--experimental`.
+
+**BZ-25a: Mesh Reprovisioning (`bleep/mesh/management.py`):**
+
+- `MeshManagement.reprovision(unicast, options)` — client wrapper calling
+  `Management1.Reprovision()` to trigger NPPI re-provisioning procedures.
+- D-Bus skeleton methods (`RequestReprovData`, `ReprovComplete`, `ReprovFailed`)
+  were already present in `mesh/provisioner.py` from the earlier mesh sprint.
+
+**Constants & fixes:**
+
+- Added `ADMIN_POLICY_SET_INTERFACE`, `ADMIN_POLICY_STATUS_INTERFACE`,
+  `DEVICE_SET_INTERFACE` to `bt_ref/constants.py`.
+- Fixed stale `MESH_AGENT_INTERFACE` constant from `ProvisioningAgent1` to
+  correct `ProvisionAgent1`.
+- Added `GATT_PROFILE_INTERFACE` import to `dbuslayer/gatt_server.py`.
+
+**Documentation corrections:**
+
+- BZ-24b marked as pre-existing complete (constructor args already existed).
+- BZ-25 gap table updated from "not implemented" to reflect existing D-Bus
+  methods plus new Management wrapper.
+- Stale line references in todo_tracker.md corrected.
+- BZ-24a and BZ-24c deferred to Sprint 5D (niche mesh provisioning).
+
+**Tests: 30 mock-based unit tests in `tests/test_sprint5c.py`:**
+
+- `TestGattProfileSkeleton` — 7 tests (path, properties, GetAll, Release).
+- `TestGattApplicationProfiles` — 4 tests (add_profile, GetManagedObjects,
+  mixed services+profiles, remove_all).
+- `TestDeviceSet` — 8 tests (path, connect, disconnect, adapter, auto_connect,
+  set_auto_connect, devices, get_info).
+- `TestEnumerateDeviceSets` — 3 tests (empty, finds sets, adapter filtering).
+- `TestAdminPolicySet` — 5 tests (constants validation, interface corrections).
+- `TestMeshManagementReprovision` — 3 tests (call, args, error mapping).
+
+**Test suite status:** **608 passed**, 28 skipped, 2 failed (hardware-dependent), 0 errors.
+
+### Sprint 5B — GATT Server (BZ-3/BZ-4) (2026-05-21)
+
+Sprint 5B (P1) implements the GATT server stack, enabling BLEEP to publish
+local BLE services that remote devices can discover, connect to, and interact
+with.  This is the highest-priority remaining BlueZ capability gap.
+
+**BZ-4a–f: Full GATT Server Implementation (`bleep/dbuslayer/gatt_server.py`):**
+
+- New D-Bus layer module with full service hierarchy:
+  - `GattApplication` — root `dbus.service.Object` implementing
+    `org.freedesktop.DBus.ObjectManager` (`GetManagedObjects`).
+  - `GattServiceSkeleton` — local GATT service (UUID, primary/secondary).
+  - `GattCharacteristicSkeleton` — local characteristic with `ReadValue`,
+    `WriteValue`, `StartNotify`/`StopNotify`, `Confirm` (BZ-3), and
+    `PropertiesChanged` notification signal.
+  - `GattDescriptorSkeleton` — local descriptor with `ReadValue`/`WriteValue`.
+  - `GattServerManager` — wrapper around `GattManager1` with
+    `register_application()`/`unregister_application()` (async + 5s timeout).
+  - 5 D-Bus error types: `InvalidArgsError`, `NotSupportedError`,
+    `NotPermittedError`, `InvalidValueLengthError`, `FailedError`.
+- Architecture follows established patterns from `le_advertising.py`
+  (single-object registration) and `adv_monitor.py` (ObjectManager hierarchy).
+
+**BZ-3a: Confirm() for Indications:**
+
+- `GattCharacteristicSkeleton.Confirm()` — server-side indication
+  acknowledgement, gated behind the GATT server feature.
+
+**BZ-4d: CLI mode (`bleep/modes/gatt_server.py`, `bleep gatt-server start`):**
+
+- New CLI subcommand: `bleep gatt-server start`.
+- Options: `--uuid` (repeatable), `--read-value` (hex), `--duration`, `--adapter`.
+- Example characteristics per service: static read (…def1), logged write
+  (…def2), 2-second tick notifier (…def3).
+- GLib MainLoop with SIGINT/SIGTERM graceful shutdown.
+- JSON output context support for structured event emission.
+
+**Constants & wiring:**
+
+- Added `GATT_PROFILE_INTERFACE` and `GATT_APP_BASE_PATH` to
+  `bt_ref/constants.py`.
+- Registered `gatt_server` as lazy-loaded module in `dbuslayer/__init__.py`.
+- Added `gatt-server` subparser and dispatch in `cli.py`.
+
+**BZ-4f: Tests (`tests/test_gatt_server.py`):**
+
+- 40 new mock-based unit tests covering:
+  - `GattDescriptorSkeleton`: path, properties, GetAll, default read/write raises (6 tests)
+  - `GattCharacteristicSkeleton`: path, properties, descriptors, GetAll,
+    read/write raises, start/stop notify, Confirm, send_notification
+    when notifying/not notifying (11 tests)
+  - `GattServiceSkeleton`: path, primary/secondary, characteristics, GetAll (6 tests)
+  - `GattApplication`: path, empty/single/full/multi-service managed objects,
+    remove_all (6 tests)
+  - `GattServerManager`: register/unregister success/failure/timeout (6 tests)
+  - D-Bus error types: all 5 error name strings (5 tests)
+
+**Test suite status:** 578 passed, 28 skipped, 2 failed (hardware-dependent), 0 errors.
+
+---
+
+### Sprint 5A — Wire Completed Code to CLI + Mock-Based Tests (2026-05-21)
+
+Phase 5 begins.  Sprint 5A (P0) wires existing D-Bus layer code to the CLI
+and adds comprehensive mock-based unit tests for all three callback-inversion
+interfaces.
+
+**BZ-1f: AcquireWrite/AcquireNotify mock tests (`tests/test_characteristic_descriptor.py`):**
+
+- 12 new tests covering `acquire_write()`, `acquire_notify()`, `write_value_fd()`,
+  `read_notify_fd()`, and `release_acquired()`.
+- Tests validate: fd+mtu return, idempotent acquire, `UnixFd.take()` vs `int()`
+  fallback, auto-acquire on first use, `DBusException` fallback to
+  `write_value()`/empty bytes, fd cleanup on release, simultaneous write+notify
+  fd cleanup.
+- Production fix: `write_value_fd()` and `read_notify_fd()` `except` clauses
+  now resolve `dbus.exceptions.DBusException` dynamically via `_dbus_exc()`
+  helper to support test stub environments where the module-level `dbus`
+  binding may differ from `sys.modules["dbus"]`.
+
+**BZ-7d: LEAdvertisement/LEAdvertisingManager mock tests (`tests/test_le_advertising.py`):**
+
+- 21 new tests covering `AdvertisementConfig` dataclass, `_build_properties()`
+  mapping (minimal and full), `GetAll()` interface filtering, `Release()`
+  callback invocation, path auto-increment, `LEAdvertisingManager` capability
+  queries, and register/unregister success/failure/timeout paths.
+
+**BZ-12e: `--monitor` flag on `bleep scan` (`bleep/modes/scan_monitor.py`):**
+
+- New `--monitor` flag on `bleep scan` delegates to kernel-offloaded
+  `AdvertisementMonitor` instead of `StartDiscovery`.
+- `bleep/modes/scan_monitor.py`: standalone module implementing monitor-based
+  scan with MAC filtering (`--device`), timeout support, and device found/lost
+  event streaming.
+- Requires BlueZ `--experimental` mode and kernel >= 5.10.
+
+**BZ-12g: AdvMonitor/AdvMonitorApp/AdvMonitorManager mock tests (`tests/test_adv_monitor.py`):**
+
+- 29 new tests covering `MonitorPattern` (fields, `to_dbus()`), `RSSIConfig`
+  (defaults, custom), `AdvMonitor` (path construction, properties, `GetAll`,
+  `Activate`/`Release`/`DeviceFound`/`DeviceLost` callbacks, sampling period
+  conditional inclusion), `AdvMonitorApp` (ObjectManager, add/remove/remove_all),
+  `AdvMonitorManager` (capability queries, register/unregister paths),
+  `_device_path_to_mac` helper.
+
+**Test cleanup (pre-Sprint 5A — carried forward from test baseline work):**
+
+- Fixed stale import paths in `test_gatt_enumeration.py`, `test_ble_ctf_full.py`.
+- Fixed mock name mismatch in `test_preflight.py` (`system_dbus__bluez_device__le`
+  → `system_dbus__bluez_device__low_energy`).
+- Fixed DB isolation in `test_observations_aoi.py`, `test_aoi_database_integration.py`,
+  `test_device_type_integration.py` (proper `BLEEP_DB_PATH` env + `_connection`
+  state management).
+- Fixed hardcoded schema version assertion in `test_device_type_integration.py`
+  (now uses `_SCHEMA_VERSION` constant).
+- Fixed incomplete D-Bus stub in `test_characteristic_descriptor.py` (added
+  `UInt64`, `UInt32`, `UInt16`, `dbus.lowlevel`, `dbus.types.UnixFd`, property
+  defaults for `MTU`/`Notifying`/etc.). Converted `sys.modules` assignments to
+  `monkeypatch.setitem` to prevent test isolation leaks.
+- Added `pytest.mark.skipif(os.geteuid() != 0)` to D-Bus integration tests
+  requiring root privileges.
+- Marked `test_parity_monolith_vs_refactor.py` as unconditionally skipped
+  (obsolete after Phase 1-4 CLI refactoring).
+- Updated CLI output assertions in `test_gatt_enumeration.py` for tree format.
+
+**Test suite status:** 538 passed, 28 skipped, 2 failed (hardware-dependent), 0 errors.
+
+---
+
+### Pre-Phase 5 — Deferred Item Resolution & Test Baseline (2026-05-21)
+
+Resolves deferred items from Phases 3–4 and fixes broken test infrastructure
+to establish a clean baseline (454 tests passing) before Phase 5 work begins.
+
+**Test import fixes (4 files):**
+
+- `tests/test_brute_helpers.py`: `bleep.ble_ops.brute` → `bleep.ble_ops.le.brute`
+  (also fixed stub to use `read_characteristic_with_fallback` method name)
+- `tests/test_brute_multi.py`: `bleep.ble_ops.enum_helpers` → `bleep.ble_ops.le.enum_helpers`
+- `tests/test_scan_variants.py`: `bleep.ble_ops.scan` → `bleep.ble_ops.le.scan`
+- `tests/test_uuid_translation.py`: `bleep.ble_ops.conversion` → `bleep.ble_ops.common.conversion`
+
+These 4 test modules (8 tests) had been silently uncollectable since the
+`ble_ops/` subpackage reorganization (P0-8, v2.8.0).  All 8 tests now
+collect and pass.
+
+**P3-E4: OutputMode type alias consolidation (`bleep/core/log.py`):**
+
+- Removed duplicate `OutputModeLiteral = Literal["terminal", "json", "quiet"]`
+  definition from `log.py`; now imports `OutputMode` from `bleep.core.output`
+  as the `OutputModeLiteral` alias.  Single source of truth for the type.
+- Removed unused `Literal` from `typing` imports in `log.py`.
+
+**P3-E2: `db.py` helper bare `print()` → `print_and_log()` (`bleep/modes/db.py`):**
+
+- Converted all bare `print()` calls in `list_devices()`, `timeline()`,
+  `show_device()`, and `export_device()` helper functions to
+  `print_and_log()`.  These functions only execute in terminal mode (the
+  `run()` function routes json/quiet to `emit_result()` directly), but the
+  conversion ensures all output is captured in BLEEP log files and respects
+  thread-local output routing.
+
+**P3-D1: Centralized file-based stream routing (`bleep/core/output.py`):**
+
+- `output_from_args()` now automatically opens `-o`/`--output` file as the
+  `OutputContext.stream` when in json/quiet mode.  Modes that call
+  `emit_result()` get file output for free without implementing file-write
+  logic inline.
+- Added `OutputContext.close()` method to clean up file handles opened by
+  the factory (no-op for stdout/stderr).
+- Terminal mode ignores the file arg (modes handle their own terminal output).
+- Parent directories are created automatically (`mkdir -p` semantics).
+
+**BZ-12f: Advertisement Monitor documentation (`bleep/docs/adv_monitor.md`):**
+
+- New documentation file covering the `bleep monitor` command (BZ-11/12):
+  prerequisites, CLI usage for `caps` and `start` sub-actions, pattern
+  format reference, RSSI threshold configuration, examples (manufacturer
+  data matching, proximity detection, name prefix, JSON output), architecture
+  diagram, comparison with active scanning, and troubleshooting guide.
+- `bleep/docs/README.md` TOC updated with link to new doc.
+
+**Test baseline:** 454 passed, 22 failed (pre-existing), 15 errors
+(D-Bus permission — pre-existing), 16 skipped.
+
+---
+
+### Phase 4 — P4-6: AoI deep mode → pokey write probes (2026-05-21)
+
+**`bleep/modes/aoi.py`:**
+- `_scan_target(deep=True)` now dispatches `controller.enumerate(mode="pokey", rounds=2)`
+  instead of `mode="passive"`.  This gives AoI access to write-probe data that
+  reveals which characteristics are writable — information that was previously
+  only available through direct `pokey_enum` invocation on the CLI.
+- `_perform_deep_reenumeration()` (post-pair re-enum) also switched to
+  `mode="pokey"` with 2 rounds, capturing characteristics that became writable
+  after pairing.
+- `_variant_extra` (per-round mappings, device_props) extracted from
+  `result.data` and stored separately in `device_data["variant_extra"]` and
+  `delta["le_delta"]["variant_extra"]` for downstream analysis.
+- Non-deep path (`deep=False`) unchanged — still uses `mode="passive"`.
+- Removed unused `_connect_enum` import (dead since P4-4 centralised all
+  AoI enumeration through `EnumerationController`).
+
+### Phase 4 — P4-4: EnumerationResult persistence & P4-7 completion (2026-05-21)
+
+**P4-4: EnumerationResult persistence to `security_maps` table:**
+
+- `EnumerationResult` dataclass extended with two new members:
+  - `serialized_annotations` (property): returns annotations as a JSON-serialisable
+    `List[Dict[str, Any]]`, centralising the serialisation logic previously
+    duplicated in AoI mode.
+  - `persist_security_maps(mac, source)` (method): calls
+    `observations.store_security_maps()` with the result's `landmine_map`,
+    `permission_map`, and `serialized_annotations`.  Silently returns when there
+    is nothing to persist or the observation module is unavailable.
+- `cli.py` `enum-scan`: now calls `result.persist_security_maps(address,
+  source="enum-scan:<variant>")` after every successful enumeration.  Previously
+  security maps were never stored from this path.
+- `cli.py` `gatt-enum`: now persists `landmine_map` and `permission_map` via
+  `store_security_maps(source="gatt-enum")`.  Previously only GATT
+  services/characteristics were persisted.
+- `bleep/modes/aoi.py`: replaced 4-line manual annotation serialisation
+  (list comprehension) with `le_result.serialized_annotations`.  Replaced 8-line
+  manual `store_security_maps()` call with `le_result.persist_security_maps()`.
+  No change in behavior — same data stored, same table, same column.
+- No schema change required — annotations stored in existing
+  `security_maps.enumeration_annotations` JSON column (added in v12).
+- `store_security_maps()` type hint corrected: `enumeration_annotations`
+  parameter changed from `Optional[Dict[str, Any]]` to
+  `Optional[List[Dict[str, Any]]]` to match actual usage (list of annotation
+  dicts, not a single dict).  No runtime change — `json_dumps` handles both.
+
+**P4-7 completion: documentation updated to reflect unified architecture:**
+
+- `ble_scan_modes.md`: rewritten — added "Connection Modes" section with ASCII
+  architecture diagram, mode parameter table, and behavioural notes.  Old content
+  (discovery scan variants, enumeration variants, safety flags) preserved.
+- `explore_mode.md`: "Connection Modes / Architecture" section rewritten to
+  describe wrapper-based delegation to `connect.py`.  Passive/naggy mode docs
+  updated with internal parameter mappings.
+- `todo_tracker.md` P4-7 entry: expanded with "Old → New Architecture Translation
+  Reference" — a table mapping every element of the pre-P4-3 `scan_modes.py`
+  implementation to its post-P4-3 equivalent in `connect.py` parameters and
+  extracted helpers.
+
+**Tests:** 446 passed; 22 pre-existing failures unrelated to these changes.
+
+### Phase 4 — P4-3: scan_modes.py ↔ connect.py reconciliation (2026-05-21)
+
+Eliminates the duplicated scan/connect/service-resolve pipeline in
+`scan_modes.py` by parameterising `connect_and_enumerate__bluetooth__low_energy()`
+and reducing each scan-mode function to a thin wrapper.
+
+**`bleep/ble_ops/le/connect.py` — parameterised canonical pipeline:**
+
+- New keyword parameters (all backward-compatible defaults):
+  `scan_attempts`, `scan_timeout`, `connect_retries`, `connect_wait_timeout`,
+  `transport`, `max_attempts`, `backoff_base`, `backoff_max`, `backoff_jitter`.
+- `timeout_connect` kept as deprecated alias — when `connect_wait_timeout` is
+  `None` (default), falls back to `timeout_connect` value.  All 3 existing
+  callers (`bleep-mcp ble_connect`, `scratch.py`, `four_hour_recon_session.py`)
+  continue to work unchanged.
+- Transport discovery filter applied via `SetDiscoveryFilter` when `transport`
+  is `"le"` or `"bredr"` (best-effort, matching `scan_modes._scan_until_visible`
+  behavior).
+- Scan loop parameterised: `scan_attempts` / `scan_timeout` replace hardcoded
+  `3` / `5`.
+- Connect call parameterised: `device.connect(retry=connect_retries,
+  wait_timeout=connect_wait_timeout)` replaces hardcoded `retry=5`.
+- Outer retry loop (`max_attempts > 1`): wraps connect + service-resolve with
+  exponential backoff + jitter.  D-Bus `InProgress`/`Failed` errors forgiven
+  (don't count toward `max_attempts`) — guarded by `max_attempts > 1` so
+  single-attempt callers (legacy default) never enter an infinite retry.
+  Pair-fallback, stall-mitigation, and audio hint preserved inside each attempt.
+- Removed unused `import sys as _sys`.
+- Added `import random as _random` for backoff jitter.
+
+**`bleep/ble_ops/le/scan_modes.py` — thin wrappers:**
+
+- Three private helpers extracted:
+  - `_classic_connect(target, transport)` — BR/EDR device scan + connect path
+    with `ClassicDevice is None` guard.
+  - `_classify_device(device, mode, log_flags)` — best-effort device-type
+    classification; `log_flags=True` only for passive (preserves existing
+    behavior where only passive logs `device_type_flags`).
+  - `_pokey_deep_read(device)` — char/descriptor deep-read loop extracted from
+    pokey (lines 435–481 of the original).
+- `passive_scan_and_connect`: delegates to `_connect_enum` with timeout-derived
+  params (`scan_attempts=3`, `connect_retries=1`, etc.).  Classic branch via
+  `_classic_connect`.
+- `naggy_scan_and_connect`: delegates outer retry to `_connect_enum` with
+  `max_attempts=max_retries`, `backoff_base=0.5`, `backoff_max=30`,
+  `backoff_jitter=0.5`.
+- `pokey_scan_and_connect`: delegates connect to `_connect_enum` with
+  `scan_timeout=10`, `connect_retries=5`, `timeout_services=30`,
+  `deep_enumeration=False`; runs `_pokey_deep_read` post-connect.
+- `bruteforce_scan_and_connect`: structure unchanged — calls
+  `pokey_scan_and_connect` then handle sweep.
+- Removed duplicated code: `_wait_for_services()`, `_get_adapter()`,
+  `_scan_until_visible()`, inline scan/connect/service-resolve blocks, inline
+  D-Bus exception mapping.
+- Removed unused imports: `Optional`, `_log_disconnect_reason` (now handled
+  internally by `connect.py`), `time`, `random`, `Set`, `Union`.
+- `scan_and_connect()` dispatcher unchanged.
+- Mode constants (`PASSIVE_MODE`, etc.), `__all__`, and all public function
+  signatures unchanged.
+
+**Backward compatibility:**
+
+- All existing callers require zero changes.
+- `scan_modes.py` reduced from 684 to 548 lines (~20% reduction).
+- `connect.py` grew from 295 to 370 lines (parameterisation + retry loop).
+- 394 tests pass; 10 pre-existing failures unrelated to this change.
+
+### Phase 4 — Enumeration Architecture Unification: P4-2 & P4-7 partial (2026-05-20)
+
+Makes `EnumerationController` the standard dispatch path for ALL `enum-scan`
+invocations.  The `--controlled` flag is retained for backward compatibility
+but is a no-op — the controller is always active.
+
+**P4-2: Controller becomes the default path (`bleep/cli.py`):**
+
+- Removed the dual-path dispatch (controlled vs direct).  All `enum-scan`
+  traffic now flows through `EnumerationController.enumerate()`.
+- `_variant_extra` data (e.g. `changed_chars`, `multi_read`, `device_props`)
+  is separated from the GATT mapping before DB persistence and tree output
+  to avoid phantom service entries.
+- Tree-formatted output preserved: `format_gatt_tree()` receives the clean
+  mapping dict, `result.landmine_map`, `result.permission_map`, and variant
+  extras (`changed_chars`, `device_props`) for change-detection highlighting.
+- DB persistence preserved: `_persist_mapping()` receives the clean mapping
+  (without `_variant_extra`).
+- Annotation summary printed to stderr when retries occurred (does not
+  interfere with pipe-friendly stdout).
+- `--controlled` argument kept in argparser with deprecated help text.
+
+**P4-7 (partial): Documentation fixes (`bleep/docs/gatt_enumeration.md`):**
+
+- Removed false claim about `ReconnectionMonitor` in Controlled Mode section.
+- Corrected 8 stale file paths:
+  - `bleep/ble_ops/connect.py` → `bleep/ble_ops/le/connect.py`
+  - `bleep/ble_ops/scan.py` → `bleep/ble_ops/le/scan.py` (4 occurrences)
+  - `bleep/ble_ops/conversion.py` → `bleep/ble_ops/common/conversion.py` (2 occurrences)
+  - `bleep/ble_ops/enum_controller.py` → `bleep/ble_ops/le/enum_controller.py`
+- Rewrote "Controlled Mode" section as "Enumeration Controller" — documents
+  always-active retry/annotation behavior and variant-specific forwarding.
+- Updated comparison table: `--controlled mode` → `Retry + annotations`.
+- Updated `--controlled` argument description as deprecated.
+- Updated "Last updated" date.
+
+**Backward compatibility:**
+
+- `bleep enum-scan ... --controlled` still accepted (no error).
+- AoI mode, MCP `ble_enumerate` tool: no change (already use controller directly).
+- Test suite: 446/468 pass, 22 failures + 15 errors all pre-existing
+  (D-Bus permission, stale test modules).
+
+**Modified files:**
+
+- `bleep/cli.py` — unified enum-scan dispatch through controller
+- `bleep/docs/gatt_enumeration.md` — 8 stale paths corrected, ReconnectionMonitor
+  claim removed, Controlled Mode → Enumeration Controller section rewrite
+- `bleep/docs/todo_tracker.md` — P4-2 marked complete, P4-7 partially complete
+- `bleep/docs/changelog.md` — this entry
+
+---
+
+### Phase 4 — Enumeration Architecture Unification: P4-1 & P4-5 (2026-05-20)
+
+Makes `EnumerationController.enumerate(mode)` dispatch to the actual scan.py
+variant functions instead of only toggling the `deep_enumeration` boolean.
+Prior to this change, calling `controller.enumerate(mode="naggy")` was
+identical to `mode="passive"` — the mode name was accepted but had no effect
+beyond toggling `deep_enumeration` for `pokey`/`bruteforce`.
+
+**Core change — variant dispatch (`bleep/ble_ops/le/enum_controller.py`):**
+
+- `enumerate(mode, **variant_kwargs)` now delegates to `_dispatch_variant()`
+  for `naggy`, `pokey`, `brute`/`bruteforce` modes
+- `_run_naggy()` → calls `scan.naggy_enum()` (3-round multi-read, change
+  detection)
+- `_run_pokey()` → calls `scan.pokey_enum()` (multi-round reconnect + write
+  probes); forwards `rounds`, `verify` kwargs
+- `_run_brute()` → calls `scan.brute_enum()` (payload fuzzing); forwards
+  `write_char`, `value_range`, `patterns`, `payload_file`, `force`, `verify`,
+  `deep` kwargs
+- `passive` mode unchanged — direct `connect_and_enumerate` call
+- Variant-specific results stored under `result.data["_variant_extra"]`
+- `set` types (e.g. `changed_chars` from naggy) converted to sorted lists
+  for JSON serialization
+
+**Docstring & dead code cleanup:**
+
+- Module docstring: removed false claims about `ReconnectionMonitor` and
+  `ConnectionResetManager` integration
+- Class docstring: rewritten to accurately describe passive vs variant
+  dispatch behavior
+- `enumerate()` docstring: documents all supported modes with accepted kwargs
+- Removed dead `_should_continue()` method (unused by `enumerate()` loop)
+- Removed unused `BLEEPError` import
+- Added `ConnectionAnnotation` to `__all__` exports
+
+**CLI `enum-scan --controlled` (`bleep/cli.py`):**
+
+- Now forwards variant-specific kwargs to `controller.enumerate()` — pokey
+  gets `rounds`/`verify`, brute gets `write_char`/`value_range`/`patterns`/
+  `payload_file`/`force`/`verify`
+- JSON output uses `default=str` for non-serializable types
+
+**MCP `ble_enumerate` tool (`bleep-mcp/bleep_mcp/tools/ble.py`):**
+
+- Fixed return value to use correct `EnumerationResult` fields (`data`,
+  `landmine_map`, `permission_map`, `annotations`, `error_summary`) instead
+  of non-existent `result.services` / `result.errors`
+
+**scan.py variant return values (`bleep/ble_ops/le/scan.py`):**
+
+- `passive_enum` and `naggy_enum` now include `device` object in return
+  dict — enables callers (including controller) to access device name and
+  services from all variants
+
+**Backward compatibility:**
+
+- AoI mode calls `controller.enumerate(mode="passive")` — hits the
+  unchanged direct-connect path; no behavioral change
+- Existing `enum-scan` without `--controlled` — subsequently unified in P4-2
+  (controller now always active)
+- Test suite: 76/77 tests pass; 1 pre-existing failure in
+  `test_get_aoi_analyzed_devices` (unrelated to this change)
+
+**Modified files:**
+
+- `bleep/ble_ops/le/enum_controller.py` — variant dispatch, docstring fixes,
+  dead code removal, `ConnectionAnnotation` export
+- `bleep/ble_ops/le/scan.py` — `passive_enum` and `naggy_enum` include
+  `device` in return dict
+- `bleep/cli.py` — `--controlled` forwards variant kwargs, `default=str`
+  for JSON output
+- `bleep-mcp/bleep_mcp/tools/ble.py` — correct `EnumerationResult` field
+  access
+- `bleep/docs/todo_tracker.md` — P4-1, P4-5 marked complete
+- `bleep/docs/changelog.md` — this entry
+
+---
+
+### Phase 3 — Output Contract & Stdout Contamination Fix (2026-05-20)
+
+Establishes a clean output contract for `--json`/`--quiet` modes across all
+BLEEP CLI modes.  Prior to this work, running `bleep explore --json` mixed
+human-readable `print_and_log()` output on stdout with structured JSON from
+`emit_result()`, breaking pipe-friendly consumers.
+
+**Core mechanism — thread-local output routing (`bleep/core/log.py`):**
+
+- Added `set_output_mode(mode)` / `get_output_mode()` using
+  `threading.local()` to control the `print()` destination in
+  `print_and_log()` without altering its call signature or any call sites
+- In `"json"` or `"quiet"` mode: `print()` routes to `sys.stderr`
+- In `"terminal"` mode (default): `print()` routes to `sys.stdout`
+  (existing behavior)
+- **Critical invariant**: `logging__log_event()` **always** writes to log
+  files regardless of output mode — no log data is ever lost or deferred
+
+**Mode wiring — all 11 mode `run()` entry points:**
+
+- `survey.py`, `agent.py`, `exploration.py`, `signal.py`, `db.py`,
+  `classic_connect.py`, `pair.py`, `aoi.py`, `user.py`, `monitor.py`,
+  `advertise.py` — each calls `set_output_mode(output.mode)` immediately
+  after resolving `OutputContext`
+
+**Bare `print()` → `print_and_log()` conversion:**
+
+- `classic_connect.py` — all bare `print()` calls in `run()` and
+  `_ensure_paired()` converted; messages now logged to file and routed
+  correctly in json/quiet mode
+- `pair.py` — all bare `print()` calls in `_do_probe()`, `_do_brute()`,
+  `_do_pair()` converted; `run()` entry point restored after accidental
+  removal during editing
+- `monitor.py` — all bare `print()` converted; `run()` entry point added
+  with `OutputContext` and `set_output_mode()` wiring
+- `advertise.py` — all bare `print()` converted; `run()` entry point
+  added with `OutputContext` and `set_output_mode()` wiring
+- `user.py` — bare `print()` in `run()` exception handlers converted
+- `db.py` — bare `print()` in `run()` module-unavailable guard and
+  sub-command fallthrough error converted; `main()` wrapper guard also
+  converted
+
+**Structured result emission (P3-B5 — `emit_result()` for final output):**
+
+- `exploration.py` — in `--json`/`--quiet` mode, emits the full GATT
+  result dict (device address, name, services, characteristics, handles,
+  flags, descriptors, mappings) via `output.emit_result(result)`;
+  suppresses verbose terminal listing when not in terminal mode
+- `db.py` — `list` emits device array (with optional field filtering),
+  `show` emits single device detail dict, `export` emits full device
+  data record, `timeline` emits characteristic history array; all route
+  through `output.emit_result()` in json/quiet mode while preserving
+  terminal table formatting in default mode
+- `signal.py` — each BLE notification emits a structured JSON event:
+  `{"ts": <ISO-8601>, "uuid": <char-uuid>, "char_path": <dbus-path>,
+  "value_hex": <hex-string>, "length": <int>}`; progress messages
+  (`Listening...`, `Done`) route via `output.emit_progress()` to stderr
+
+**Structured JSON events for long-running modes (P3-C):**
+
+- `agent.py` — `agent_registered`, `pairing_started`,
+  `pairing_succeeded`, `pairing_failed`, `device_trusted` events via
+  `output.emit_result()`
+- `monitor.py` — `device_found`, `device_lost`, `monitor_stopped`,
+  `monitor_caps` events
+- `advertise.py` — `adv_started`, `adv_stopped`, `adv_released`,
+  `advertise_caps` events
+
+**Subprocess flag propagation:**
+
+- `survey.py` `--then-aoi` subprocess now forwards `--json`/`--quiet`
+  global flags to the spawned `bleep aoi scan` process
+
+**Dead code removal:**
+
+- `survey.py` — removed unused `total_rounds` variable and `ceil` import
+
+**CLI dispatch updates (`bleep/cli.py`):**
+
+- `monitor` and `advertise` modes now dispatch through
+  `run(args, output_from_args(args))` instead of direct
+  `handle_monitor()`/`handle_advertise()` calls
+
+**Design decisions:**
+
+- Thread-local approach chosen over (a) adding `output` parameter to every
+  `print_and_log()` call site (hundreds of changes) or (b) modifying the
+  logging stack (too invasive).  `threading.local()` applies to the entire
+  call stack without touching intermediate functions like
+  `scan_and_connect()` that call `print_and_log()` internally.
+- `LOG__DEBUG` and `LOG__ENUM` log types continue to suppress all
+  terminal/stderr output (file-only) — this is intentional pre-existing
+  behavior for debug and enumeration log channels.
+- `user.py` interactive TUI (~120 bare prints) and `db.py` terminal-only
+  helpers (~27 bare prints) deferred — these only execute in terminal mode
+  and are not stdout contamination sources.
+
+**Modified files:**
+
+- `bleep/core/log.py` — `set_output_mode()`, `get_output_mode()`,
+  `print_and_log()` routing, removed unused `Union` import
+- `bleep/core/output.py` — no changes (validated compatible)
+- `bleep/modes/survey.py` — `set_output_mode` wiring, subprocess flag
+  propagation, dead code removal
+- `bleep/modes/agent.py` — `set_output_mode` wiring, structured events
+- `bleep/modes/exploration.py` — `set_output_mode` wiring
+- `bleep/modes/signal.py` — `set_output_mode` wiring
+- `bleep/modes/db.py` — `set_output_mode` wiring, `print_and_log` import,
+  bare print conversion in `run()`
+- `bleep/modes/classic_connect.py` — `set_output_mode` wiring, full bare
+  print conversion
+- `bleep/modes/pair.py` — `set_output_mode` wiring, `run()` restoration,
+  full bare print conversion
+- `bleep/modes/aoi.py` — `set_output_mode` wiring
+- `bleep/modes/user.py` — `set_output_mode` wiring, bare print conversion
+  in `run()` exception handlers
+- `bleep/modes/monitor.py` — `run()` entry point, `set_output_mode`
+  wiring, full bare print conversion, structured events
+- `bleep/modes/advertise.py` — `run()` entry point, `set_output_mode`
+  wiring, full bare print conversion, structured events
+- `bleep/cli.py` — monitor/advertise dispatch via `run()`
+- `bleep/docs/todo_tracker.md` — Phase 3 items marked complete
+- `bleep/docs/changelog.md` — this entry
+
+---
+
+### Phase 2 — Database Persistence Gap Closure (2026-05-19)
+
+Closes all seven data domains that were printed to terminal but never persisted
+to the observation database.  Schema upgraded from v11 to v12.  The DB can now
+serve as a reliable structured-data API surface for all BLEEP operational modes.
+
+**Schema changes (`bleep/core/observations/_connection.py`):**
+
+- **New tables**: `pairing_events` (full pairing workflow per attempt),
+  `security_maps` (per-enumeration landmine/permission maps),
+  `media_enumerations` (full media-enum JSON snapshots),
+  `audio_recon` (host-level audio reconnaissance — no device FK)
+- **New `devices` columns**: `uuids` (JSON), `paired` (BOOLEAN),
+  `trusted` (BOOLEAN), `bonded` (BOOLEAN), `sighting_count` (INT),
+  `fingerprint_changed` (BOOLEAN)
+- **New `sdp_records` columns**: `mas_instance_id` (INT),
+  `supported_message_types` (TEXT), `supported_features` (TEXT)
+- **Migration**: v11→v12 block with idempotent `ALTER TABLE ADD COLUMN`
+  and `CREATE TABLE IF NOT EXISTS`; indexes on mac/ts for all new tables
+
+**New persistence API functions (`bleep/core/observations/`):**
+
+- `store_pairing_event()` — method, PIN, result, capabilities, auth
+  matrix, brute-force stats, pre/post pair state (`_pairing.py`)
+- `get_pairing_events()` — retrieve with JSON field deserialization
+- `store_security_maps()` — landmine map, permission map, enumeration
+  annotations, source tag (`_evidence.py`)
+- `get_security_maps()` — retrieve with JSON field deserialization
+- `store_media_enumeration()` — players, transports, endpoints, browse
+  tree, capabilities (`_media.py`)
+- `get_media_enumerations()` — retrieve with JSON field deserialization
+- `store_audio_recon()` — backend, cards, pcms, recordings, sox
+  analysis, contention (`_media.py`)
+- `get_audio_recon()` — retrieve with JSON field deserialization
+- Extended `upsert_device()` — accepts `uuids`, `paired`, `trusted`,
+  `bonded`, `sighting_count`, `fingerprint_changed`; auto JSON-serializes
+  list/dict values for `uuids`, `service_data`, `advertising_data`
+
+**Persistence wiring (11 integration points):**
+
+- `bleep/modes/signal.py` — `insert_char_history()` in `_notify_cb`
+- `bleep/modes/pair.py` — `store_pairing_event()` in `_do_pair`,
+  `_do_probe`, `_do_brute` (3 call sites)
+- `bleep/modes/agent.py` — `store_pairing_event()` + `upsert_device()`
+- `bleep/modes/debug_pairing.py` — `store_pairing_event()` in
+  `_cmd_pair_single`
+- `bleep/cli.py` — `store_media_enumeration()` in `media-enum` handler
+- `bleep/modes/media.py` — `store_media_enumeration()` in
+  `enumerate_media_passive()`
+- `bleep/ble_ops/audio/audio_recon.py` — `store_audio_recon()` at end
+  of `run_audio_recon()`
+- `bleep/modes/exploration.py` — `store_security_maps()` in
+  `save_to_database()`
+- `bleep/modes/aoi.py` — `store_security_maps()` after scan pipeline
+- `bleep/ble_ops/le/scan.py` — `insert_adv()` in `_native_scan()`;
+  `uuids`, `paired`, `trusted`, `bonded` via `upsert_device()`
+- `bleep/modes/survey.py` — `upsert_device()` with `sighting_count`,
+  `fingerprint_changed`, `uuids` after main loop
+
+**Data retrieval enhancements:**
+
+- `get_device_detail()` now includes `pairing_events`, `security_maps`,
+  and `media_enumerations` in its response
+- `export_device_data()` transitively includes all Phase 2 tables
+- `__all__` expanded to 35 symbols (8 new Phase 2 functions)
+
+**Preparation work (completed prior to Phase 2 implementation):**
+
+- Refactored `bleep/core/observations.py` (2065 LOC monolith) into
+  `bleep/core/observations/` package with 10 submodules
+- `obs_db` pytest fixture in `tests/conftest.py` for isolated temp DBs
+- 4 focused `insert_adv()` tests in `tests/test_insert_adv.py`
+
+**Test fixes (pre-existing issues exposed during review):**
+
+- `tests/test_observations_sqlite.py` — fixed DB isolation (was using
+  `patch.object` instead of `_connection._DB_PATH` direct assignment)
+- `tests/test_observations_media.py` — fixed stub interface mismatch
+  and DB isolation
+
+**Modified files:**
+
+- `bleep/core/observations/_connection.py` — schema v12, migration
+- `bleep/core/observations/_devices.py` — extended `_DEVICE_COLS`,
+  JSON serialization, `get_device_detail` Phase 2 tables
+- `bleep/core/observations/_pairing.py` — new module
+- `bleep/core/observations/_evidence.py` — `store/get_security_maps`
+- `bleep/core/observations/_media.py` — `store/get_media_enumeration`,
+  `store/get_audio_recon`
+- `bleep/core/observations/__init__.py` — re-exports, `__all__`
+- `bleep/ble_ops/le/scan.py` — `insert_adv`, UUID/boolean persistence
+- `bleep/modes/signal.py` — notification persistence
+- `bleep/modes/survey.py` — survey metadata persistence
+- `bleep/modes/exploration.py` — security map persistence
+- `bleep/modes/aoi.py` — security map persistence
+- `bleep/modes/pair.py` — pairing event persistence
+- `bleep/modes/agent.py` — pairing event persistence
+- `bleep/modes/debug_pairing.py` — pairing event persistence
+- `bleep/modes/media.py` — media enumeration persistence
+- `bleep/cli.py` — media-enum persistence
+- `bleep/ble_ops/audio/audio_recon.py` — audio recon persistence
+- `bleep/docs/observation_db_schema.md` — v12 documentation
+- `bleep/docs/todo_tracker.md` — P2-A/B items marked complete
+
+---
+
+### Phase 1 — Documentation Corrections & Dead Code Removal (2026-05-18/19)
+
+No behavioral changes.  Fixes documentation drift, updates stale metadata,
+and wires two BZ items that had completed D-Bus code but no CLI surface.
+
+**Documentation & metadata fixes:**
+
+- `bleep/docs/observation_db_schema.md` — updated to reflect schema v11:
+  documented `aoi_analysis.pairing_profile`, `sdp_summary`, `post_pair_delta`
+  columns added in v2.8.4
+- `bleep/mesh/__init__.py` — fixed docstring path from
+  `workDir/bluez/doc/mesh-api.txt` to `workDir/BlueZDocs/mesh-api.txt`
+- `setup.py` — synced version from `2.7.25` to `2.8.4` (matching
+  `bleep/__init__.py`)
+- `.taskmaster/docs/bleep-refactor-gap-analysis-prd.txt` — marked all 10
+  identified gaps as **IMPLEMENTED** (debug mode, BLE CTF, advanced scanning,
+  pairing/bonding, media, Bluetooth Classic — completed in v2.7–v2.8)
+- `README.refactor` — archived with banner directing to
+  `bleep/docs/todo_tracker.md` for current work
+- BZ gap summary table in `todo_tracker.md` — corrected BZ-6/7 to
+  `DONE (Sprint 2)`, BZ-8 to `DONE (Sprint 1)`, BZ-11/12 to
+  `DONE (Sprint 4)`
+- `bleep/gatt/__init__.py` — restored package (not dead code); updated
+  docstring clarifying its purpose as a refactoring target for breaking
+  GATT files into ≤300 LOC modules
+
+**BZ wiring (existing D-Bus code surfaced to CLI):**
+
+- **BZ-1e** `--stream` flag on debug mode `read`/`write` commands:
+  `read --stream <uuid>` uses `AcquireNotify` fd-based streaming via
+  `select()` loop; `write --stream <uuid> <value>` uses `AcquireWrite`
+  fd via `char.write_value_fd()`.  Falls back to standard D-Bus
+  ReadValue/WriteValue if characteristic does not support acquire.
+  (`bleep/modes/debug_gatt.py`)
+- **BZ-8f** Disconnect reason surfaced in debug mode `info` command and
+  scan/enum output: `_print_disconnect_reason()` in `debug_connect.py`
+  called from `_info_ble()`, `_info_classic()`, `_info_from_dbus_path()`;
+  `_log_disconnect_reason()` helper added to `connect.py`, called from
+  `connect.py` (services-not-resolved), `scan_modes.py`
+  (passive/naggy/pokey service-resolution failures).  Queries both
+  `_get_global_signals()` and `_signals_manager` singleton; prints
+  human-readable label with optional reason code; no-op when no
+  disconnect signal was captured.
+
+**Modified files:**
+
+- `bleep/docs/observation_db_schema.md`, `bleep/mesh/__init__.py`,
+  `setup.py`, `.taskmaster/docs/bleep-refactor-gap-analysis-prd.txt`,
+  `README.refactor`, `bleep/gatt/__init__.py`,
+  `bleep/modes/debug_gatt.py`, `bleep/modes/debug_connect.py`,
+  `bleep/dbuslayer/device_le.py`, `bleep/ble_ops/le/connect.py`,
+  `bleep/ble_ops/le/scan_modes.py`, `bleep/docs/todo_tracker.md`
+
+---
+
+### Survey Mode — Long-Duration Passive Device Discovery
+
+New `bleep survey` CLI command for multi-transport passive scanning with
+automatic deduplication, per-device RSSI tracking, and AoI-compatible
+target list output.
+
+**Phase 1 — Core Implementation:**
+
+- **`bleep/modes/survey.py`** — `DeviceSighting` dataclass, `SurveyCensus`
+  accumulator class (merge LE/Classic results, RSSI min/max/avg, sighting
+  count, type upgrade to `dual`), three output formatters (`simple`,
+  `objects`, `grouped`), `_run_le_round()` and `_run_classic_round()` scan
+  helpers, `SIGINT`/`SIGTERM` graceful interruption, `_build_parser()`,
+  `main()` entry point
+- **`tests/test_survey.py`** — 32 unit tests covering census merge, filter,
+  all three output formats, AoI `_iter_macs()` compatibility, signal
+  handling, argument parser, JSON roundtrip, summary counts
+- **`bleep/docs/survey_mode.md`** — user documentation with command
+  reference, output format specs, integration examples
+
+**Phase 2 — Enhancements:**
+
+- **Aggregate Report (`bleep aoi report --all`)** — new
+  `generate_aggregate_report()` method in `AOIAnalyser` producing combined
+  markdown/text/JSON reports with summary table and per-device sections;
+  `report` subparser `--address` is now optional (use `--all` for all
+  AoI-analyzed devices)
+- **BlueZ Health Monitoring** — survey loop now starts
+  `BlueZServiceMonitor` (heartbeat thread) at survey begin, registers
+  stall/unavailability callbacks that emit stderr warnings before each
+  round; `--live` output includes `BlueZ: OK` health status; monitor is
+  stopped cleanly on survey end/interrupt
+- **`--then-aoi` convenience flag** — after survey output is written,
+  automatically invokes `bleep aoi scan <file>` via subprocess; requires
+  `-o` for a file-based target list
+- **`--no-db` fix** — `_run_classic_round()` now accepts `persist_db`
+  parameter; the old inert `BLEEP_SURVEY_NO_DB` env var approach removed
+
+**Bug-fixes (post-field-test):**
+
+- **`bleep/modes/aoi.py`** — aggregate report auto-filename used
+  `datetime.now()` on the `datetime` *module* instead of `datetime.datetime.now()`;
+  manifested as `module 'datetime' has no attribute 'now'` when `-o` was omitted
+- **`bleep/analysis/aoi_analyser.py`** — `_generate_aggregate_json()` and
+  `_generate_json_report()` passed raw device data (which may contain `bytes`
+  from DB) directly to `json.dumps()`; added `_sanitize_for_json()` static
+  method to recursively hex-encode bytes before serialization
+- **`bleep/dbuslayer/bluez_monitor.py`** line 93 — missing closing `]` in
+  availability log message; `[! BlueZ …` → `[!] BlueZ …`
+
+**Phase 3 — Debug Mode Integration:**
+
+- **`survey start|stop`** — new debug shell command that runs a survey in a
+  background daemon thread (same model as `monitor start|stop`); supports all
+  CLI flags (`--duration`, `--round-time`, `--transport`, `-o`, `--format`,
+  `--min-rssi`, `--min-sightings`, `--no-db`, `--adapter`, `--then-aoi`);
+  quit/exit auto-stops any running survey
+- **`survey-status`** — new debug shell command that reports survey progress:
+  RUNNING/FINISHED state, round count, elapsed/duration, device breakdown
+  (LE/Classic/Dual), output path
+- **`DebugState`** extended with survey fields (`survey_thread`,
+  `survey_stop_event`, `survey_census`, `survey_round`, `survey_elapsed`,
+  `survey_duration`, `survey_output`)
+
+**Modified files (Phase 3):**
+
+- **`bleep/modes/debug_survey.py`** — new submodule with `cmd_survey` and
+  `cmd_survey_status`
+- **`bleep/modes/debug_state.py`** — survey fields added to `DebugState`
+- **`bleep/modes/debug.py`** — import, dispatch table entries, help group,
+  quit cleanup
+- **`tests/test_survey.py`** — 7 new debug-shell tests (43 total)
+
+**Phase 6 — Extended Features:**
+
+- **Beacon fingerprinting** — `DeviceSighting` extended with full
+  `manufacturer_data` (Dict[int, bytes]), `service_data` (Dict[str, bytes]),
+  `tx_power`, `appearance`, and `fingerprint_changed` flag; `_merge_entry()`
+  uses union/longest-wins policy for manufacturer & service payloads;
+  `format_objects()` / `format_grouped()` hex-encode bytes in JSON output;
+  detects and flags payload changes across rounds
+- **Survey resume from DB** — `SurveyCensus.seed_from_db()` paginates
+  through `observations.get_devices()`, converts ISO timestamps to epoch
+  floats, sets `sighting_count=0` for seeded entries; new `--resume-db`
+  CLI flag in `bleep survey` and `bleep debug survey start`; default
+  `--min-sightings 1` excludes DB-only entries unless overridden
+- **Adaptive round timing** — `--adaptive` flag enables discovery-rate-based
+  round time adjustment; zero new devices halves `dynamic_rt`, >=3 new
+  devices adds 10s, clamped by `--adaptive-min` (10s) / `--adaptive-max`
+  (60s); `--live` output includes current `rt=Ns` when adaptive is active
+
+**Modified files (Phase 6):**
+
+- **`bleep/modes/survey.py`** — `DeviceSighting` new fields,
+  `_merge_mfr_data()`, `_merge_svc_data()`, `seed_from_db()`,
+  `_hex_encode_bytes()`, adaptive loop logic, new CLI flags
+- **`bleep/modes/debug_survey.py`** — `--resume-db`, `--adaptive`,
+  `--adaptive-min`, `--adaptive-max` flags wired through to worker
+- **`tests/test_survey.py`** — 25 new tests (67 total): beacon
+  fingerprinting, DB resume, adaptive timing
+
+**Phase 5 — Device-Type Classification Accuracy:**
+
+- **Classifier-aware merge** — `_merge_entry()` now uses the
+  `DeviceTypeClassifier` result from `entry["type"]` (already computed by
+  the adapter layer) instead of blindly using the scan-round transport
+  label; cached Classic devices found during the LE scan phase are now
+  correctly classified as `"classic"` instead of `"le"`
+- **Cached device provenance** — `DeviceSighting.is_cached` flag tracks
+  devices returned by BlueZ without active RSSI that are paired/bonded;
+  emitted as `"is_cached": true` in `objects`/`grouped` output formats;
+  flag clears automatically when device is re-seen with real RSSI
+- **`--exclude-cached` flag** — opt-in filter to remove cached/bonded
+  devices from survey output; supported in both `bleep survey` and
+  `bleep debug survey start`
+- **RSSI 0 dBm fix** — `entry.get("rssi") or entry.get("rssi_last")`
+  treated RSSI of 0 as falsy and fell through to `rssi_last`; now uses
+  explicit `None` check
+
+**Modified files (Phase 5):**
+
+- **`bleep/modes/survey.py`** — `_resolve_device_type()` helper,
+  `_CLASSIFIER_TYPE_MAP`, `DeviceSighting.is_cached`, updated
+  `_merge_entry()`, `filter(exclude_cached=)`, `format_objects()`,
+  `_build_parser()`, `main()`
+- **`bleep/modes/debug_survey.py`** — `--exclude-cached` flag,
+  `_survey_worker()` param, thread args
+- **`bleep/docs/survey_mode.md`** — device-type classification section,
+  `--exclude-cached` in command reference, `is_cached` field docs
+- **`tests/test_survey.py`** — 23 new tests (90 total): classifier-aware
+  merge, cached provenance, exclude filter, RSSI 0 handling, output format
+
+**Modified files:**
+
+- **`bleep/cli.py`** — `survey` subparser (+ `--then-aoi`), `aoi` parser
+  (+ `--all`), `report` dispatch (forwards `--all`)
+- **`bleep/analysis/aoi_analyser.py`** — `generate_aggregate_report()`,
+  `_generate_aggregate_markdown()`, `_generate_aggregate_text()`,
+  `_generate_aggregate_json()`
+- **`bleep/modes/aoi.py`** — `report` handler supports `--all` aggregate
+  mode; `--address` no longer required on report
+- **`bleep/modes/survey.py`** — health monitor integration, `--then-aoi`,
+  `--no-db` properly wired via `persist_db` param
+- **`tests/test_survey.py`** — 4 new tests (36 total): `--then-aoi`
+  parsing/validation, health monitor callbacks
+- **`tests/test_aoi_augmentation.py`** — 5 new tests: aggregate report
+  markdown/JSON/text generation, skip-missing, raise-on-empty
+- **`bleep/docs/survey_mode.md`** — `--then-aoi` docs, health monitoring
+  section, aggregate report examples
+- **`bleep/docs/aoi_mode.md`** — `report --all` docs and examples
+- **`bleep/docs/changelog.md`** — this entry
+
+---
+
 ## v2.8.4 (2026-05-07)
 
 ### MAC Validation — Reject Incomplete/Invalid MACs

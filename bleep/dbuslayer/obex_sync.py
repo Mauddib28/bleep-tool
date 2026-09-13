@@ -35,7 +35,10 @@ from bleep.bt_ref.constants import (
 from bleep.dbuslayer._obex_common import (
     poll_obex_transfer as _poll_transfer,
     unwrap_dbus as _unwrap,
+    obex_session_error as _obex_session_error,
 )
+from bleep.core.errors import BLEEPError, map_dbus_error
+from bleep.bt_ref.constants import RESULT_ERR_WRONG_STATE
 
 
 class SyncSession:
@@ -57,9 +60,10 @@ class SyncSession:
             client_obj = self._bus.get_object(_OBEX_SERVICE, OBEX_ROOT_PATH)
             self._client = dbus.Interface(client_obj, _OBEX_CLIENT_IFACE)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
+            raise BLEEPError(
                 f"BlueZ obexd not running or D-Bus error: "
-                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
+                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}",
+                RESULT_ERR_WRONG_STATE,
             ) from exc
 
         print_and_log(f"[SYNC] Creating session → {self.mac}", LOG__DEBUG)
@@ -68,9 +72,8 @@ class SyncSession:
                 self.mac, {"Target": "sync"}
             )
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"SYNC CreateSession failed: {exc.get_dbus_name()}: "
-                f"{exc.get_dbus_message() or ''}"
+            raise _obex_session_error(
+                exc, self.mac, profile="SYNC", service_hint="IrMC Sync (0x1104)",
             ) from exc
 
         session_obj = self._bus.get_object(_OBEX_SERVICE, self._session_path)
@@ -99,10 +102,7 @@ class SyncSession:
         try:
             self._sync.SetLocation(location)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"SYNC SetLocation failed: {exc.get_dbus_name()}: "
-                f"{exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
 
     def get_phonebook(
         self, target_file: str = "", *, timeout: Optional[int] = None,
@@ -119,10 +119,7 @@ class SyncSession:
         try:
             transfer_path, transfer_props = self._sync.GetPhonebook(target_file)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"SYNC GetPhonebook failed: {exc.get_dbus_name()}: "
-                f"{exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
 
         result = _poll_transfer(self._bus, transfer_path, timeout, label="SYNC")
         filename = result.get("filename", target_file)
@@ -145,9 +142,6 @@ class SyncSession:
         try:
             transfer_path, transfer_props = self._sync.PutPhonebook(source_file)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"SYNC PutPhonebook failed: {exc.get_dbus_name()}: "
-                f"{exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
 
         return _poll_transfer(self._bus, transfer_path, timeout, label="SYNC")

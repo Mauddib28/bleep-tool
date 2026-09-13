@@ -294,6 +294,19 @@ def map_dbus_error(exc: dbus.exceptions.DBusException) -> BLEEPError:
             return ConnectionLimitError("D-Bus operation", msg)
         if "connection refused" in msg_lower or "-refused" in msg_lower:
             return ConnectionRefusedError("D-Bus operation", msg)
+        # #9: transient BR/EDR & LE connection failures (workDir/bluez/src/error.h:
+        # ERR_*_CONN_CANCELED / _TIMEOUT / _BUSY / _ABORT_BY_* / _UNKNOWN). These
+        # are worth retrying — notably br-connection-canceled from the dual-mode
+        # BR/EDR-before-LE race. Returning ConnectionError (a BLEEPError subclass)
+        # lets the naggy retry loop's `except (ConnectionError, ...)` handler engage
+        # and honour --retries/backoff, instead of a bare BLEEPError escaping it.
+        # Permanent variants (not-supported/key-missing/bad-socket/not-powered/
+        # invalid-arguments) intentionally fall through to fail fast below.
+        if any(_t in msg_lower for _t in (
+            "connection-canceled", "connection-timeout", "connection-busy",
+            "connection-abort", "connection-unknown",
+        )):
+            return ConnectionError("D-Bus operation", msg)
         if "att error" in msg_lower:
             return BLEEPError("D-Bus operation", error_code)
         if msg:

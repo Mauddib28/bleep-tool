@@ -168,6 +168,69 @@ bleep audio-record <MAC> <out.wav> --force-endpoint
   `pw-metadata -n settings 0 bluez5.autoswitch-profile false`) for the
   duration of the capture.
 
+### Recording from a remote A2DP *source* (e.g. a desktop/phone streaming to this host)
+
+Capturing audio that flows **into** this host — where the peer is the A2DP
+**source** (`0x110a`) and BLEEP owns the sink transport — has two extra
+requirements beyond the sink case (headphones/speakers BLEEP connects *to*):
+
+1. **The peer must re-initiate the link.** `_acquire_via_endpoint()` cycles the
+   device (`Device1.Disconnect()` → `Connect()`) to force BlueZ to re-run
+   `a2dp_discover` and select BLEEP's newly-registered SEP. A remote source will
+   **refuse** a Linux-initiated `Connect()` (`br-connection-create-socket` /
+   `br-connection-unknown`) because it must originate the link itself. BLEEP
+   detects this and automatically switches to a **wait-for-remote-reconnect**
+   mode (up to 30 s), during which the source must be **actively streaming audio
+   to this host** with this host selected as its output — that is what triggers
+   the peer to reconnect. If it never reconnects, the acquire fails with a hint
+   to ensure the source is streaming.
+2. **Stop the system audio daemon** so BLEEP's SEP wins AVDTP selection:
+
+   ```bash
+   systemctl --user stop wireplumber pipewire-pulse pipewire   # PipeWire hosts
+   bleep audio-record <MAC> <out.wav> --duration 20 --force-endpoint
+   systemctl --user start pipewire pipewire-pulse wireplumber
+   ```
+
+   `--force-endpoint` bypasses the contention gate (PipeWire's plugin appears as
+   a warn-level competitor even while stopped). The decode path handles the
+   RTP-encapsulated SBC that A2DP transports carry (`rtpsbcdepay` + dynamic
+   clock-rate), producing a standard PCM WAV.
+
+### Capturing the HFP/HSP microphone (`audio-record --hfp`)
+
+A2DP is **output-only** — recording on an A2DP profile yields no audio. The
+remote **microphone** is a separate SCO stream that only appears when the
+device's card is switched to an HFP/HSP profile (`handsfree-head-unit` /
+`headset-head-unit`). `audio-record --hfp` automates this:
+
+```bash
+bleep audio-record <MAC> mic.wav --hfp --duration 10
+# add --keep-profile to leave the card on HFP/HSP afterwards
+```
+
+Flow: locate the device's card → if not already on an HFP/HSP profile, switch to
+one → record the resulting SCO source via the host audio tools → **restore the
+original profile** (unless `--keep-profile`). On BlueALSA the `sco` source PCM is
+addressed directly with no profile switch. Capture is voice-grade (CVSD 8 kHz /
+mSBC 16 kHz, upsampled by the host graph), distinct from the A2DP music path.
+
+If it reports *"No audio card found"* while the device shows `Connected: yes`,
+the host audio daemon has not attached the device — reconnect it
+(`bluetoothctl disconnect <MAC> && bluetoothctl connect <MAC>`) so PipeWire/
+PulseAudio creates the card, then retry.
+
+### Verifying codec plugins up front (`bleep --check-env`)
+
+`bleep --check-env` (and `--diagnose-audio`) report a **GStreamer Codec
+Plugins** section listing which codec pipelines are usable — SBC decode
+(`audio-record` from an A2DP source), SBC encode (`audio-play`), MP3/AAC, and
+the shared core elements. A missing capability names the exact absent element
+(e.g. `sbcdec`, `rtpsbcdepay`) and prints an install hint. SBC capture requires
+`gstreamer1.0-plugins-bad` (sbcdec/sbcparse) and `gstreamer1.0-plugins-good`
+(rtpsbcdepay); SBC/AAC playback additionally needs `gstreamer1.0-libav`. Check
+this before a capture session to avoid a silent decode failure at runtime.
+
 ## Implementation notes
 
 - **audio_tools.py**: `AudioToolsHelper` provides backend detection (including `pipewire_native` and `bluealsa` differentiation), BlueZ card listing (PA), PipeWire node enumeration (`_get_pipewire_bluez_nodes`), BlueALSA PCM listing (`list_bluealsa_pcms`), profile listing and switching (PA via `pactl`, PipeWire via `wpctl`), pacmd- and pw-dump-based parsing of sources/sinks with roles, and `play_to_sink` / `record_from_source` with automatic tool selection. Sox-based "has audio" check is in `check_audio_file_has_content()`.
@@ -242,7 +305,14 @@ The following objectives are documented here to ease later expansion. They repre
 
 ---
 
-### 5. Persist recon and bonus results in the observation DB
+### 5. Persist recon and bonus results in the observation DB — ✅ IMPLEMENTED
+
+> **Shipped.** Recon results are persisted automatically (no `--persist` flag
+> needed). Schema **v12** adds the `audio_recon` table
+> (`core/observations/_connection.py`); `run_audio_recon()` calls
+> `store_audio_recon()` (`core/observations/_media.py`) after every run, and
+> `get_audio_recon()` reads it back. See `observation_db_schema.md` §
+> `audio_recon`. The original design notes below are retained for context.
 
 **Goal**: Track audio device info (cards, profiles, interfaces, roles, and optionally recording paths / has_audio) in the same observation store as the rest of BLEEP for visibility and reporting.
 
@@ -265,6 +335,6 @@ The following objectives are documented here to ease later expansion. They repre
 | Consolidate streams to one recording   | Multiple record + sox/ffmpeg mix  | audio_tools or audio_mix     | Optional         |
 | Play into existing stream              | play_to_sink, sink selection      | audio_tools + optional recon | No               |
 | Reconfig I/O                           | Compose 1-3                       | Helpers + docs               | Optional         |
-| Persist recon in observation DB        | run_audio_recon result            | core/observations + recon    | Yes (schema)     |
+| Persist recon in observation DB ✅ done | run_audio_recon result            | core/observations + recon    | Yes — `audio_recon` table (schema v12), automatic |
 
 Implementing in the order 1, 2, 3, 4, 5 will minimise duplication and keep a clear path from current recon to full bonus behaviour.

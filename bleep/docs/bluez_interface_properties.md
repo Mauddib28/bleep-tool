@@ -6,16 +6,16 @@ implications.  It serves as an internal quick-reference for developers and
 auditors working with BLEEP's enumeration output.
 
 Source specifications: `doc/device-api.txt`, `doc/gatt-api.txt`,
-`doc/adapter-api.txt`, `doc/battery-api.txt`, `doc/input-api.txt` in the
-BlueZ source tree (v5.66+).
+`doc/adapter-api.txt`, `doc/battery-api.txt`, `doc/input-api.txt`,
+`doc/device-set-api.txt` in the BlueZ source tree (v5.66+).
 
 ---
 
 ## org.bluez.Device1
 
-Properties collected by `_collect_device_props()` (`bleep/ble_ops/scan.py`)
+Properties collected by `_collect_device_props()` (`bleep/ble_ops/le/scan.py`)
 and `get_discovered_devices()` (`bleep/dbuslayer/adapter.py`).  Displayed by
-`format_device_info_block()` in `bleep/ble_ops/conversion.py`.
+`format_device_info_block()` in `bleep/ble_ops/common/conversion.py`.
 
 | Property | D-Bus Type | Description | Security / Significance Notes |
 |----------|-----------|-------------|-------------------------------|
@@ -42,6 +42,8 @@ and `get_discovered_devices()` (`bleep/dbuslayer/adapter.py`).  Displayed by
 | AdvertisingFlags | bytes | Raw AD flags from the advertising PDU. | Bit field indicating discovery mode, BR/EDR support, etc.  Displayed as hex/ASCII. |
 | AdvertisingData | dict{byte, bytes} | Raw AD type→data map from advertising PDU. | Lower-level than ManufacturerData/ServiceData; provides access to all AD structures including those BlueZ doesn't parse into named properties. |
 | ServicesResolved | bool | Whether GATT service discovery has completed. | Must be `True` before characteristic enumeration can proceed. |
+| Sets | array{object, dict} | Object paths of the coordinated sets this device belongs to, each followed by a dict containing `Rank` (byte). | **Experimental.** Indicates membership in a CSIP Coordinated Set (e.g. TWS earbuds sharing a SIRK).  `Rank` identifies the device's position within the set (e.g. left=1, right=2).  See [DeviceSet1](#orgbluezdeviceset1) below. |
+| PreferredBearer | string | Preferred transport for initial connection on dual-mode devices: `"last-used"`, `"bredr"`, `"le"`, or `"last-seen"`. | **Experimental, read-write.**  Changing from `"bredr"` to `"le"` removes the device from the auto-connect list.  Only takes effect when the device is disconnected. |
 
 ---
 
@@ -91,7 +93,7 @@ Displayed in `format_gatt_tree()`.
 
 ## org.bluez.Battery1
 
-Properties collected by `_collect_device_props()` (`bleep/ble_ops/scan.py`)
+Properties collected by `_collect_device_props()` (`bleep/ble_ops/le/scan.py`)
 from the device's object path when the interface is present.  Displayed in
 `format_device_info_block()`.
 
@@ -147,4 +149,81 @@ Displayed by `adapter-config show` (`bleep/modes/adapter_config.py`).
 
 ---
 
-*Last updated: 2026-03-19*
+## org.bluez.DeviceSet1
+
+The DeviceSet interface implements the **CSIP (Coordinated Set Identification
+Profile)** concept in BlueZ.  It groups multiple Bluetooth devices that
+logically belong together — such as a pair of TWS earbuds (left and right), a
+set of hearing aids, or a multi-speaker arrangement — into a single
+manageable unit.
+
+Each set is identified by its **SIRK (Set Identity Resolving Key)**, a
+cryptographic key shared among all members during pairing.  BlueZ uses the
+SIRK to resolve set membership and automatically group devices that share the
+same key.  The SIRK is visible in the D-Bus object path
+(`/org/bluez/hci0/set_{sirk}`).
+
+**The entire DeviceSet1 API is experimental** and requires BlueZ to be
+started with `--experimental` (or `bluetoothd -E`).
+
+D-Bus wrapper: `bleep/dbuslayer/device_set.py` (`DeviceSet`,
+`enumerate_device_sets()`).  CLI mode: `bleep/modes/device_sets.py`
+(`bleep device-sets {list,connect,disconnect,info}`).
+
+Source specification: `workDir/BlueZDocs/org.bluez.DeviceSet.rst` (BlueZ,
+September 2023).
+
+:Service: `org.bluez`
+:Interface: `org.bluez.DeviceSet1`
+:Object path: `[variable prefix]/{hci0,hci1,...}/set_{sirk}`
+
+### Methods
+
+| Method | Description | Notes |
+|--------|-------------|-------|
+| `Connect()` | Connects all member devices in sequence, following the same procedure as `Device1.Connect()`. | Errors: `NotReady`, `Failed`, `InProgress`, `AlreadyConnected`. |
+| `Disconnect()` | Disconnects all member devices in sequence, following the same procedure as `Device1.Disconnect()`. | Errors: `NotConnected`. |
+
+### Properties
+
+| Property | D-Bus Type | Writable | Description | Significance Notes |
+|----------|-----------|----------|-------------|--------------------|
+| Adapter | object | No | Object path of the adapter this set belongs to. | Links the set to its parent controller. |
+| AutoConnect | bool | Yes | Whether all members are automatically connected when *any* member connects. | **Key operational property.**  When `True`, connecting one earbud automatically brings up the other.  Toggled via `set_auto_connect()` in `device_set.py`. |
+| Devices | array{object} | No | Object paths of the member `Device1` objects. | The actual set membership list.  Compare `len(Devices)` against `Size` to determine if all members have been discovered. |
+| Size | byte | No | Expected number of members in the set. | Advertised by the set coordinator.  If `len(Devices) < Size`, some members have not yet been paired or discovered. |
+
+### Relationship to Device1
+
+Individual devices expose their set membership via the `Device1.Sets`
+property (see [org.bluez.Device1](#orgbluezdevice1) above).  Each entry
+in `Sets` contains the set's object path and a dict with a `Rank` byte
+indicating the device's position in the set.
+
+### Typical Use Case: TWS Earbuds
+
+1. Both earbuds share the same SIRK during initial pairing.
+2. BlueZ creates a single `set_{sirk}` object under the adapter.
+3. Both `Device1` objects (left/right) appear in the set's `Devices` array.
+4. Calling `Connect()` on the `DeviceSet1` connects both earbuds in sequence.
+5. With `AutoConnect = True`, connecting one earbud triggers automatic
+   connection of the other.
+
+---
+
+## Intentionally Unsupported: Deprecated BlueZ Profile Plugin APIs
+
+The following BlueZ D-Bus interfaces were **removed in BlueZ 5.48+** and are intentionally not implemented as D-Bus wrappers in BLEEP:
+
+| Interface | Profile | BlueZ Removal | BLEEP Approach |
+|-----------|---------|---------------|----------------|
+| `ThermometerManager1` / `Thermometer1` | Health Thermometer | 5.48 | GATT-level decode via `gatt_profile_decode.py` |
+| `HeartRateManager1` / `HeartRate1` | Heart Rate | 5.48 | GATT-level decode via `gatt_profile_decode.py` |
+| `CyclingSpeedManager1` / `CyclingSpeed1` | Cycling Speed and Cadence | 5.48 | GATT-level decode via `gatt_profile_decode.py` |
+| `ProximityMonitor1` / `ProximityReporter1` | Proximity (Alert/Link Loss/Tx Power) | 5.48 | GATT-level decode via `gatt_profile_decode.py` |
+
+These profiles are based on standard GATT services that BLEEP already reads during normal enumeration.  Rather than re-implementing the removed BlueZ plugin APIs, BLEEP provides profile-aware value decoding at the GATT level (see [GATT Enumeration — Recognized GATT Profiles](gatt_enumeration.md#recognized-gatt-profiles-deprecated-bluez-plugin-apis)), which works on **all** BlueZ versions regardless of whether the legacy plugins were ever present.
+
+---
+
+*Last updated: 2026-05-22 — added org.bluez.DeviceSet1 section and Device1.Sets/PreferredBearer properties*

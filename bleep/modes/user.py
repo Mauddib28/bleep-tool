@@ -27,7 +27,10 @@ import dbus
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import Dict, List, Any, Optional, Tuple, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from bleep.core.output import OutputContext
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__USER
 from bleep.core.error_handling import BlueZErrorHandler
@@ -94,17 +97,17 @@ class UserMenu:
         os.system('clear' if os.name == 'posix' else 'cls')
         
         # Print header
-        print(f"\n{'=' * 50}")
-        print(f"{self.title}")
-        print(f"{'=' * 50}")
+        print_and_log(f"\n{'=' * 50}", LOG__USER)
+        print_and_log(f"{self.title}", LOG__USER)
+        print_and_log(f"{'=' * 50}", LOG__USER)
         
         # Show connected device if any
         if _current_device:
-            print(f"\nConnected to: {_current_device.mac_address} ({getattr(_current_device, 'name', 'Unknown')})")
+            print_and_log(f"\nConnected to: {_current_device.mac_address} ({getattr(_current_device, 'name', 'Unknown')})", LOG__USER)
         else:
-            print("\nNo device connected")
+            print_and_log("\nNo device connected", LOG__USER)
         
-        print("\nOptions:")
+        print_and_log("\nOptions:", LOG__USER)
         
         # Print menu options
         for option in self.options:
@@ -112,21 +115,21 @@ class UserMenu:
             if option.requires_device and not _current_device:
                 continue
                 
-            print(f"{option.key}. {option.label}")
+            print_and_log(f"{option.key}. {option.label}", LOG__USER)
         
         # Add back option if this is a submenu
         if self.parent:
-            print(f"B. Back to previous menu")
+            print_and_log("B. Back to previous menu", LOG__USER)
         
         # Add exit option
-        print(f"{MENU_EXIT_CHOICE}. Exit")
+        print_and_log(f"{MENU_EXIT_CHOICE}. Exit", LOG__USER)
         
         # Get user input
         choice = input("\nEnter choice: ").strip().upper()
         
         # Handle exit
         if choice == MENU_EXIT_CHOICE:
-            print("\nExiting BLEEP User Mode...")
+            print_and_log("\nExiting BLEEP User Mode...", LOG__USER)
             sys.exit(0)
         
         # Handle back
@@ -137,7 +140,7 @@ class UserMenu:
         for option in self.options:
             if option.key == choice:
                 if option.requires_device and not _current_device:
-                    print("This option requires a connected device.")
+                    print_and_log("This option requires a connected device.", LOG__USER)
                     time.sleep(2)
                     return self
                 
@@ -153,7 +156,7 @@ class UserMenu:
                 return self
         
         # Invalid choice
-        print("Invalid choice. Please try again.")
+        print_and_log("Invalid choice. Please try again.", LOG__USER)
         time.sleep(1)
         return self
 
@@ -304,7 +307,7 @@ def translate_uuid_interactive() -> None:
     uuid_input = input("Enter UUID to translate (16-bit, 32-bit, or 128-bit): ").strip()
     
     if not uuid_input:
-        print("No UUID provided")
+        print_and_log("No UUID provided", LOG__USER)
         return
     
     try:
@@ -313,11 +316,11 @@ def translate_uuid_interactive() -> None:
         
         result = translate_uuid(uuid_input)
         output = format_text_output(result, verbose=True)
-        print("\n" + output)
+        print_and_log("\n" + output, LOG__USER)
         
         input("\nPress Enter to continue...")
     except Exception as e:
-        print(f"Error translating UUID: {e}")
+        print_and_log(f"Error translating UUID: {e}", LOG__USER)
         input("\nPress Enter to continue...")
 
 
@@ -328,24 +331,24 @@ def display_device_info() -> None:
     #if not _current_device or not _services:
     # Separated to prevent a false return for no device being connected??
     if not _current_device:
-        print("No device connected")
+        print_and_log("No device connected", LOG__USER)
         return
     elif not _services:
-        print("Services not resolved or no services exist")     # Note: Recall that media devices have no services
+        print_and_log("Services not resolved or no services exist", LOG__USER)
         return
         
-    print(f"\nDevice Information: {_current_device.mac_address}")
-    print(f"  Name: {getattr(_current_device, 'name', 'Unknown')}")
-    print(f"  Address Type: {getattr(_current_device, 'address_type', 'Unknown')}")
-    print(f"  RSSI: {getattr(_current_device, 'rssi', 'Unknown')}")
+    print_and_log(f"\nDevice Information: {_current_device.mac_address}", LOG__USER)
+    print_and_log(f"  Name: {getattr(_current_device, 'name', 'Unknown')}", LOG__USER)
+    print_and_log(f"  Address Type: {getattr(_current_device, 'address_type', 'Unknown')}", LOG__USER)
+    print_and_log(f"  RSSI: {getattr(_current_device, 'rssi', 'Unknown')}", LOG__USER)
     
     # Display services using the device's get_services method
     service_uuids = _current_device.get_services()
-    print(f"\nServices ({len(service_uuids)}):")
+    print_and_log(f"\nServices ({len(service_uuids)}):", LOG__USER)
     
     for i, uuid in enumerate(service_uuids, 1):
         service_name = get_name_from_uuid(uuid) or uuid
-        print(f"  {i}. {service_name} ({uuid})")
+        print_and_log(f"  {i}. {service_name} ({uuid})", LOG__USER)
 
 
 def browse_services() -> Optional[UserMenu]:
@@ -358,7 +361,7 @@ def browse_services() -> Optional[UserMenu]:
     global _current_device, _services
     
     if not _current_device or not _services:
-        print("No device connected or missing services")
+        print_and_log("No device connected or missing services", LOG__USER)
         return None
     
     # Create menu options for each service using the device's get_services method
@@ -399,13 +402,13 @@ def browse_characteristics(service_uuid: str) -> Optional[UserMenu]:
         # Get the service object
         service_obj = _current_device.get_service(service_uuid)
         if not service_obj:
-            print(f"Service {service_uuid} not found")
+            print_and_log(f"Service {service_uuid} not found", LOG__USER)
             return None
             
         # Get characteristics
         characteristics = _current_device.get_characteristics(service_uuid)
         if not characteristics:
-            print(f"No characteristics found for service {service_uuid}")
+            print_and_log(f"No characteristics found for service {service_uuid}", LOG__USER)
             return None
             
         # Create menu options for each characteristic
@@ -426,7 +429,7 @@ def browse_characteristics(service_uuid: str) -> Optional[UserMenu]:
         # Create and return the characteristic menu
         service_name = get_name_from_uuid(service_uuid) or service_uuid
     except Exception as e:
-        print(f"Error browsing characteristics: {str(e)}")
+        print_and_log(f"Error browsing characteristics: {str(e)}", LOG__USER)
         return None
     return UserMenu(
         title=f"Characteristics for {service_name}",
@@ -457,12 +460,12 @@ def characteristic_actions(char_uuid: str) -> Optional[UserMenu]:
                 break
                 
         if not service_uuid:
-            print(f"Error: Could not find service for characteristic {char_uuid}")
+            print_and_log(f"Error: Could not find service for characteristic {char_uuid}", LOG__USER)
             return None
             
         flags = _current_device.get_characteristic_flags(service_uuid, char_uuid)
     except Exception as e:
-        print(f"Error getting characteristic flags: {str(e)}")
+        print_and_log(f"Error getting characteristic flags: {str(e)}", LOG__USER)
         flags = []
     
     options = [
@@ -550,32 +553,32 @@ def read_characteristic(char_uuid: str) -> None:
             int_value = None
             
         # Display results
-        print(f"\nCharacteristic: {char_uuid}")
-        print(f"Value (hex): {hex_value}")
-        print(f"Value (ascii): {ascii_value}")
+        print_and_log(f"\nCharacteristic: {char_uuid}", LOG__USER)
+        print_and_log(f"Value (hex): {hex_value}", LOG__USER)
+        print_and_log(f"Value (ascii): {ascii_value}", LOG__USER)
         if int_value is not None:
-            print(f"Value (int): {int_value}")
+            print_and_log(f"Value (int): {int_value}", LOG__USER)
             
         # If the value appears to be a numeric type, show potential interpretations
         if len(value) <= 8:
             if len(value) == 1:
-                print(f"Value (uint8): {value[0]}")
-                print(f"Value (int8): {struct.unpack('b', value)[0]}")
+                print_and_log(f"Value (uint8): {value[0]}", LOG__USER)
+                print_and_log(f"Value (int8): {struct.unpack('b', value)[0]}", LOG__USER)
             elif len(value) == 2:
-                print(f"Value (uint16): {struct.unpack('<H', value)[0]}")
-                print(f"Value (int16): {struct.unpack('<h', value)[0]}")
+                print_and_log(f"Value (uint16): {struct.unpack('<H', value)[0]}", LOG__USER)
+                print_and_log(f"Value (int16): {struct.unpack('<h', value)[0]}", LOG__USER)
             elif len(value) == 4:
-                print(f"Value (uint32): {struct.unpack('<I', value)[0]}")
-                print(f"Value (int32): {struct.unpack('<i', value)[0]}")
-                print(f"Value (float): {struct.unpack('<f', value)[0]}")
+                print_and_log(f"Value (uint32): {struct.unpack('<I', value)[0]}", LOG__USER)
+                print_and_log(f"Value (int32): {struct.unpack('<i', value)[0]}", LOG__USER)
+                print_and_log(f"Value (float): {struct.unpack('<f', value)[0]}", LOG__USER)
             elif len(value) == 8:
-                print(f"Value (uint64): {struct.unpack('<Q', value)[0]}")
-                print(f"Value (int64): {struct.unpack('<q', value)[0]}")
-                print(f"Value (double): {struct.unpack('<d', value)[0]}")
+                print_and_log(f"Value (uint64): {struct.unpack('<Q', value)[0]}", LOG__USER)
+                print_and_log(f"Value (int64): {struct.unpack('<q', value)[0]}", LOG__USER)
+                print_and_log(f"Value (double): {struct.unpack('<d', value)[0]}", LOG__USER)
         
     except Exception as e:
         error_msg = BlueZErrorHandler.get_user_friendly_message(e) if hasattr(BlueZErrorHandler, 'get_user_friendly_message') else str(e)
-        print(f"Error reading characteristic: {error_msg}")
+        print_and_log(f"Error reading characteristic: {error_msg}", LOG__USER)
 
 
 def write_characteristic(char_uuid: str) -> None:
@@ -587,10 +590,10 @@ def write_characteristic(char_uuid: str) -> None:
     """
     global _current_device
     
-    print("\nValue format options:")
-    print("1. Hexadecimal (e.g., 01 02 03 FF)")
-    print("2. ASCII text (e.g., Hello World)")
-    print("3. Decimal integers (e.g., 1 2 3 255)")
+    print_and_log("\nValue format options:", LOG__USER)
+    print_and_log("1. Hexadecimal (e.g., 01 02 03 FF)", LOG__USER)
+    print_and_log("2. ASCII text (e.g., Hello World)", LOG__USER)
+    print_and_log("3. Decimal integers (e.g., 1 2 3 255)", LOG__USER)
     
     format_choice = input("\nChoose format [1-3]: ").strip()
     value_str = input("Enter value: ").strip()
@@ -600,7 +603,7 @@ def write_characteristic(char_uuid: str) -> None:
             # Hex format
             value_str = value_str.replace(" ", "")
             if len(value_str) % 2 != 0:
-                print("Error: Hex string must have an even number of digits")
+                print_and_log("Error: Hex string must have an even number of digits", LOG__USER)
                 return
             
             value = bytes.fromhex(value_str)
@@ -614,11 +617,11 @@ def write_characteristic(char_uuid: str) -> None:
             try:
                 value = bytes([int(x) for x in value_str.split()])
             except ValueError:
-                print("Error: Invalid decimal integers")
+                print_and_log("Error: Invalid decimal integers", LOG__USER)
                 return
                 
         else:
-            print("Invalid format choice")
+            print_and_log("Invalid format choice", LOG__USER)
             return
         
         # Ask if write-without-response should be used
@@ -637,11 +640,11 @@ def write_characteristic(char_uuid: str) -> None:
         
         # Write the value
         _current_device.write_characteristic(char_uuid, value, without_response)
-        print("\nValue written successfully")
+        print_and_log("\nValue written successfully", LOG__USER)
         
     except Exception as e:
         error_msg = BlueZErrorHandler.get_user_friendly_message(e) if hasattr(BlueZErrorHandler, 'get_user_friendly_message') else str(e)
-        print(f"Error writing to characteristic: {error_msg}")
+        print_and_log(f"Error writing to characteristic: {error_msg}", LOG__USER)
 
 
 def notification_callback(value):
@@ -653,7 +656,7 @@ def notification_callback(value):
     """
     # Display the notification value
     hex_value = " ".join([f"{b:02x}" for b in value])
-    print(f"\nNotification received: {hex_value}")
+    print_and_log(f"\nNotification received: {hex_value}", LOG__USER)
 
 
 def toggle_notifications(char_uuid: str, enable: bool) -> None:
@@ -669,18 +672,18 @@ def toggle_notifications(char_uuid: str, enable: bool) -> None:
     try:
         if enable:
             _current_device.enable_notifications(char_uuid, notification_callback)
-            print(f"\nNotifications enabled for {char_uuid}")
-            print("Press Enter to stop notifications...")
+            print_and_log(f"\nNotifications enabled for {char_uuid}", LOG__USER)
+            print_and_log("Press Enter to stop notifications...", LOG__USER)
             input()
             _current_device.disable_notifications(char_uuid)
-            print("Notifications disabled")
+            print_and_log("Notifications disabled", LOG__USER)
         else:
             _current_device.disable_notifications(char_uuid)
-            print(f"\nNotifications disabled for {char_uuid}")
+            print_and_log(f"\nNotifications disabled for {char_uuid}", LOG__USER)
             
     except Exception as e:
         error_msg = BlueZErrorHandler.get_user_friendly_message(e) if hasattr(BlueZErrorHandler, 'get_user_friendly_message') else str(e)
-        print(f"Error toggling notifications: {error_msg}")
+        print_and_log(f"Error toggling notifications: {error_msg}", LOG__USER)
 
 
 def multi_read_characteristic_ui(char_uuid: str) -> None:
@@ -698,7 +701,7 @@ def multi_read_characteristic_ui(char_uuid: str) -> None:
         if custom_rounds:
             rounds = int(custom_rounds)
     except ValueError:
-        print("Invalid input, using default of 5 rounds")
+        print_and_log("Invalid input, using default of 5 rounds", LOG__USER)
     
     delay = 0.5  # Default delay
     try:
@@ -706,9 +709,9 @@ def multi_read_characteristic_ui(char_uuid: str) -> None:
         if custom_delay:
             delay = float(custom_delay)
     except ValueError:
-        print("Invalid input, using default delay of 0.5 seconds")
+        print_and_log("Invalid input, using default delay of 0.5 seconds", LOG__USER)
     
-    print(f"\nReading characteristic {rounds} times with {delay}s delay...")
+    print_and_log(f"\nReading characteristic {rounds} times with {delay}s delay...", LOG__USER)
     
     try:
         values = []
@@ -718,7 +721,7 @@ def multi_read_characteristic_ui(char_uuid: str) -> None:
             
             # Display the current read
             hex_value = " ".join([f"{b:02x}" for b in value])
-            print(f"Round {i+1}: {hex_value}")
+            print_and_log(f"Round {i+1}: {hex_value}", LOG__USER)
             
             if i < rounds - 1:
                 time.sleep(delay)
@@ -726,13 +729,13 @@ def multi_read_characteristic_ui(char_uuid: str) -> None:
         # Check for changes
         unique_values = set([bytes(v) for v in values])
         if len(unique_values) > 1:
-            print(f"\nDetected {len(unique_values)} different values across {rounds} reads")
+            print_and_log(f"\nDetected {len(unique_values)} different values across {rounds} reads", LOG__USER)
         else:
-            print(f"\nValue remained constant across all {rounds} reads")
+            print_and_log(f"\nValue remained constant across all {rounds} reads", LOG__USER)
             
     except Exception as e:
         error_msg = BlueZErrorHandler.get_user_friendly_message(e) if hasattr(BlueZErrorHandler, 'get_user_friendly_message') else str(e)
-        print(f"Error during multi-read: {error_msg}")
+        print_and_log(f"Error during multi-read: {error_msg}", LOG__USER)
 
 
 def brute_write_characteristic_ui(char_uuid: str) -> None:
@@ -744,8 +747,8 @@ def brute_write_characteristic_ui(char_uuid: str) -> None:
     """
     global _current_device
     
-    print("\nBrute-Write Configuration")
-    print("========================")
+    print_and_log("\nBrute-Write Configuration", LOG__USER)
+    print_and_log("========================", LOG__USER)
     
     # Get range
     range_input = input("Value range (e.g., 0x00-0xFF or empty for default): ").strip()
@@ -756,7 +759,7 @@ def brute_write_characteristic_ui(char_uuid: str) -> None:
             end = int(end_str, 16) if end_str.lower().startswith('0x') else int(end_str)
             value_range = (start, end)
         except Exception:
-            print("Invalid range format. Using default (0x00-0xFF)")
+            print_and_log("Invalid range format. Using default (0x00-0xFF)", LOG__USER)
             value_range = (0x00, 0xFF)
     else:
         value_range = (0x00, 0xFF)
@@ -770,7 +773,7 @@ def brute_write_characteristic_ui(char_uuid: str) -> None:
     try:
         delay = float(delay_input) if delay_input else 0.05
     except ValueError:
-        print("Invalid delay. Using default (0.05s)")
+        print_and_log("Invalid delay. Using default (0.05s)", LOG__USER)
         delay = 0.05
     
     # Get verification option
@@ -783,16 +786,16 @@ def brute_write_characteristic_ui(char_uuid: str) -> None:
     # Confirm with user
     payload_count = len(payloads)
     estimated_time = payload_count * delay
-    print(f"\nAbout to write {payload_count} payloads to characteristic {char_uuid}")
-    print(f"Estimated time: {estimated_time:.1f} seconds")
+    print_and_log(f"\nAbout to write {payload_count} payloads to characteristic {char_uuid}", LOG__USER)
+    print_and_log(f"Estimated time: {estimated_time:.1f} seconds", LOG__USER)
     confirm = input("Proceed? (y/n): ").strip().lower()
     
     if confirm != 'y':
-        print("Brute-write cancelled")
+        print_and_log("Brute-write cancelled", LOG__USER)
         return
     
     # Execute brute-write
-    print(f"\nExecuting brute-write with {payload_count} payloads...")
+    print_and_log(f"\nExecuting brute-write with {payload_count} payloads...", LOG__USER)
     try:
         results = brute_write_range(
             _current_device,
@@ -808,42 +811,42 @@ def brute_write_characteristic_ui(char_uuid: str) -> None:
         failures = sum(1 for status in results.values() if status.startswith("ERROR"))
         skips = sum(1 for status in results.values() if status == "SKIP")
         
-        print(f"\nBrute-write complete: {successes} successes, {failures} failures, {skips} skips")
+        print_and_log(f"\nBrute-write complete: {successes} successes, {failures} failures, {skips} skips", LOG__USER)
         
         # Ask if user wants to see detailed results
         if input("Show detailed results? (y/n): ").strip().lower() == 'y':
             for payload, status in results.items():
                 if status == "OK":
-                    print(f"Payload {payload.hex(' ')}: Success")
+                    print_and_log(f"Payload {payload.hex(' ')}: Success", LOG__USER)
                 elif status == "SKIP":
-                    print(f"Payload {payload.hex(' ')}: Skipped (ROE)")
+                    print_and_log(f"Payload {payload.hex(' ')}: Skipped (ROE)", LOG__USER)
                 else:
-                    print(f"Payload {payload.hex(' ')}: {status}")
+                    print_and_log(f"Payload {payload.hex(' ')}: {status}", LOG__USER)
     
     except Exception as e:
         error_msg = BlueZErrorHandler.get_user_friendly_message(e) if hasattr(BlueZErrorHandler, 'get_user_friendly_message') else str(e)
-        print(f"Error during brute-write: {error_msg}")
+        print_and_log(f"Error during brute-write: {error_msg}", LOG__USER)
 
 
 def configure_signal_capture() -> None:
     """Configure signal capture settings."""
-    print("\nSignal Capture Configuration")
+    print_and_log("\nSignal Capture Configuration", LOG__USER)
     
     try:
         # Show existing configurations
         from bleep.signals.capture_config import list_configs
         configs = list_configs()
         if configs:
-            print("\nExisting configurations:")
+            print_and_log("\nExisting configurations:", LOG__USER)
             for i, cfg in enumerate(configs, 1):
-                print(f"{i}. {cfg}")
+                print_and_log(f"{i}. {cfg}", LOG__USER)
         
         # Menu for signal capture configuration
-        print("\nOptions:")
-        print("1. Create new configuration")
-        print("2. Edit existing configuration")
-        print("3. Delete configuration")
-        print("4. Back to main menu")
+        print_and_log("\nOptions:", LOG__USER)
+        print_and_log("1. Create new configuration", LOG__USER)
+        print_and_log("2. Edit existing configuration", LOG__USER)
+        print_and_log("3. Delete configuration", LOG__USER)
+        print_and_log("4. Back to main menu", LOG__USER)
         
         choice = input("\nEnter choice: ").strip()
         
@@ -851,7 +854,7 @@ def configure_signal_capture() -> None:
             # Create new configuration
             name = input("Configuration name: ").strip()
             if not name:
-                print("Name is required")
+                print_and_log("Name is required", LOG__USER)
                 return
                 
             description = input("Configuration description: ").strip()
@@ -862,11 +865,11 @@ def configure_signal_capture() -> None:
             config = SignalCaptureConfig(name=name, description=description)
                 
             # Create filter rule
-            print("\nFilter options:")
-            print("1. All signals")
-            print("2. Specific device")
-            print("3. Specific service")
-            print("4. Specific characteristic")
+            print_and_log("\nFilter options:", LOG__USER)
+            print_and_log("1. All signals", LOG__USER)
+            print_and_log("2. Specific device", LOG__USER)
+            print_and_log("3. Specific service", LOG__USER)
+            print_and_log("4. Specific characteristic", LOG__USER)
             
             filter_choice = input("\nChoose filter [1-4]: ").strip()
             
@@ -882,10 +885,10 @@ def configure_signal_capture() -> None:
                 filter_rule.characteristic_uuid = char
             
             # Create action
-            print("\nAction options:")
-            print("1. Log to file")
-            print("2. Save to database")
-            print("3. Both log and save")
+            print_and_log("\nAction options:", LOG__USER)
+            print_and_log("1. Log to file", LOG__USER)
+            print_and_log("2. Save to database", LOG__USER)
+            print_and_log("3. Both log and save", LOG__USER)
             
             action_choice = input("\nChoose action [1-3]: ").strip()
             
@@ -924,19 +927,19 @@ def configure_signal_capture() -> None:
             # Save the configuration
             from bleep.signals.capture_config import save_config
             save_config(config)
-            print(f"\nConfiguration '{name}' created successfully")
+            print_and_log(f"\nConfiguration '{name}' created successfully", LOG__USER)
             
         elif choice == "2":
             # Edit configuration
             if not configs:
-                print("No configurations to edit")
+                print_and_log("No configurations to edit", LOG__USER)
                 return
                 
             idx = input(f"Enter configuration number [1-{len(configs)}]: ").strip()
             try:
                 idx = int(idx) - 1
                 if idx < 0 or idx >= len(configs):
-                    print("Invalid configuration number")
+                    print_and_log("Invalid configuration number", LOG__USER)
                     return
                     
                 config_name = configs[idx]
@@ -944,10 +947,10 @@ def configure_signal_capture() -> None:
                 from bleep.signals.capture_config import load_config
                 config = load_config(config_name)
                 
-                print("\nEdit options:")
-                print("1. Add filter rule")
-                print("2. Add action")
-                print("3. Enable/disable configuration")
+                print_and_log("\nEdit options:", LOG__USER)
+                print_and_log("1. Add filter rule", LOG__USER)
+                print_and_log("2. Add action", LOG__USER)
+                print_and_log("3. Enable/disable configuration", LOG__USER)
                 
                 edit_choice = input("\nEnter choice: ").strip()
                 
@@ -956,11 +959,11 @@ def configure_signal_capture() -> None:
                     filter_rule = SignalFilter()
                     
                     # Get filter type
-                    print("\nFilter type:")
-                    print("1. Device address")
-                    print("2. Service UUID")
-                    print("3. Characteristic UUID")
-                    print("4. Signal type")
+                    print_and_log("\nFilter type:", LOG__USER)
+                    print_and_log("1. Device address", LOG__USER)
+                    print_and_log("2. Service UUID", LOG__USER)
+                    print_and_log("3. Characteristic UUID", LOG__USER)
+                    print_and_log("4. Signal type", LOG__USER)
                     
                     filter_type = input("\nEnter choice: ").strip()
                     
@@ -974,13 +977,13 @@ def configure_signal_capture() -> None:
                         char = input("Characteristic UUID: ").strip()
                         filter_rule.characteristic_uuid = char
                     elif filter_type == "4":
-                        print("\nSignal types:")
-                        print("1. Notification")
-                        print("2. Indication")
-                        print("3. Property Change")
-                        print("4. Read")
-                        print("5. Write")
-                        print("6. Any")
+                        print_and_log("\nSignal types:", LOG__USER)
+                        print_and_log("1. Notification", LOG__USER)
+                        print_and_log("2. Indication", LOG__USER)
+                        print_and_log("3. Property Change", LOG__USER)
+                        print_and_log("4. Read", LOG__USER)
+                        print_and_log("5. Write", LOG__USER)
+                        print_and_log("6. Any", LOG__USER)
                         
                         signal_choice = input("\nChoose signal type [1-6]: ").strip()
                         
@@ -1013,13 +1016,13 @@ def configure_signal_capture() -> None:
                     # Save the updated config
                     from bleep.signals.capture_config import save_config
                     save_config(config)
-                    print("Filter rule added")
+                    print_and_log("Filter rule added", LOG__USER)
                     
                 elif edit_choice == "2":
                     # Add action
-                    print("\nAction type:")
-                    print("1. Log to file")
-                    print("2. Save to database")
+                    print_and_log("\nAction type:", LOG__USER)
+                    print_and_log("1. Log to file", LOG__USER)
+                    print_and_log("2. Save to database", LOG__USER)
                     
                     action_type = input("\nEnter choice: ").strip()
                     
@@ -1056,7 +1059,7 @@ def configure_signal_capture() -> None:
                     # Save the updated config
                     from bleep.signals.capture_config import save_config
                     save_config(config)
-                    print("Action added")
+                    print_and_log("Action added", LOG__USER)
                     
                 elif edit_choice == "3":
                     # Toggle enabled state for all routes
@@ -1067,23 +1070,23 @@ def configure_signal_capture() -> None:
                     from bleep.signals.capture_config import save_config
                     save_config(config)
                     state = "enabled" if config.routes and config.routes[0].enabled else "disabled"
-                    print(f"Configuration {state}")
+                    print_and_log(f"Configuration {state}", LOG__USER)
                     
             except (ValueError, IndexError):
-                print("Invalid input")
+                print_and_log("Invalid input", LOG__USER)
                 return
                 
         elif choice == "3":
             # Delete configuration
             if not configs:
-                print("No configurations to delete")
+                print_and_log("No configurations to delete", LOG__USER)
                 return
                 
             idx = input(f"Enter configuration number to delete [1-{len(configs)}]: ").strip()
             try:
                 idx = int(idx) - 1
                 if idx < 0 or idx >= len(configs):
-                    print("Invalid configuration number")
+                    print_and_log("Invalid configuration number", LOG__USER)
                     return
                     
                 config_name = configs[idx]
@@ -1092,14 +1095,14 @@ def configure_signal_capture() -> None:
                 if confirm == 'y':
                     from bleep.signals.capture_config import delete_config
                     delete_config(config_name)
-                    print(f"Configuration '{config_name}' deleted")
+                    print_and_log(f"Configuration '{config_name}' deleted", LOG__USER)
                     
             except (ValueError, IndexError):
-                print("Invalid input")
+                print_and_log("Invalid input", LOG__USER)
                 return
                 
     except Exception as e:
-        print(f"Error configuring signal capture: {e}")
+        print_and_log(f"Error configuring signal capture: {e}", LOG__USER)
 
 
 def export_device_data() -> None:
@@ -1107,7 +1110,7 @@ def export_device_data() -> None:
     global _current_device, _services
     
     if not _current_device or not _services:
-        print("No device connected or no services")
+        print_and_log("No device connected or no services", LOG__USER)
         return
     
     try:
@@ -1166,10 +1169,10 @@ def export_device_data() -> None:
         with open(export_path, 'w') as f:
             json.dump(export_data, f, indent=2)
             
-        print(f"\nDevice data exported to: {export_path}")
+        print_and_log(f"\nDevice data exported to: {export_path}", LOG__USER)
         
     except Exception as e:
-        print(f"Error exporting device data: {e}")
+        print_and_log(f"Error exporting device data: {e}", LOG__USER)
 
 
 def disconnect_device() -> None:
@@ -1177,7 +1180,7 @@ def disconnect_device() -> None:
     global _current_device, _services
     
     if not _current_device:
-        print("No device connected")
+        print_and_log("No device connected", LOG__USER)
         return
     
     try:
@@ -1185,7 +1188,7 @@ def disconnect_device() -> None:
         if hasattr(_current_device, "disconnect"):
             _current_device.disconnect()
         
-        print(f"\nDisconnected from {_current_device.mac_address}")
+        print_and_log(f"\nDisconnected from {_current_device.mac_address}", LOG__USER)
         
         # Reset global variables
         _current_device = None
@@ -1193,7 +1196,7 @@ def disconnect_device() -> None:
         
     except Exception as e:
         error_msg = BlueZErrorHandler.get_user_friendly_message(e) if hasattr(BlueZErrorHandler, 'get_user_friendly_message') else str(e)
-        print(f"Error disconnecting: {error_msg}")
+        print_and_log(f"Error disconnecting: {error_msg}", LOG__USER)
 
 
 def scan_and_connect_menu() -> Optional[UserMenu]:
@@ -1210,7 +1213,7 @@ def scan_and_connect_menu() -> Optional[UserMenu]:
         if user_input:
             duration = int(user_input)
     except ValueError:
-        print(f"Invalid input, using default duration of {DEFAULT_SCAN_TIMEOUT} seconds")
+        print_and_log(f"Invalid input, using default duration of {DEFAULT_SCAN_TIMEOUT} seconds", LOG__USER)
     
     # Run the scan
     devices = run_scan(duration)
@@ -1224,12 +1227,12 @@ def scan_and_connect_menu() -> Optional[UserMenu]:
         return None
     
     # Display the discovered devices in a formatted way
-    print("\nDiscovered devices:")
+    print_and_log("\nDiscovered devices:", LOG__USER)
     for i, (addr, info) in enumerate(valid_devices.items(), 1):
         name = info.get("name", "Unknown")
         rssi = info.get("rssi", "?")
         rssi_display = f"{rssi} dBm" if rssi != "?" else "? dBm"
-        print(f"{i}. {addr} ({name}) - RSSI: {rssi_display}")
+        print_and_log(f"{i}. {addr} ({name}) - RSSI: {rssi_display}", LOG__USER)
     
     # Create menu options for each device
     options = []
@@ -1309,7 +1312,7 @@ def manual_connect():
     """Prompt for device address and connect."""
     address = input("Enter device address (e.g., 00:11:22:33:44:55): ").strip()
     if not address:
-        print("Address is required")
+        print_and_log("Address is required", LOG__USER)
         return None
         
     # Try to normalize the address
@@ -1359,7 +1362,7 @@ def run_user_mode(args):
                 name = info.get("name", "Unknown")
                 rssi = info.get("rssi", "?")
                 rssi_display = f"{rssi} dBm" if rssi != "?" else "? dBm"
-                print(f"  {addr} ({name}) - RSSI: {rssi_display}")
+                print_and_log(f"  {addr} ({name}) - RSSI: {rssi_display}", LOG__USER)
             
             # If only one device found, connect to it
             if len(valid_devices) == 1:
@@ -1373,26 +1376,35 @@ def run_user_mode(args):
         run_menu_mode()
 
 
+def run(args: argparse.Namespace, output: "OutputContext | None" = None) -> int:
+    """Execute user mode with parsed args and optional OutputContext."""
+    from bleep.core.output import OutputContext
+    from bleep.core.log import set_output_mode
+
+    if output is None:
+        output = OutputContext()
+
+    set_output_mode(output.mode)
+
+    try:
+        run_user_mode(args)
+    except KeyboardInterrupt:
+        print_and_log("\nExiting BLEEP User Mode...", LOG__GENERAL)
+    except Exception as e:
+        print_and_log(f"Error: {e}", LOG__GENERAL)
+        return 1
+    return 0
+
+
 def main(argv=None):
-    """
-    Main entry point for the BLEEP User Mode.
-    
-    Args:
-        argv: Command-line arguments
-    """
+    """Run user mode (backward-compatible wrapper)."""
     parser = argparse.ArgumentParser(description="BLEEP User Mode")
     parser.add_argument("--device", type=str, help="MAC address of device to connect to")
     parser.add_argument("--scan", type=int, help="Run a scan for the specified number of seconds before starting")
     parser.add_argument("--menu", action="store_true", help="Start in menu mode (default is interactive shell)")
     args = parser.parse_args(argv)
-    
-    try:
-        run_user_mode(args)
-    except KeyboardInterrupt:
-        print("\nExiting BLEEP User Mode...")
-    except Exception as e:
-        print(f"Error: {e}")
+    return run(args)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

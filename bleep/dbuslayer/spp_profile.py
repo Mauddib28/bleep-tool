@@ -29,6 +29,11 @@ from bleep.bt_ref.constants import (
     SPP_UUID,
 )
 from bleep.core.log import print_and_log, LOG__DEBUG, LOG__GENERAL
+from bleep.core.errors import (
+    NotSupportedError,
+    OperationInProgressError,
+    map_dbus_error,
+)
 
 try:
     from dbus.mainloop.glib import DBusGMainLoop
@@ -130,8 +135,8 @@ class SppManager:
         on_release: Optional[Callable] = None,
     ):
         if not _HAS_GLIB:
-            raise RuntimeError(
-                "PyGObject (python3-gi) is required for SPP profile registration"
+            raise NotSupportedError(
+                "SPP profile registration (PyGObject/python3-gi is required)"
             )
 
         self._uuid = uuid
@@ -158,7 +163,7 @@ class SppManager:
     def register(self) -> None:
         """Register the SPP profile with BlueZ ``ProfileManager1``."""
         if self._registered:
-            raise RuntimeError("SPP profile already registered")
+            raise OperationInProgressError("SPP profile registration")
 
         DBusGMainLoop(set_as_default=True)
         self._bus = dbus.SystemBus()
@@ -191,10 +196,7 @@ class SppManager:
         try:
             manager.RegisterProfile(self._profile_path, self._uuid, opts)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"SPP RegisterProfile failed: {exc.get_dbus_name()}: "
-                f"{exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
 
         self._registered = True
 

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
+import select
 import struct
 import time
 from typing import Any, Dict, List
@@ -19,6 +21,18 @@ from bleep.ble_ops.common.modalias import format_modalias_info
 
 from bleep.modes.debug_state import DebugState, DEVICE_PROMPT
 from bleep.modes.debug_dbus import print_detailed_dbus_error
+
+__all__ = [
+    "show_properties",
+    "get_handle_from_dict",
+    "cmd_services",
+    "cmd_chars",
+    "cmd_char",
+    "cmd_read",
+    "cmd_write",
+    "cmd_notify",
+    "cmd_detailed",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -327,16 +341,33 @@ def _resolve_char_uuid(char_id: str, state: DebugState) -> str | None:
 
 
 def cmd_read(args: List[str], state: DebugState) -> None:
-    """Read a characteristic value."""
+    """Read a characteristic value.
+
+    Usage: read [--stream] <char_uuid|handle>
+
+    With ``--stream``, uses AcquireNotify fd-based streaming (BZ-1e) to
+    continuously read incoming data until Ctrl-C.  Falls back to standard
+    ReadValue if the characteristic does not support AcquireNotify.
+    """
     if not state.current_device:
         print("[-] No device connected")
         return
     if not args:
-        print("Usage: read <char_uuid|handle>")
+        print("Usage: read [--stream] <char_uuid|handle>")
         return
 
-    uuid = _resolve_char_uuid(args[0], state)
+    stream = "--stream" in args
+    filtered = [a for a in args if a != "--stream"]
+    if not filtered:
+        print("Usage: read [--stream] <char_uuid|handle>")
+        return
+
+    uuid = _resolve_char_uuid(filtered[0], state)
     if uuid is None:
+        return
+
+    if stream:
+        _stream_read(uuid, state)
         return
 
     try:
@@ -374,15 +405,76 @@ def cmd_read(args: List[str], state: DebugState) -> None:
         hex_str = " ".join([f"{b:02x}" for b in value])
         print(f"Value (HEX): {hex_str}")
 
-        if uuid == "00002a50-0000-1000-8000-00805f9b34fb" and len(value) == 7 and state.detailed_view:
+        if uuid == "00002A50-0000-1000-8000-00805F9B34FB" and len(value) == 7 and state.detailed_view:
             pnp_info = decode_pnp_id(value)
             print(f"Value (PnP ID): {pnp_info}")
+
+        profile_decoded = _try_profile_decode(uuid, value)
+        if profile_decoded:
+            print(f"Value (Profile): {profile_decoded}")
 
         _print_numeric_interpretations(value)
         print()
     except Exception as exc:
         print_and_log(f"[-] Read failed: {exc}", LOG__DEBUG)
         print_detailed_dbus_error(exc)
+
+
+def _stream_read(uuid: str, state: DebugState) -> None:
+    """Stream data from a characteristic via AcquireNotify fd (BZ-1e)."""
+    char = state.current_device.get_characteristic(uuid)
+    if char is None:
+        print(f"[-] Characteristic {uuid} not found")
+        return
+
+    try:
+        fd, mtu = char.acquire_notify()
+    except dbus.exceptions.DBusException as exc:
+        print(f"[-] AcquireNotify not supported for {uuid}: {exc}")
+        print(f"[*] Use 'notify {uuid}' for D-Bus PropertiesChanged notifications instead")
+        return
+
+    print(f"[+] Streaming from fd={fd}, mtu={mtu}  (Ctrl-C to stop)")
+    count = 0
+    try:
+        while True:
+            ready, _, _ = select.select([fd], [], [], 2.0)
+            if not ready:
+                continue
+            data = os.read(fd, mtu or 512)
+            if not data:
+                print("[*] Stream closed by remote")
+                break
+            count += 1
+            hex_str = " ".join(f"{b:02x}" for b in data)
+            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            print(f"  [{ts}] #{count:>5d}  ({len(data):>3d} B)  {hex_str}")
+
+            if state.db_available and state.db_save_enabled and state.current_mapping:
+                try:
+                    for svc_uuid, svc_data in state.current_mapping.items():
+                        for c_uuid in svc_data.get("chars", {}):
+                            if c_uuid == uuid:
+                                state.obs.insert_char_history(
+                                    state.current_device.get_address(),
+                                    svc_uuid, uuid, data, "notification",
+                                )
+                                break
+                except Exception:
+                    pass
+    except KeyboardInterrupt:
+        print(f"\n[*] Stream stopped after {count} packets")
+    finally:
+        char.release_acquired()
+
+
+def _try_profile_decode(uuid: str, value: bytes) -> str | None:
+    """Try profile-specific decode for known GATT characteristics."""
+    try:
+        from bleep.ble_ops.common.gatt_profile_decode import decode_characteristic_value
+        return decode_characteristic_value(uuid, value)
+    except Exception:
+        return None
 
 
 def _print_numeric_interpretations(value: bytes) -> None:
@@ -423,13 +515,24 @@ def _print_numeric_interpretations(value: bytes) -> None:
 
 
 def cmd_write(args: List[str], state: DebugState) -> None:
-    """Write to a characteristic."""
+    """Write to a characteristic.
+
+    Usage: write [--stream] <char_uuid|handle> <value>
+
+    With ``--stream``, uses AcquireWrite fd-based streaming (BZ-1e) to
+    bypass per-packet D-Bus overhead.  Falls back to standard WriteValue
+    if the characteristic does not support AcquireWrite.
+    """
     if not state.current_device:
         print("[-] No device connected")
         return
 
-    if len(args) < 2:
-        print("Usage: write <char_uuid|handle> <value>")
+    stream = "--stream" in args
+    filtered = [a for a in args if a != "--stream"]
+
+    if len(filtered) < 2:
+        print("Usage: write [--stream] <char_uuid|handle> <value>")
+        print("  --stream            Use AcquireWrite fd (lower overhead)")
         print("  Value formats:")
         print("    hex:[01ab23cd]    - Interpret as hex bytes")
         print("    str:hello         - Interpret as ASCII/UTF-8 string")
@@ -449,11 +552,11 @@ def cmd_write(args: List[str], state: DebugState) -> None:
         print("    doublebe:123.456  - 64-bit double (big-endian)")
         return
 
-    uuid = _resolve_char_uuid(args[0], state)
+    uuid = _resolve_char_uuid(filtered[0], state)
     if uuid is None:
         return
 
-    value_str = args[1]
+    value_str = filtered[1]
 
     try:
         value, err = parse_value(value_str)
@@ -461,7 +564,16 @@ def cmd_write(args: List[str], state: DebugState) -> None:
             print(f"[-] {err}")
             return
 
-        state.current_device.write_characteristic(uuid, value)
+        if stream:
+            char = state.current_device.get_characteristic(uuid)
+            if char is None:
+                print(f"[-] Characteristic {uuid} not found")
+                return
+            written = char.write_value_fd(value)
+            print(f"\n[+] Streamed {written} bytes to {uuid} via AcquireWrite fd")
+        else:
+            state.current_device.write_characteristic(uuid, value)
+            print(f"\n[+] Successfully wrote to characteristic {uuid}")
 
         if state.db_available and state.db_save_enabled and state.current_mapping:
             try:
@@ -477,7 +589,7 @@ def cmd_write(args: List[str], state: DebugState) -> None:
             except Exception as e:
                 print_and_log(f"[-] Failed to save write to database: {e}", LOG__DEBUG)
 
-        print(f"\n[+] Successfully wrote to characteristic {uuid}\n")
+        print()
     except Exception as exc:
         print_and_log(f"[-] Write failed: {exc}", LOG__DEBUG)
         print_detailed_dbus_error(exc)

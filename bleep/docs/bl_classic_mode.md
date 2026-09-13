@@ -34,14 +34,18 @@ sudo systemctl enable --now bluetooth-obexd.service
 | Command | Purpose |
 |---------|---------|
 | `classic-scan` | BR/EDR inquiry scan – lists nearby Classic devices |
-| `classic-enum <MAC>` | SDP browse + records; prints RFCOMM services table (supports `--debug` for enhanced attributes, `--connectionless` for l2ping reachability check, `--version-info` for Bluetooth version information, `--analyze` for comprehensive SDP analysis) |
+| `classic-enum <MAC>` | SDP browse + records; prints RFCOMM services table (supports `--debug` for enhanced attributes, `--connectionless` for l2ping reachability check, `--version-info` for Bluetooth version information, `--analyze` for comprehensive SDP analysis, `--sdp-source` to select/union discovery sources) |
+| `classic-connect <MAC>` | Connect to a Classic device via SDP + RFCOMM (`--check` status-only, `--no-pair`, `--channel N`, `--keep` to hold the socket, `--timeout`, `--no-profiles` to skip post-connect BlueZ profile activation) |
+| `classic-rfcomm <MAC> [--probe] [--bind CHANNEL]` | Enumerate RFCOMM channels via SDP; `--probe` fingerprints each channel for terminal/serial/SSH endpoints, `--bind N` binds `/dev/rfcommN` (`--device-id`) to a channel, `--timeout` per-channel probe seconds |
+| `hid-info <MAC> [--connect]` | Classify a device as a Human Interface Device (keyboard/mouse/…); default is connectionless from cached discovery props, `--connect` harvests richer `Input1` evidence |
 | `classic-pbap <MAC> --out <file.vcf>` | Pull full phone-book (VCF) via PBAP |
-| `classic-opp <MAC> send <file>` / `pull` | Send a file or pull business card via OPP |
-| `classic-map <MAC> folders\|list\|get\|push\|inbox\|types\|fields\|monitor\|instances [--instance N]` | Browse, manage, and monitor SMS/MMS via MAP (use `--instance` for multi-MAS) |
+| `classic-opp <MAC> send <file>` / `pull` / `exchange <file>` | Send a file, pull a business card, or `exchange` (push local vCard then pull the remote card) via OPP |
+| `classic-map <MAC> folders\|list\|get\|push\|inbox\|types\|fields\|monitor\|instances [--instance N]` | Browse, manage, and monitor SMS/MMS via MAP (use `--instance` for multi-MAS; `get <handle>` takes `--folder` e.g. `telecom/msg/inbox` so obexd can materialise the message object before download) |
 | `classic-ftp <MAC> ls\|get\|put\|mkdir\|rm` | Browse and transfer files via OBEX FTP |
-| `classic-pan connect\|disconnect\|status\|serve\|unserve <MAC>` | Personal Area Networking – PAN client & server |
+| `classic-pan connect\|disconnect\|status\|monitor\|server-reg\|server-unreg <MAC>` | Personal Area Networking – PAN client, event-driven `monitor`, & multi-role server (`server-reg --role nap --role gn` / `--all` / `--authorize`) |
+| `network-enum [--adapter hci0] [--json] [--all-devices]` | Enumerate PAN capability across adapters (`NetworkServer1`) and devices (`Network1` / PAN UUIDs) |
 | `classic-spp register\|unregister\|status [--channel N] [--auth/--no-auth]` | SPP serial port profile registration |
-| `connect-profile <MAC> --uuid <UUID> --action connect\|disconnect` | Connect/disconnect a specific Bluetooth profile by UUID |
+| `connect-profile <MAC> <UUID> [--disconnect]` | Connect/disconnect a specific Bluetooth profile by UUID |
 | `classic-sync <MAC> get\|put [--location int\|sim1]` | IrMC Synchronization – download/upload phonebook |
 | `classic-bip <MAC> props\|get\|thumb <handle>` | Basic Imaging Profile – image properties / download / thumbnail [experimental] |
 | Raw OBEX over RFCOMM (design doc) | ✅ |
@@ -49,17 +53,17 @@ sudo systemctl enable --now bluetooth-obexd.service
 | Debug Mode: `csdp <MAC> [--connectionless]` | SDP discovery without full connection (connectionless mode with l2ping reachability check) |
 | Debug Mode: `pbap [options]` | Interactive PBAP phonebook dumps from connected Classic devices |
 | Debug Mode: `copen` / `csend` / `crecv` / `craw` | RFCOMM data-exchange commands (open socket, send, receive, interactive session) |
-| Debug Mode: `copp send <file>` / `copp pull` | Object Push Profile – send files or pull business cards |
+| Debug Mode: `copp send <file>` / `copp pull` / `copp exchange <local.vcf> [dest.vcf]` | Object Push Profile – send files, pull business cards, or exchange (push + pull) business cards |
 | Debug Mode: `cmap folders\|list\|get\|push\|download-all\|push-all\|inbox\|types\|fields\|monitor\|instances [--instance N]` | Message Access Profile – browse, manage, bulk download/upload, and monitor SMS/MMS (multi-MAS) |
 | Debug Mode: `cftp ls\|cd\|get\|put\|mkdir\|rm\|cp\|mv` | File Transfer Profile – browse and transfer files |
-| Debug Mode: `cpan connect\|disconnect\|status\|server` | Personal Area Networking (PAN) – client & server |
+| Debug Mode: `cpan connect\|disconnect\|status\|server-reg\|server-unreg` | Personal Area Networking (PAN) – client & server (alias: `cpan server register\|unregister`) |
 | Debug Mode: `cprofiles` | List `Device1.UUIDs` with resolved names |
 | Debug Mode: `cprofile connect\|disconnect <UUID>` | Connect/disconnect a specific profile by UUID |
 | Debug Mode: `cspp register\|unregister\|status [--auth/--no-auth]` | SPP serial port profile – incoming connections feed `csend`/`crecv` |
 | Debug Mode: `csync get\|put [--location int\|sim1]` | IrMC Synchronization – download/upload phonebook |
 | Debug Mode: `cbip props\|get\|thumb <handle>` | Basic Imaging Profile [experimental] |
 
-All commands share global CLI flags such as `--hci <index>` and logging level.
+Adapter selection via `--adapter hciN` (default `hci0`; there is no global `--hci` flag) is available on the scanning, connection, enumeration, RFCOMM, ping, and network subcommands — `classic-scan`, `classic-enum`, `classic-connect`, `classic-ping`, `classic-rfcomm`, `network-enum`, `classic-pan monitor`, `hid-info`, and `connect-profile`. It is **not** exposed on the OBEX/profile-operation subcommands (`classic-pbap`, `classic-map`, `classic-opp`, `classic-ftp`, `classic-sync`, `classic-bip`, `classic-spp`) or on `classic-pan connect|disconnect|status`, which use the default adapter.
 Run `python -m bleep.cli --help` for details.
 
 ### 2.1  Scan example
@@ -166,8 +170,20 @@ SDP records were obtained, the command reports success with a warning:
 - **Service Version** (0x0300) – Service-specific version number
 - **Service Description** (0x0101) – Human-readable service description
 
-BLEEP first runs `sdptool browse --tree` (fast).  If a PBAP entry is missing or
-no RFCOMM channels appear it automatically falls back to `sdptool records`.
+**Discovery chain.**  BLEEP tries `Device1.GetServiceRecords` (D-Bus, BlueZ
+≥ 5.66) first, then plain `sdptool browse` — which follows the public browse
+group and is the only single source that reliably returns *every* advertised
+record with its RFCOMM channel and L2CAP PSM (verified against honeypot targets
+whose extra browse-group services are dropped by `browse --xml` and truncated by
+`records`).  `sdptool browse --xml` (structured) and `sdptool records`
+(handle-range scan) remain as ordered fallbacks.
+
+**UUID name resolution.**  When a record carries no SDP Service Name (attribute
+`0x0100`) but does advertise a Service Class UUID, BLEEP annotates the UUID line
+with a name resolved from its UUID databases via
+`uuid_translator.get_uuid_name()`.  This handles the short-form UUIDs (`0x110E`,
+`0x1116`, `0x112F`, …) that `sdptool` typically emits, e.g.
+`UUID: 0x110E (A/V Remote Control)`.
 
 ### Vendor-Specific / Proprietary SDP Services
 
@@ -323,6 +339,27 @@ Confidence: 75.0%
 ============================================================
 ```
 
+**SDP source selection (`--sdp-source` flag):** selects which discovery source(s)
+`classic-enum` uses. Default `auto` preserves the historical first-success chain
+(D-Bus `GetServiceRecords` → `sdptool browse` → `browse --xml` → `records`).
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` (default) | First source that returns records wins (unchanged behaviour) |
+| `dbus` \| `browse` \| `xml` \| `records` | Force a single discovery source |
+| `merge` / `all` | Query **every** source and union records (keyed by handle→uuid→name), filling missing fields, preserving all raw text, and flagging per-field disagreements |
+
+In `merge`/`all` mode each record shows its contributing `Source` (e.g.
+`browse+xml`) and any `[!] Source discrepancy on <field>` where sources disagree.
+Discrepancies are also persisted (`sdp_records.source`) and surfaced by
+`SDPAnalyzer` as `source_discrepancy` anomalies — useful for fingerprinting
+honeypots / SDP servers that answer inconsistently.
+
+```bash
+# Union every SDP source and expose cross-source disagreements
+python -m bleep.cli classic-enum 14:89:FD:31:8A:7E --sdp-source merge --analyze
+```
+
 **Where do the UUIDs come from?**  Use the 16-bit or 128-bit Service Class UUID
 advertised by the remote device (shown in the *Output* column of `classic-enum`)
 or consult the SIG Assigned Numbers list.  BLEEP bundles a YAML copy under
@@ -349,7 +386,7 @@ is raised.  Check log files below.
 
 ### 2.4  Debug Mode SDP Discovery (Connectionless)
 
-The debug mode (`python -m bleep -m debug`) includes a `csdp` command for SDP discovery on Classic devices. This command supports connectionless mode with l2ping reachability checking, matching the functionality of the CLI `classic-enum --connectionless` flag.
+The debug mode (`python -m bleep debug`) includes a `csdp` command for SDP discovery on Classic devices. This command supports connectionless mode with l2ping reachability checking, matching the functionality of the CLI `classic-enum --connectionless` flag.
 
 **Features:**
 - Regular SDP discovery (no connection required)
@@ -361,7 +398,7 @@ The debug mode (`python -m bleep -m debug`) includes a `csdp` command for SDP di
 **Usage:**
 ```bash
 # Start debug mode
-python -m bleep -m debug
+python -m bleep debug
 
 # Regular SDP discovery (no connection required)
 BLEEP-DEBUG> csdp 14:89:FD:31:8A:7E
@@ -422,7 +459,7 @@ BLEEP-DEBUG> csdp 14:89:FD:31:8A:7E --connectionless --l2ping-count 5 --l2ping-t
 
 ### 2.5  Debug Mode PBAP Command
 
-The debug mode (`python -m bleep -m debug`) now includes a `pbap` command for interactive PBAP phonebook dumps from Classic devices. This provides the same functionality as the `classic-pbap` CLI command but within the debug shell environment.
+The debug mode (`python -m bleep debug`) now includes a `pbap` command for interactive PBAP phonebook dumps from Classic devices. This provides the same functionality as the `classic-pbap` CLI command but within the debug shell environment.
 
 **Prerequisites:**
 - Classic device must be connected via `cconnect <mac>` command
@@ -432,7 +469,7 @@ The debug mode (`python -m bleep -m debug`) now includes a `pbap` command for in
 **Usage:**
 ```bash
 # Start debug mode and connect to Classic device
-python -m bleep -m debug
+python -m bleep debug
 BLEEP-DEBUG> cconnect 14:89:FD:31:8A:7E
 [+] Connected to 14:89:FD:31:8A:7E – 5 RFCOMM services
 
@@ -674,7 +711,7 @@ python -m bleep.cli classic-map AA:BB:CC:DD:EE:FF fields
 **Note:** MNS monitoring requires `PyGObject` (`python3-gi`) for the GLib
 main loop.  The monitor session stays open until explicitly stopped.
 
-#### 2.7.6  Multi-Instance MAS Selection
+#### Multi-Instance MAS Selection
 
 Some devices expose multiple MAS instances (e.g. one for SMS and another for
 email), each advertising a separate RFCOMM channel in their SDP records.  Use
@@ -701,7 +738,7 @@ Under the hood, `--instance` passes the RFCOMM channel as the `Channel` byte
 in the `CreateSession` D-Bus call (per `org.bluez.obex.Client1`).  When
 omitted, BlueZ connects to the first available MAS.
 
-### 2.8  `cftp` – File Transfer Profile (OBEX FTP)
+### 2.10  `cftp` – File Transfer Profile (OBEX FTP)
 
 Browse and transfer files on a connected Classic device via the OBEX File
 Transfer Profile (UUID `0x1106`, `org.bluez.obex.FileTransfer1`).
@@ -739,7 +776,7 @@ BLEEP-DEBUG[14:89:FD:31:8A:7E]> cftp mv temp.dat final.dat
 command is illustrative — for multi-step workflows, use the operations-layer
 functions or a `FtpSession` context manager directly.
 
-### 2.9  `cpan` / `classic-pan` – Personal Area Networking
+### 2.11  `cpan` / `classic-pan` – Personal Area Networking
 
 Connect to or host a Bluetooth PAN network using `org.bluez.Network1` (client)
 and `org.bluez.NetworkServer1` (server) on the **system bus**.
@@ -770,24 +807,185 @@ BLEEP-DEBUG[14:89:FD:31:8A:7E]> cpan server unregister nap
 python -m bleep.cli classic-pan connect AA:BB:CC:DD:EE:FF --role nap
 python -m bleep.cli classic-pan status AA:BB:CC:DD:EE:FF
 python -m bleep.cli classic-pan disconnect AA:BB:CC:DD:EE:FF
-python -m bleep.cli classic-pan serve --role nap --bridge pan0
-python -m bleep.cli classic-pan unserve --role nap
+python -m bleep.cli classic-pan server-reg --role nap --bridge pan0
+python -m bleep.cli classic-pan server-unreg --role nap
+
+# Host several PAN roles on one bridge (repeatable --role, or --all = nap+gn+panu)
+python -m bleep.cli classic-pan server-reg --role nap --role gn --bridge pan0
+python -m bleep.cli classic-pan server-reg --all --bridge pan0
+python -m bleep.cli classic-pan server-unreg --all
 ```
+
+> **Multi-role server (v3.x).** `server-reg` registers one or more PAN roles on a
+> single `NetworkServer`; the underlying wrapper tracks `{role: bridge}` and, on
+> Ctrl-C **or** any error, guarantees `unregister_all()` teardown (best-effort —
+> every role is attempted even if one fails). If a later role fails to register,
+> the roles already registered by that call are rolled back so nothing is
+> stranded. `server-unreg` accepts the same repeatable `--role` / `--all` and reports
+> per-role results.
 
 **Prerequisites:** Device must be paired and trusted.  The `Network1` interface
 is available on device objects; `NetworkServer1` is on the local adapter.
 A Linux bridge interface (e.g. `pan0`) may need to be created before serving.
 
-> **Note:** `NetworkClient.connect()` now performs a post-connect verification
-> (500 ms delay + `Connected` property check).  If the BNEP session drops
-> immediately after BlueZ returns, the command raises a descriptive error
-> instead of falsely reporting success.
+> **Prerequisite preflight (v3.x):** `classic-pan connect` and `classic-pan server-reg`
+> now run a **detect-and-instruct** preflight before acting.  It checks the host
+> prerequisites BlueZ does *not* manage — the `bnep` kernel module, a powered
+> adapter, and (for `server-reg`) that the `--bridge` interface exists and is a bridge
+> plus whether IPv4 forwarding is enabled (advisory, for NAP internet sharing).
+> The check **never mutates host networking**; it prints actionable remediation
+> commands (`sudo modprobe bnep`, `sudo ip link add pan0 type bridge`, …) and then
+> continues, so existing success paths are unchanged.  Pass `--no-preflight` to
+> skip it.  Example:
 >
-> The CLI `classic-pan serve` command now blocks with `signal.pause()` to keep
-> the server registration alive.  Press **Ctrl-C** to cleanly unregister.
-> In debug mode, the `NetworkServer` object is retained on session state.
+> ```
+> [+] PAN client prerequisites (role=nap):
+>   ✓ bnep kernel module
+>   ✓ Bluetooth adapter ready
+>   ✓ All PAN prerequisites satisfied
+> ```
+>
+> Opt-in bridge/NAT/DHCP auto-provisioning for NAP hosting is planned future work
+> (see `docs/todo_tracker.md` → "NAP host auto-setup").
 
-### 2.10  `cspp` / `classic-spp` – Serial Port Profile
+> **Connect-path correctness (v3.x):** `classic-pan connect` was hardened:
+> * **Roles**: the CLI `--role` flag accepts only the short names
+>   (`nap`/`panu`/`gn`, default `nap`; enforced by `argparse` `choices`).  The
+>   underlying ops/D-Bus layer (`NetworkClient`) additionally normalises full
+>   PAN UUIDs (e.g. `00001116-0000-1000-8000-00805F9B34FB`) to the short form
+>   BlueZ expects, so programmatic callers may pass either form.
+> * A **bond/SDP precheck** warns (non-fatally) when the target is not paired or
+>   does not advertise a PAN service.  `--trust` additionally marks the device
+>   Trusted before connecting.
+> * On `NotSupported` from `Network1.Connect`, BLEEP **falls back to
+>   `Device1.ConnectProfile(<pan-uuid>)`**, which drives BlueZ's SDP probe +
+>   profile registration, then reads back the resulting interface.  Disable with
+>   `--no-fallback`.
+> * All PAN D-Bus failures now surface as mapped `BLEEPError` types (consistent
+>   with the rest of BLEEP) rather than bare `RuntimeError`.
+
+> **Event-driven connect verification (v3.x, G8).** `NetworkClient.connect()`
+> confirms the BNEP session actually stabilised before returning. As of Phase 4
+> this is **event-driven**: it primes a one-shot `GetAll` snapshot and then waits
+> on the `Network1` `PropertiesChanged` signal for `Connected` (default 2 s), and
+> **falls back** to the historical single 0.5 s poll if the signal path is
+> unavailable (e.g. no GLib loop). If the session drops immediately after BlueZ
+> returns, the command raises a descriptive error instead of falsely reporting
+> success.
+>
+> The CLI `classic-pan server-reg` command blocks (via `signal.pause()`, or a GLib
+> main loop when `--authorize` is set) to keep the registration alive.  Press
+> **Ctrl-C** to cleanly unregister.  In debug mode, the `NetworkServer` object is
+> retained on session state.
+
+> **Networking capability boundary (what BLEEP can and cannot reach over D-Bus).**
+> In BlueZ, "Bluetooth networking" is **exclusively** the PAN profile carried by
+> **BNEP over L2CAP (PSM `0x000F`)** — there is no 6LoWPAN/IPSP support in the
+> BlueZ tree.  As a **D-Bus client**, BLEEP can reach only the two high-level
+> interfaces `bluetoothd` exports:
+> * `org.bluez.Network1` (per-device client: `Connect`/`Disconnect` + `Connected`
+>   / `Interface` / `UUID`), surfaced here as `classic-pan connect|disconnect|status`
+>   and the device-class helpers `is_network_device()` / `get_network_roles()` /
+>   `get_network_status()`.
+> * `org.bluez.NetworkServer1` (per-adapter: `Register`/`Unregister`), surfaced as
+>   `classic-pan server-reg|server-unreg` and `network-enum`.
+>
+> Everything **below** those interfaces is internal to `bluetoothd` and the Linux
+> kernel and is **not reachable over D-Bus**: BNEP control messages / protocol &
+> multicast **filters** (`SetupConnectionRequest`, `FilterNetTypeSet`, …), the
+> `bnepX` netdev creation, and the daemon-side `network.conf` (`DisableSecurity`,
+> `bnep` naming).  Host-side prerequisites BlueZ does *not* manage (the `bnep`
+> module, a Linux bridge, IPv4 forwarding/NAT) are **detected and reported** by
+> the preflight (Phase 1) but never mutated.  Raw BNEP framing and NAP host
+> auto-provisioning are tracked as Future Work in
+> `docs/todo_tracker.md`.
+
+#### 2.11.1  `network-enum` – PAN capability discovery
+
+Enumerates PAN capability across the whole BlueZ object tree from a single
+`GetManagedObjects` snapshot — no per-device connections. It reports which
+adapters expose `NetworkServer1` (PAN NAP/GN hosting) and which devices expose
+`Network1` and/or advertise PAN role UUIDs (PANU/NAP/GN).
+
+```bash
+python -m bleep.cli network-enum                 # human-readable
+python -m bleep.cli network-enum --json          # machine-readable
+python -m bleep.cli network-enum --adapter hci0  # restrict to one adapter
+python -m bleep.cli network-enum --all-devices   # include non-network devices
+```
+
+The same discovery is exposed programmatically as
+`bleep.ble_ops.classic.pan.find_network_servers()` /
+`find_network_devices(managed_objects=None, adapter=None, only_capable=True)` and,
+per-device, via the additive device-class helpers `is_network_device()`,
+`get_network_roles()`, `has_network_interface()`, and `get_network_status()` on
+both the Classic and LE device wrappers (dual-mode devices carry PAN over the
+BR/EDR bearer). `get_device_info()` now includes an additive `network` key
+(`{roles, has_interface, status}` or `null`). The standalone helper
+`bleep/scripts/check_network_capabilities.py` is a thin wrapper over these ops.
+
+#### 2.11.2  `classic-pan monitor` – event-driven Network1 watch (E5)
+
+Streams live `Network1` state (`Connected` / `Interface` / `UUID`) for a device
+by subscribing to the `PropertiesChanged` signal — **no polling**. Each change
+is printed and persisted to the observation DB; runs until Ctrl-C (or `--timeout`).
+
+```bash
+python -m bleep.cli classic-pan monitor 98:3B:8F:EF:FE:EC            # until Ctrl-C
+python -m bleep.cli classic-pan monitor 98:3B:8F:EF:FE:EC --timeout 30
+```
+
+Programmatic core: `bleep.dbuslayer.network.NetworkMonitor` (pure signal-merge in
+`_apply_change`; `wait_for(predicate, timeout)` and `run(timeout=…)` drive a GLib
+loop) and the ops wrapper `bleep.ble_ops.classic.pan.monitor(mac, adapter, timeout,
+on_change)`.
+
+#### 2.11.3  `classic-pan server-reg --authorize` – observe inbound BNEP clients (E7)
+
+While hosting a NAP/GN, `--authorize` registers a **default BlueZ agent** so that
+each inbound BNEP client triggers `AuthorizeService` (`server.c`
+`btd_request_authorization` for `BNEP_SVC_UUID`). BLEEP logs the connecting device
+and service and auto-accepts; a GLib main loop is run so the agent receives the
+calls, and the agent is unregistered on teardown alongside the server roles.
+
+```bash
+# Requires host prerequisites: bnep module + a bridge (pan0)
+sudo modprobe bnep
+sudo ip link add pan0 type bridge 2>/dev/null; sudo ip link set pan0 up
+python -m bleep.cli classic-pan server-reg --role nap --bridge pan0 --authorize
+```
+
+#### 2.11.4  Scripted PAN peer harness & order of operations
+
+`bleep/scripts/pan_peer.py` is a **standalone** (raw BlueZ D-Bus, no BLEEP import)
+controllable peer for repeatable two-node testing. Run it on a **second** host or
+adapter. It has three subcommands: `connect` (PANU client into a NAP), `serve`
+(host a NAP so BLEEP connects as PANU), and `monitor` (cross-check the signal).
+
+**A — BLEEP hosts NAP, peer is PANU client (exercises `server-reg --authorize`, E7):**
+
+1. BLEEP host: `classic-pan server-reg --role nap --bridge pan0 --authorize` (after `modprobe bnep`
+   and creating `pan0`).
+2. Get the BLEEP host adapter MAC (`bluetoothctl show`).
+3. Peer host: `sudo python3 bleep/scripts/pan_peer.py connect <BLEEP_MAC> --role panu --pair --hold`.
+4. BLEEP logs `inbound BNEP client … → authorized`; peer prints its `bnepX`.
+5. Ctrl-C peer (auto-disconnect), then Ctrl-C BLEEP (auto-unregister).
+
+**B — Peer hosts NAP, BLEEP is PANU client (exercises `monitor` E5 + connect G8):**
+
+1. Peer host: `modprobe bnep`, create `pan1`, then
+   `sudo python3 bleep/scripts/pan_peer.py serve --role nap --bridge pan1`.
+2. Get the peer adapter MAC.
+3. BLEEP host, terminal 1: `classic-pan monitor <PEER_MAC>`; terminal 2:
+   `classic-pan connect <PEER_MAC> --role panu --trust`.
+4. BLEEP's monitor prints `connected=True` + interface; connect verifies via the
+   `PropertiesChanged` signal (G8).
+
+**Pairing note:** PAN needs a bond + trust on at least one side. Use `--pair` on
+the peer `connect`, `--trust` on BLEEP `connect`, or pair once with `bluetoothctl`
+before the first connection.
+
+### 2.12  `cspp` / `classic-spp` – Serial Port Profile
 
 Register a custom SPP profile via BlueZ `ProfileManager1.RegisterProfile` on
 the **system bus**.  When a remote device connects, the `Profile1.NewConnection`
@@ -824,7 +1022,7 @@ and trusted.
 
 ---
 
-### 2.11  `csync` / `classic-sync` – IrMC Synchronization
+### 2.13  `csync` / `classic-sync` – IrMC Synchronization
 
 Download or upload the entire phonebook via the legacy OBEX IrMC Synchronization
 profile (`Synchronization1`, UUID `0x1104`).  Few modern devices advertise this
@@ -859,7 +1057,7 @@ be paired, trusted, and must advertise IrMC Sync (UUID `0x1104`).
 
 ---
 
-### 2.12  `cbip` / `classic-bip` – Basic Imaging Profile [experimental]
+### 2.14  `cbip` / `classic-bip` – Basic Imaging Profile [experimental]
 
 Download images and thumbnails from a remote device via the BlueZ
 **experimental** `Image1` interface (UUID `0x111A`).  The session target is
@@ -909,7 +1107,7 @@ through external means:
 
 Run `classic-bip list` for a quick reminder of these approaches.
 
-### 2.13  SIM Access Profile (SAP) — informational
+### 2.15  SIM Access Profile (SAP) — informational
 
 SDP enumeration of some devices reveals `SIM Access` (UUID `0x112D`).  The
 BlueZ D-Bus API (`org.bluez.SimAccess1`) for this profile is **extremely
@@ -932,16 +1130,20 @@ If you need SIM access you must use AT commands over an RFCOMM serial channel
 
 ## 3  Logging
 
-BLEEP writes per-category logs to `/tmp` (overwritten each run):
+BLEEP writes per-category logs to the per-user data directory
+`~/.local/share/bleep/logs/` (see `bleep/core/log.py`).  For backward
+compatibility, legacy `/tmp/bti__logging__*.txt` **symlinks** point at these
+real files:
 
-| File suffix | What it contains |
-|-------------|------------------|
-| `__logging__general.txt` | High-level progress lines |
-| `__logging__debug.txt`   | Retry loops, D-Bus method names, SDP raw output |
-| `__logging__enumeration.txt` | Parsed SDP records table |
-| `__logging__usermode.txt`| RFCOMM connect attempts |
+| Primary file | Legacy symlink | What it contains |
+|--------------|----------------|------------------|
+| `general.log` | `/tmp/bti__logging__general.txt` | High-level progress lines |
+| `debug.log`   | `/tmp/bti__logging__debug.txt`   | Retry loops, D-Bus method names, SDP raw output |
+| `enumeration.log` | `/tmp/bti__logging__enumeration.txt` | Parsed SDP records table |
+| `usermode.log`| `/tmp/bti__logging__usermode.txt`| RFCOMM connect attempts |
 
-Enable verbose CLI flag `-v` to mirror *general* log on stdout.
+There is no top-level `-v` flag; set `BLEEP_LOG_LEVEL=DEBUG` (or another level)
+to raise verbosity.
 
 ---
 
@@ -955,11 +1157,19 @@ Enable verbose CLI flag `-v` to mirror *general* log on stdout.
 | `BlueZ obexd PBAP transfer failed; see logs for details` | Transfer aborted by remote, wrong repository selected | Check `/tmp/...debug.txt`; some feature phones only expose `int/pb.vcf` after `Select` – already handled; open an issue if persists |
 | `Failed to connect … Operation timed out` | Device busy or radio glitch | Retry; Classic connect uses 5×2 s back-off |
 | `org.freedesktop.DBus.Error.NoReply` or `Timed out waiting for response` during PBAP | Bluetooth controller stuck in half-open BR/EDR connection (BlueZ bug) | In `bluetoothctl` type `disconnect <MAC>` for the target device, wait 2-3 s, then re-run the command.  Power-cycling the phone is a second fallback. |
+| `org.bluez.obex.Error.Failed: Unable to find service record` during PBAP | **Device-side, not a BLEEP defect.** obexd's session-time SDP ServiceSearch for the PBAP record failed even though the record *is* advertised (`classic-enum --sdp-source merge --analyze` and `sdptool search 0x112F` both find it). **Confirmed root cause on some Target Device implementations:** repeated failed OBEX attempts wedge the *device's* OBEX stack, after which it cycles through `Too short header in packet`, `Unable to find service record`, and `Timed out waiting for response` non-deterministically and never reaches the authorisation stage (so no on-device prompt appears). | **Restart the Target Device** — this clears its OBEX buffers and is the confirmed fix (validated live: PBAP dump succeeded immediately after a device restart, 313 vCard lines pulled). Depending on the device implementation a power-cycle may be required rather than a `bluetoothctl disconnect`. After restart, attend the device to accept any PBAP / Contact-Sharing prompt (some variants require per-access confirmation), then retry. |
 | `OPP CreateSession failed` or `MAP CreateSession failed` | `bluetooth-obexd` not running, or device not paired/trusted | `sudo systemctl start bluetooth-obexd`; pair & trust device first |
+| `MAP CreateSession failed … device not responding` / `Timed out waiting for response` | **MAS access not authorised** on the target (screen locked/asleep, or message-sharing disabled for this pairing). Reaching the auth stage requires an awake device. | **Wake/unlock the target**, enable Bluetooth **message/SMS sharing** for the pairing, and **accept the Message-Access prompt**, then retry. BLEEP now surfaces this as a Convention-aligned `BLEEPError` with these steps inline. |
+| `[!] MAP (0x1132/0x1134) not advertised by <MAC> in SDP – attempting anyway` | The target does **not** expose a MAS instance in SDP (e.g. feature phones / honeypots). Non-fatal pre-flight warning. | Confirm the device supports MAP; run `classic-map <MAC> instances` to list MAS channels. If none, MAP is unavailable on that target — not a BLEEP defect. |
+| `[!] OPP (0x1105) not advertised …` / `[!] OBEX-FTP (0x1106) not advertised … – attempting anyway` | Non-fatal SDP pre-flight for `classic-opp` / `classic-ftp`: the profile UUID was not found in the target's service map (mirrors the interactive `detect_*_service` guard). | Confirm the device advertises the profile via `classic-enum <MAC>`. Most phones expose OPP but **not** FTP/SYNC/BIP. If absent the command still attempts, then fails cleanly at CreateSession. |
+| `OBEX CreateSession failed: <PROFILE> service record not retrievable at session time` (OPP/FTP/SYNC/BIP) | Either the profile is **not advertised** by the target (common for FTP `0x1106`, SYNC `0x1104`, BIP `0x111A/B` on modern phones) or an advertised record transiently failed obexd's session-time SDP lookup. | Verify support with `classic-enum <MAC>`. If genuinely absent, the profile is unavailable on that target — not a BLEEP defect. If advertised, accept any on-device prompt and retry, or `bluetoothctl disconnect <MAC>` and reconnect. |
+| `Operation not supported: BIP Image1 interface (obexd must run with --experimental)` | BIP's `Image1` D-Bus interface is `[experimental]` in BlueZ and is unavailable unless obexd is launched with `--experimental`. | Start obexd with the experimental flag (e.g. `bluetooth-obexd -n -d --experimental`) and retry `classic-bip`. Note that few devices advertise BIP at all. |
 | OPP pull / FTP get / MAP get succeeds but file is empty or remote shows "failure in sending" | **obexd AppArmor confinement** — on Ubuntu, `obexd` runs under AppArmor and may only write to permitted paths (e.g. `~/.cache/obexd/`). If the destination is outside the permitted area, the transfer silently fails. | BLEEP uses a two-stage approach: obexd writes to `~/.cache/obexd/` (staging), then BLEEP moves the file to the final directory (`/tmp/bleep_received/` by default). Override the final directory with `--save-dir` or `BLEEP_RECEIVE_DIR` env var. |
 | `OPP transfer timed out` / `MAP transfer timed out` | Remote device did not complete OBEX transfer in time | Increase timeout, restart remote device, check logs |
 | `csend` / `crecv` → `Send failed` / `Receive failed` | RFCOMM socket disconnected or channel mismatch | Re-open with `copen`; verify channel with `cservices` |
 | `br-connection-profile-unavailable` on `gatt-enum` / `media-enum` for dual-mode audio devices | Host system lacks Bluetooth audio profile handlers (no PulseAudio/PipeWire/BlueALSA) — BlueZ `Device1.Connect()` requires a local handler for at least one remote profile | Install `bluez-alsa-utils` (`sudo apt-get install bluez-alsa-utils`) or ensure an audio server with Bluetooth support is running.  Run `bleep --check-env` to verify.  Confirmed fix on OnePlus 6T and Samsung S7 Active. |
+| `br-connection-create-socket` during `classic-enum` / `classic-rfcomm` (F6) | **Non-fatal, environmental.** The initial `Device1.Connect()` attempt failed to open the BR/EDR socket (device busy, half-open link, or auto-connect from a paired host racing the CLI). This is the same class as `br-connection-busy`. | **No action required** — SDP enumeration proceeds connectionlessly and completes normally. If a *connection-based* profile op (PBAP/MAP/etc.) is needed, `bluetoothctl disconnect <MAC>`, wait 2–3 s, and retry. |
+| `db show` / `db list` reports `Address Type: public` for a device whose LE address is structurally random (e.g. `47:xx…` with the two MSBs set) (F7) | **Not a bug — faithful echo.** BLEEP reports `org.bluez.Device1.AddressType` exactly as BlueZ exposes it. BlueZ may label an address `public` even when the bits indicate a (resolvable/non-resolvable) private/random address, depending on how the controller/kernel populated the property. | Informational only. Treat the address *structure* (top two bits) as the authoritative RPA indicator; the reported `AddressType` string reflects BlueZ's view, not BLEEP's classification. |
 
 ---
 
@@ -992,83 +1202,13 @@ Enable verbose CLI flag `-v` to mirror *general* log on stdout.
 
 ---
 
-*Last updated: 2026-04-08 (MAP handle fix, PBAP watchdog 30 s, BIP handle discovery docs, SAP §2.13 docs)*
+*Last updated: 2026-09-13 (v3.0.0 doc-fidelity pass: scoped the `--adapter` availability statement to the subcommands that actually accept it; corrected the debug `cpan` verb summary to `server-reg`/`server-unreg`; added `classic-connect`, `classic-rfcomm`, `hid-info`, and `classic-opp exchange` to the command table; renumbered the profile sections to remove duplicate §2.8/§2.9 headings — OPP stays §2.8 and MAP stays §2.9, while `cftp`→§2.10, `cpan`→§2.11, `cspp`→§2.12, `csync`→§2.13, `cbip`→§2.14, SAP→§2.15 (active cross-refs in `network_capability_summary.md`, `pan_connection_analysis.md`, and `archive/network_capability_plan.md` updated accordingly; historical `changelog.md`/`todo_tracker.md` entries retain their original numbering). Earlier (2026-07-23): corrected completed-tracker module paths to the nested `bleep/ble_ops/classic/` layout; MAP handle fix, PBAP watchdog 30 s, BIP handle discovery docs, SAP docs)*
 
 ---
 
-## 6  Temporary Classic-Feature TODO Tracker  
-*(will be removed once every item is ✅ completed)*
-
-| ID | Task | Status |
-|----|------|--------|
-| bc-01 | Research BlueZ D-Bus APIs for Classic (discovery, SDP, RFCOMM, PBAP) | ✅ completed |
-| bc-02 | Design high-level Classic API surface mirroring BLE helpers | ✅ completed |
-| bc-03 | Implement `dbuslayer.device_classic` wrapper | ✅ completed |
-| bc-04 | Create SDP service-discovery helper (`classic_sdp.py`) | ✅ completed |
-| bc-05 | Parse RFCOMM channels from SDP records | ✅ completed |
-| bc-06 | Extend `classic_connect_and_enumerate()` to return service→channel map | ✅ completed |
-| bc-07 | PBAP phone-book dump helper via BlueZ OBEX D-Bus | ✅ completed |
-| bc-08 | Add `br_ops` equivalents (`classic_scan`, `classic_connect_and_enumerate`) | ✅ completed |
-| bc-09 | Add CLI sub-commands `classic-scan` & `classic-enum` | ✅ completed |
-| bc-10 | Debug-mode interactive support for Classic devices (PBAP command) | ✅ completed |
-| bc-11 | Write documentation for Classic mode & update README TOC | ✅ completed |
-| bc-12 | Integration tests for Classic flow incl. PBAP | ✅ completed |
-| bc-13 | Update CHANGELOG / todo_tracker after full feature set | ✅ completed |
-| bc-20 | RFCOMM data-exchange commands (`copen`, `csend`, `crecv`, `craw`) | ✅ completed |
-| bc-21 | OPP D-Bus layer + ops layer + `copp` debug command | ✅ completed |
-| bc-22 | MAP D-Bus layer + ops layer + `cmap` debug command | ✅ completed |
-| bc-23 | Value-parsing utility extraction (`debug_utils.py`) | ✅ completed |
-| bc-24 | Future expansion documentation (FTP, SYNC, MNS, BIP, SPP, PAN) | ✅ completed |
-| bc-25 | Updated `bl_classic_mode.md` with new command documentation and feature tracker | ✅ completed |
-| bc-26 | Shared OBEX transfer poller `_obex_common.py` | ✅ completed |
-| bc-27 | FTP D-Bus layer `obex_ftp.py` (`FtpSession`) | ✅ completed |
-| bc-28 | FTP operations layer `classic_ftp.py` | ✅ completed |
-| bc-29 | FTP debug command `cftp` + constants + dispatch wiring | ✅ completed |
-| bc-30 | CLI `classic-opp` command (send / pull) | ✅ completed |
-| bc-31 | CLI `classic-map` command (folders / list / get / push / inbox) with `--type` filter | ✅ completed |
-| bc-32 | CLI `classic-ftp` command (ls / get / put / mkdir / rm) | ✅ completed |
-| bc-33 | MAP MNS notification watch via `PropertiesChanged` signals | ✅ completed |
-| bc-34 | `MapSession.get_supported_types()` and `list_filter_fields()` | ✅ completed |
-| bc-35 | Debug `cmap monitor/types/fields` + CLI `classic-map types/fields/monitor` | ✅ completed |
-| bc-36 | MAP multi-instance MAS selection (`--instance` flag, `cmap instances`, SDP discovery) | ✅ completed |
-| bc-37 | PAN constants: `NETWORK_INTERFACE`, `NETWORK_SERVER_INTERFACE`, PAN UUIDs | ✅ completed |
-| bc-38 | PAN D-Bus wrapper `dbuslayer/network.py` (`NetworkClient` + `NetworkServer`) | ✅ completed |
-| bc-39 | PAN operations layer `bleep/ble_ops/classic/pan.py` + debug command `cpan` | ✅ completed |
-| bc-40 | CLI `classic-pan` command (connect/disconnect/status/serve/unserve) | ✅ completed |
-| bc-41 | SPP D-Bus layer `spp_profile.py` (`SppProfile` + `SppManager`) | ✅ completed |
-| bc-42 | SPP debug command `cspp` (register/unregister/status) + CLI `classic-spp` | ✅ completed |
-| bc-43 | Constants `PROFILE_MANAGER_INTERFACE`, `PROFILE_INTERFACE` + ops layer | ✅ completed |
-| bc-44 | SYNC D-Bus layer `dbuslayer/obex_sync.py` (`SyncSession`, target `"sync"`) | ✅ completed |
-| bc-45 | SYNC debug command `csync` (get/put) + CLI `classic-sync` subparser | ✅ completed |
-| bc-46 | SYNC operations layer `ble_ops/classic_sync.py` + constants | ✅ completed |
-| bc-47 | BIP D-Bus layer `dbuslayer/obex_bip.py` (`BipSession`, target `"bip-avrcp"`, experimental) | ✅ completed |
-| bc-48 | BIP debug command `cbip` (props/get/thumb) + CLI `classic-bip` subparser | ✅ completed |
-| bc-49 | BIP operations layer `ble_ops/classic_bip.py` + constants | ✅ completed |
-| bc-50 | Design doc: raw OBEX framing over RFCOMM (`bleep/protocols/obex_design.md`) | ✅ completed |
-| bc-51 | Design doc: L2CAP raw channel access (`bleep/protocols/l2cap_design.md`) | ✅ completed |
-
-Legend: ⏱️ pending 🔄 in-progress ✅ completed 
-
----
-
-## 7  Feature Tracker
-
-| Feature | Status |
-|---------|--------|
-| Classic discovery (`cscan`) | ✅ |
-| Classic SDP discovery (`csdp` with connectionless mode) | ✅ |
-| Classic connection (`cconnect`) | ✅ |
-| Classic services listing (`cservices`) | ✅ |
-| Classic PBAP dump (CLI `classic-pbap` and debug mode `pbap`) | ✅ |
-| RFCOMM data socket (`copen` / `csend` / `crecv`) | ✅ |
-| Interactive RFCOMM session (`craw`) | ✅ |
-| Object Push Profile (`copp send` / `copp pull`) | ✅ |
-| Message Access Profile (`cmap folders\|list\|get\|push\|download-all\|push-all\|inbox`) | ✅ |
-| BLE scan presets (shared CLI `bleep scan --variant`) | ✅ |
-| OBEX FTP (`cftp ls\|cd\|get\|put\|mkdir\|rm\|cp\|mv`) | ✅ |
-| SYNC profile | ✅ |
-| MAP MNS notification monitoring (`cmap monitor`, `classic-map monitor`) | ✅ |
-| MAP multi-instance MAS selection (`--instance`, `cmap instances`) | ✅ |
-| CLI sub-commands (`classic-opp`, `classic-map`, `classic-ftp`) | ✅ |
-| PAN networking (`cpan`, `classic-pan`) | ✅ |
-| SPP serial port profile (`cspp`, `classic-spp`) | ✅ | | Basic Imaging Profile (`cbip`, `classic-bip`) [experimental] | ✅ |
+> **Note.** The former §6 "Temporary Classic-Feature TODO Tracker" and §7
+> "Feature Tracker" (all items ✅ complete) were removed on 2026-07-23 per their
+> own removal note. The completed-task record is preserved in
+> [`todo_tracker.md`](todo_tracker.md) (Classic foundational tasks bc-01…bc-11
+> plus the bc-14…bc-54 feature set) and the per-version rollout history is in
+> [`changelog.md`](changelog.md).

@@ -15,12 +15,16 @@ from bleep.core.log import print_and_log, LOG__DEBUG
 
 __all__ = [
     "query_hci_version",
+    "query_remote_version",
     "map_lmp_version_to_spec",
     "map_profile_version_to_spec",
+    "resolve_manufacturer_name",
+    "infer_min_bt_version_from_le_features",
 ]
 
-# LMP Version to Bluetooth Core Specification mapping
-# Based on Bluetooth Core Specification version numbers
+# LMP Version to Bluetooth Core Specification mapping (FALLBACK)
+# Primary resolution uses SPEC_ID_NAMES__CORE_VERSION from uuids.py codegen.
+# This hardcoded map serves as a fallback when codegen data is unavailable.
 _LMP_VERSION_MAP: Dict[int, str] = {
     0: "Bluetooth 1.0b",
     1: "Bluetooth 1.1",
@@ -166,8 +170,143 @@ def query_hci_version(adapter: str = "hci0") -> Optional[Dict[str, Any]]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Remote device LMP version query
+# ---------------------------------------------------------------------------
+
+# hcitool info output format (from BlueZ source tools/hcitool.c):
+#   \tLMP Version: %s (0x%x) LMP Subversion: 0x%x
+#   \tManufacturer: %s (%d)
+#   \tFeatures[ page N]: 0x%2.2x 0x%2.2x 0x%2.2x 0x%2.2x 0x%2.2x 0x%2.2x 0x%2.2x 0x%2.2x
+_REMOTE_LMP_RE = re.compile(
+    r'LMP Version:\s*[\d.]+\s*\(0x([0-9A-Fa-f]+)\)\s*'
+    r'LMP Subversion:\s*0x([0-9A-Fa-f]+)',
+)
+_REMOTE_MFR_RE = re.compile(r'Manufacturer:\s*(.+?)\s*\((\d+)\)')
+_REMOTE_FEATURES_RE = re.compile(
+    r'Features(?:\s*page\s*(\d+))?:\s*((?:0x[0-9A-Fa-f]{2}\s*)+)',
+)
+
+
+def query_remote_version(
+    address: str, adapter: str = "hci0"
+) -> Optional[Dict[str, Any]]:
+    """Query a remote Classic (BR/EDR) device's LMP version via ``hcitool info``.
+
+    Establishes an ACL connection, issues HCI Read Remote Version Information
+    and Read Remote Features, then disconnects. This is an **active** operation
+    that the remote device may log.
+
+    Parameters
+    ----------
+    address : str
+        Remote device BD_ADDR (e.g. "AA:BB:CC:DD:EE:FF").
+    adapter : str, optional
+        Local HCI adapter name (default: "hci0").
+
+    Returns
+    -------
+    Optional[Dict[str, Any]]
+        Dictionary containing:
+        - lmp_version: int — LMP version byte (0x00–0x0F)
+        - lmp_subversion: int — LMP subversion (uint16)
+        - manufacturer: int — controller manufacturer company ID
+        - manufacturer_name: Optional[str] — human-readable manufacturer name
+        - lmp_spec: Optional[str] — mapped Core Specification string
+        - features_raw: list[str] — per-page hex feature dumps
+        - raw_output: str — full hcitool output for diagnostics
+        None if hcitool is unavailable, device unreachable, or parse fails.
+    """
+    hcitool_path = shutil.which("hcitool")
+    if not hcitool_path:
+        print_and_log(
+            "[classic_version] hcitool not found in PATH — cannot query remote version",
+            LOG__DEBUG,
+        )
+        return None
+
+    cmd = [hcitool_path, "-i", adapter, "info", address.upper()]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        print_and_log(
+            f"[classic_version] hcitool info {address} timed out (30s)", LOG__DEBUG,
+        )
+        return None
+    except Exception as exc:
+        print_and_log(
+            f"[classic_version] hcitool info {address} failed: {exc}", LOG__DEBUG,
+        )
+        return None
+
+    if result.returncode != 0:
+        stderr_msg = result.stderr.strip() if result.stderr else "unknown error"
+        print_and_log(
+            f"[classic_version] hcitool info {address} exited {result.returncode}: {stderr_msg}",
+            LOG__DEBUG,
+        )
+        return None
+
+    output = result.stdout
+    if not output.strip():
+        print_and_log(
+            f"[classic_version] hcitool info {address} returned empty output", LOG__DEBUG,
+        )
+        return None
+
+    # Parse LMP Version + Subversion
+    lmp_match = _REMOTE_LMP_RE.search(output)
+    if not lmp_match:
+        print_and_log(
+            f"[classic_version] Could not parse LMP version from hcitool info output",
+            LOG__DEBUG,
+        )
+        return None
+
+    try:
+        lmp_version = int(lmp_match.group(1), 16)
+        lmp_subversion = int(lmp_match.group(2), 16)
+    except (ValueError, IndexError):
+        return None
+
+    # Parse Manufacturer
+    manufacturer: Optional[int] = None
+    manufacturer_name: Optional[str] = None
+    mfr_match = _REMOTE_MFR_RE.search(output)
+    if mfr_match:
+        manufacturer_name = mfr_match.group(1).strip()
+        try:
+            manufacturer = int(mfr_match.group(2))
+        except ValueError:
+            pass
+
+    # Parse Features pages
+    features_raw: list[str] = []
+    for feat_match in _REMOTE_FEATURES_RE.finditer(output):
+        page_hex = feat_match.group(2).strip()
+        page_num = feat_match.group(1)
+        prefix = f"page {page_num}: " if page_num else ""
+        features_raw.append(f"{prefix}{page_hex}")
+
+    return {
+        "lmp_version": lmp_version,
+        "lmp_subversion": lmp_subversion,
+        "manufacturer": manufacturer,
+        "manufacturer_name": manufacturer_name,
+        "lmp_spec": map_lmp_version_to_spec(lmp_version),
+        "features_raw": features_raw,
+        "raw_output": output,
+    }
+
+
 def map_lmp_version_to_spec(lmp_version: Optional[int]) -> Optional[str]:
     """Map LMP version number to Bluetooth Core Specification version.
+
+    Attempts resolution via the SIG-sourced ``SPEC_ID_NAMES__CORE_VERSION``
+    dict (populated by ``update_ble_uuids``). Falls back to the hardcoded
+    ``_LMP_VERSION_MAP`` if the codegen dict is unavailable or lacks the entry.
     
     Parameters
     ----------
@@ -182,7 +321,17 @@ def map_lmp_version_to_spec(lmp_version: Optional[int]) -> Optional[str]:
     """
     if lmp_version is None:
         return None
-    
+
+    # Primary: SIG-sourced codegen data (richer names)
+    try:
+        from bleep.ble_ops.common.conversion import resolve_core_version
+        sig_name = resolve_core_version(lmp_version)
+        if sig_name:
+            return sig_name
+    except ImportError:
+        pass
+
+    # Fallback: hardcoded map
     return _LMP_VERSION_MAP.get(lmp_version)
 
 
@@ -218,4 +367,97 @@ def map_profile_version_to_spec(profile_version: Optional[int]) -> Optional[str]
         return f"{major}.{minor}"
     
     return None
+
+
+def resolve_manufacturer_name(manufacturer_id: Optional[int]) -> Optional[str]:
+    """Resolve a 16-bit BT SIG company identifier to its registered name.
+
+    Uses the codegen ``SPEC_ID_NAMES__COMPANY_IDENTS`` dict (via the common
+    conversion helper). Returns None if the ID is unknown.
+
+    Parameters
+    ----------
+    manufacturer_id : Optional[int]
+        BT SIG company identifier (0–65535).
+
+    Returns
+    -------
+    Optional[str]
+        Registered company name, or None.
+    """
+    if manufacturer_id is None:
+        return None
+    try:
+        from bleep.ble_ops.common.conversion import resolve_manufacturer_name as _resolve
+        return _resolve(manufacturer_id)
+    except ImportError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# BLE advertisement feature-based version inference (RV-4b)
+# ---------------------------------------------------------------------------
+
+# LE Supported Features bit positions and the minimum BT Core version that
+# introduced them. Only features definitively tied to a specific version are
+# included. Ref: Bluetooth Core Spec Vol 6, Part B, Section 4.6.
+_LE_FEATURE_MIN_VERSION: Dict[int, Tuple[int, str]] = {
+    # bit: (min_lmp_version, feature_name)
+    1: (7, "LE Encryption"),                    # BT 4.1 refined
+    5: (7, "LE Data Packet Length Extension"),   # BT 4.2 (actually 8, corrected below)
+    8: (9, "LE 2M PHY"),                        # BT 5.0
+    9: (9, "Stable Modulation Index - Tx"),      # BT 5.0
+    10: (9, "Stable Modulation Index - Rx"),     # BT 5.0
+    11: (9, "LE Coded PHY"),                     # BT 5.0
+    12: (9, "LE Extended Advertising"),          # BT 5.0
+    13: (9, "LE Periodic Advertising"),          # BT 5.0
+    14: (9, "Channel Selection Algorithm #2"),   # BT 5.0
+    17: (9, "Minimum Number of Used Channels"),  # BT 5.0
+    24: (11, "Connected Isochronous Stream - Central"),  # BT 5.2
+    25: (11, "Connected Isochronous Stream - Peripheral"),  # BT 5.2
+    26: (11, "Isochronous Broadcaster"),         # BT 5.2
+    27: (11, "Synchronized Receiver"),           # BT 5.2
+    28: (11, "Connected Isochronous Stream (Host)"),  # BT 5.2
+    30: (12, "Connection Subrating"),            # BT 5.3
+    31: (12, "Connection Subrating (Host)"),     # BT 5.3
+    32: (12, "Channel Classification"),          # BT 5.3
+}
+# Correct Data Length Extension: introduced in 4.2 (LMP 8)
+_LE_FEATURE_MIN_VERSION[5] = (8, "LE Data Packet Length Extension")
+
+
+def infer_min_bt_version_from_le_features(features_bytes: bytes) -> Optional[str]:
+    """Infer the minimum Bluetooth Core version from LE Supported Features.
+
+    Examines the LE Supported Features bitmask (AD type 0x27 or from HCI)
+    and determines the minimum Core Specification version required to support
+    the observed feature set.
+
+    Parameters
+    ----------
+    features_bytes : bytes
+        Raw LE Supported Features bytes (little-endian bitmask, up to 8 bytes).
+
+    Returns
+    -------
+    Optional[str]
+        Minimum Bluetooth specification string (e.g., "Bluetooth 5.0"),
+        or None if no version-specific features are detected.
+    """
+    if not features_bytes:
+        return None
+
+    # Convert bytes to integer bitmask (little-endian)
+    features_int = int.from_bytes(features_bytes, byteorder="little")
+
+    max_lmp = 0
+    for bit, (min_lmp, _name) in _LE_FEATURE_MIN_VERSION.items():
+        if features_int & (1 << bit):
+            if min_lmp > max_lmp:
+                max_lmp = min_lmp
+
+    if max_lmp == 0:
+        return None
+
+    return map_lmp_version_to_spec(max_lmp)
 

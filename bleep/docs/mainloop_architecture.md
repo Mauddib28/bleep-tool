@@ -1,6 +1,6 @@
 # GLib MainLoop Architecture: Current State and Future Design
 
-**Date:** 2026-03-01
+**Date:** 2026-03-01 (last updated 2026-09-13 — repointed `cmd_pair` references to `bleep/modes/debug_pairing.py`, refreshed version labels for v3.0.0)
 **Status:** Design document — partial implementation tracked below (see Related Work Items)
 **Scope:** Debug mode and agent callback dispatch across all BLEEP modes
 
@@ -15,7 +15,7 @@ This constraint creates a tension in the debug shell: the shell needs
 `input()` blocking on the main thread for interactive prompts, while the
 agent needs `GLib.MainLoop().run()` on the main thread for D-Bus dispatch.
 
-## Current Architecture (v2.6)
+## Current Architecture (v3.0.0)
 
 ```
 Main thread:       input() loop ──── blocks waiting for user ────
@@ -32,6 +32,49 @@ pair command:  stop background loop → pair_device() runs temp MainLoop
 - Agent cannot receive callbacks while shell is idle (background loop
   does not dispatch `dbus.service.Object` handlers)
 - Brute-force mode must stop/restart per attempt (handled by `PinBruteForcer`)
+
+## Thread-safety constraint: the default `GMainContext` is not shared safely
+
+**Established 2026-09-08 by Valgrind `helgrind`.  This is a hard constraint on
+every future design in this document, including the options below.**
+
+A dual-antenna survey reproducibly aborted the process inside libdbus/GLib with
+`malloc(): unaligned tcache chunk detected` (and under `MALLOC_CHECK_=3`, a
+`SIGSEGV`).  `helgrind` identified a data race on the hash table inside GLib's
+**process-global default `GMainContext`**:
+
+- a worker thread inside `dbus_connection_send_with_reply_and_block()` mutates
+  that hash table (`g_source_attach` / `g_hash_table_remove`) while handling
+  its pending call, and
+- the `bleep-mainloop` thread concurrently traverses and dispatches the same
+  context from `g_main_loop_run()`.
+
+The two paths take different, non-excluding locks, so the heap metadata is
+corrupted and glibc aborts. Consequences worth internalising:
+
+1. **`threads_init()` is not the missing piece.** It is already called
+   (`core/config.py`), on dbus-python 1.4.0 / libdbus 1.16.2.
+2. **A private connection does not help.** Because `core/config.py` calls
+   `DBusGMainLoop(set_as_default=True)`, *every* connection dbus-python
+   creates — `private=True` included — attaches to the default main context, so
+   the loop thread dispatches it too. `dbus.set_default_main_loop(None)` is
+   rejected (it requires a `NativeMainLoop`), and binding a connection to a
+   non-default `GLib.MainContext` is not exposed by dbus-python. Pushing a
+   thread-default context does not help either. `bleep/dbuslayer/bus.py`
+   documents this in full; its per-thread connections buy separate message
+   queues and pending-call tables, **not** isolation from the loop thread.
+3. **The rule that follows:** never drive a burst of blocking calls from a
+   signal handler running on the loop thread. `_LEDevice._properties_changed`
+   defers `services_resolved()` to the owning worker thread for exactly this
+   reason.
+4. **The only two ways to remove the race** are to run no GLib loop in the
+   process (see `--no-mainloop` in `survey_mode.md`, which is why that flag
+   exists and why it is passive-enumeration-only) or to move the enumerator
+   into a separate process.
+
+`memcheck` found zero memory errors over six times the usual crash window,
+which is consistent with a race rather than a leak: it serialises threads and
+closes the window.
 
 ## Compatibility Assessment
 
@@ -103,7 +146,7 @@ def debug_shell():
 - `input()` loop structure barely changes; easy to reason about
 - `GLib.idle_add()` is thread-safe and well-documented
 - All command handlers run on the main thread (same context as today)
-- `_cmd_pair` no longer needs stop/restart — MainLoop is on main thread
+- `cmd_pair` (in `bleep/modes/debug_pairing.py`) no longer needs stop/restart — MainLoop is on main thread
 - Agent always ready for callbacks, even while shell is idle
 
 **Cons:**
@@ -177,15 +220,17 @@ this design and related MainLoop fixes:
 | **FW1** (Pairing section) | Re-enable unified D-Bus monitoring after `pair_device()` returns | Open |
 | **F1** (Pairing Future Work) | MainLoop inversion — `input()` to worker thread (this doc's Option A) | Open |
 | **F3** (Pin Brute-Force §) | PoC confirmed temporary `GLib.MainLoop` + `timeout_add` works for `RequestPinCode` dispatch | Done |
-| **F1** (debug.py fix) | `_cmd_pair()`: stop background loop before agent creation/pairing | Done |
+| **F1** (debug_pairing.py fix) | `cmd_pair()`: stop background loop before agent creation/pairing | Done |
 | **F3** (agent.py fix) | `pair_device()`: replaced `context.iteration` loop with temporary MainLoop | Done |
 
 ## References
 
-- `bleep/dbuslayer/agent.py` lines 1072-1076: MainLoop requirement
-  confirmed via PoC
-- `bleep/modes/debug.py` lines 746-750: background loop limitation
-  documented
+- `bleep/dbuslayer/agent.py` `pair_device()` (temporary `GLib.MainLoop` at
+  lines ~1164-1194): MainLoop requirement confirmed via PoC
+- `bleep/modes/debug_pairing.py` `cmd_pair`: background loop stop/restart around
+  pairing, calling `stop_glib_mainloop(state)` / `ensure_glib_mainloop(state)`
+  — both **defined in `bleep/modes/debug_state.py`** (lines 71/97) — while the
+  interactive shell loop itself lives in `bleep/modes/debug.py`
 - BlueZ `test/simple-agent`: reference implementation using
   `GObject.MainLoop().run()` on main thread with `input()` in
   D-Bus handler

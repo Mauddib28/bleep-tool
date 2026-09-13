@@ -14,7 +14,29 @@ from bleep.modes.debug_state import DebugState
 
 
 def cmd_aoi(args: List[str], state: DebugState) -> None:
-    """Analyze AOI data for a connected device or specified MAC address."""
+    """AoI analysis for the connected/specified device, or the full CLI pipeline.
+
+    * First token ∈ ``scan|analyze|list|report|export|db`` → delegates to the same
+      ``aoi.run`` the CLI ``bleep aoi`` uses (CDU-M7c), parsed through the real CLI
+      subparser. (A MAC never equals a subcommand name, so no collision.)
+    * Otherwise → the live single-device helper: ``aoi [--save] [MAC]``.
+    """
+    from bleep.cli.parsers.aoi import AOI_SUBCOMMANDS
+
+    if args and args[0] in AOI_SUBCOMMANDS:
+        from bleep.modes.debug_cli_adapters import parse_as_cli
+
+        ns = parse_as_cli("aoi", args)
+        if ns is None:
+            return
+        from bleep.cli.parsers.aoi import apply_aoi_subcommand
+
+        apply_aoi_subcommand(ns)
+        from bleep.modes.aoi import run as _aoi_run
+
+        _aoi_run(ns)
+        return
+
     save_flag = "--save" in args
     if save_flag:
         args = [arg for arg in args if arg != "--save"]

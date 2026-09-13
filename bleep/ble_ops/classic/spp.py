@@ -11,6 +11,7 @@ import socket
 from typing import Any, Callable, Dict, Optional
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
+from bleep.core.errors import OperationInProgressError
 from bleep.dbuslayer.spp_profile import SppManager
 
 _manager: Optional[SppManager] = None
@@ -33,7 +34,7 @@ def register(
     """
     global _manager
     if _manager is not None and _manager.registered:
-        raise RuntimeError("SPP profile already registered")
+        raise OperationInProgressError("SPP profile registration")
 
     print_and_log(f"[SPP] Registering profile (role={role}, channel={channel or 'auto'})", LOG__GENERAL)
     _manager = SppManager(

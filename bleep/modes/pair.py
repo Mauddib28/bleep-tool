@@ -23,9 +23,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import TYPE_CHECKING
 
 import dbus
 import dbus.mainloop.glib  # type: ignore[import-untyped]
+
+if TYPE_CHECKING:
+    from bleep.core.output import OutputContext
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__AGENT
 from bleep.pairing import (
@@ -36,6 +40,8 @@ from bleep.pairing import (
     check_pair_status,
     report_pair_status,
 )
+
+__all__ = ["run"]
 
 
 # ---------------------------------------------------------------------
@@ -119,39 +125,66 @@ def _do_check(mac: str) -> int:
     return 0
 
 
-def _do_probe(mac: str, timeout: int) -> int:
+def _do_probe(mac: str, timeout: int, adapter_name: str = "hci0") -> int:
     """Cycle IO capabilities to discover the device's auth requirements."""
     from bleep.dbuslayer.agent import attempt_downgrade_pair
     from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as Adapter
 
-    adapter = Adapter()
+    # #6: an already-bonded device makes every capability attempt return
+    # org.bluez.Error.AlreadyExists (workDir/bluez/src/error.c:btd_error_already_exists),
+    # which the probe would misreport as "requires explicit auth". Short-circuit
+    # with an accurate message instead of cycling capabilities against a live bond.
+    _status = check_pair_status(mac)
+    if _status.get("paired") or _status.get("fully_bonded"):
+        print_and_log(
+            f"[*] {mac} is already bonded (paired={_status.get('paired')}, "
+            f"trusted={_status.get('trusted')}). Auth method cannot be probed "
+            "against an existing bond — run 'pair --reset' first to re-probe.",
+            LOG__GENERAL,
+        )
+        return 0
+
+    adapter = Adapter(adapter_name)
     device_path = f"{adapter.adapter_path}/dev_{mac.replace(':', '_')}"
 
-    print(f"[*] Probing auth method for {mac} (cycling capabilities)...")
+    print_and_log(f"[*] Probing auth method for {mac} (cycling capabilities)...", LOG__GENERAL)
     result = attempt_downgrade_pair(dbus.SystemBus(), device_path, timeout=timeout)
 
-    print(f"\n{'='*60}")
-    print(f"Auth Probe Results for {mac}")
-    print(f"{'='*60}")
+    print_and_log(f"\n{'='*60}", LOG__GENERAL)
+    print_and_log(f"Auth Probe Results for {mac}", LOG__GENERAL)
+    print_and_log(f"{'='*60}", LOG__GENERAL)
     for att in result["attempts"]:
         auth = att["auth_method"] or "none"
-        print(f"  {att['capability']:<20}  {att['result']:<30}  auth={auth}")
-    print(f"{'='*60}")
+        print_and_log(f"  {att['capability']:<20}  {att['result']:<30}  auth={auth}", LOG__GENERAL)
+    print_and_log(f"{'='*60}", LOG__GENERAL)
+
+    # P2-B2: Persist probe result as pairing event with auth matrix
+    try:
+        from bleep.core import observations as _obs
+        _obs.store_pairing_event(
+            mac,
+            method=result.get("auth_method"),
+            result="success" if result["success"] else "failed",
+            capabilities=result.get("capability"),
+            auth_matrix={"attempts": result.get("attempts", [])},
+        )
+    except Exception:
+        pass
 
     if result["success"]:
-        print(f"[+] Paired successfully with '{result['capability']}' (auth: {result['auth_method']})")
+        print_and_log(f"[+] Paired successfully with '{result['capability']}' (auth: {result['auth_method']})", LOG__GENERAL)
         try:
             dev_iface = dbus.Interface(
                 dbus.SystemBus().get_object("org.bluez", device_path),
                 "org.bluez.Device1",
             )
             dev_iface.CancelPairing()
-            print("[*] Pairing canceled (probe complete)")
+            print_and_log("[*] Pairing canceled (probe complete)", LOG__GENERAL)
         except dbus.exceptions.DBusException:
             pass
         return 0
     else:
-        print("[-] No capability succeeded — device requires explicit auth")
+        print_and_log("[-] No capability succeeded — device requires explicit auth", LOG__GENERAL)
         return 1
 
 
@@ -188,7 +221,7 @@ def _do_brute(mac: str, args) -> int:
         try:
             result = bruteforcer.run_pin_brute(mac, pins_from_file(args.pin_list), capabilities=args.cap)
         except FileNotFoundError:
-            print(f"[-] PIN list file not found: {args.pin_list}", file=sys.stderr)
+            print_and_log(f"[-] PIN list file not found: {args.pin_list}", LOG__GENERAL)
             return 1
     else:
         if args.pin_range:
@@ -202,16 +235,33 @@ def _do_brute(mac: str, args) -> int:
         )
         result = bruteforcer.run_pin_brute(mac, pin_range(start, end), capabilities=args.cap)
 
+    # P2-B2: Persist brute-force result
+    try:
+        from bleep.core import observations as _obs
+        _obs.store_pairing_event(
+            mac,
+            method="brute_force",
+            pin=result.pin if result.success and result.pin else (
+                f"{result.passkey:06d}" if result.success and result.passkey is not None else None
+            ),
+            result="success" if result.success else "exhausted",
+            capabilities=args.cap,
+            brute_attempts=result.attempts,
+            brute_duration=result.elapsed_seconds,
+        )
+    except Exception:
+        pass
+
     if result.success:
         value = result.pin if result.pin is not None else f"{result.passkey:06d}"
-        print(f"\n[+] FOUND: correct value for {mac} = {value}")
-        print(f"[*] Discovered in {result.attempts} attempts ({result.elapsed_seconds:.1f}s)")
-        print(f"[*] Use 'bleep pair {mac} --pin {value}' to pair with the discovered PIN")
+        print_and_log(f"\n[+] FOUND: correct value for {mac} = {value}", LOG__GENERAL)
+        print_and_log(f"[*] Discovered in {result.attempts} attempts ({result.elapsed_seconds:.1f}s)", LOG__GENERAL)
+        print_and_log(f"[*] Use 'bleep pair {mac} --pin {value}' to pair with the discovered PIN", LOG__GENERAL)
         return 0
     else:
         if result.errors:
             for err in result.errors:
-                print(f"[-] {err}", file=sys.stderr)
+                print_and_log(f"[-] {err}", LOG__GENERAL)
         return 1
 
 
@@ -227,12 +277,12 @@ def _do_pair(mac: str, args) -> int:
     if status["paired"] and not args.reset:
         report_pair_status(mac, status)
         if status["fully_bonded"]:
-            print("[*] Device is already fully bonded – nothing to do")
-            print("[*] Use --reset to force-remove the existing bond and re-pair")
+            print_and_log("[*] Device is already fully bonded – nothing to do", LOG__GENERAL)
+            print_and_log("[*] Use --reset to force-remove the existing bond and re-pair", LOG__GENERAL)
             return 0
         if not status["connected"]:
-            print("[*] Device is already paired but not connected")
-            print("[*] Use --reset to force-remove the existing bond and re-pair")
+            print_and_log("[*] Device is already paired but not connected", LOG__GENERAL)
+            print_and_log("[*] Use --reset to force-remove the existing bond and re-pair", LOG__GENERAL)
         return 0
 
     # Build IO handler
@@ -260,36 +310,81 @@ def _do_pair(mac: str, args) -> int:
     if not register_pair_agent(io_handler, args.cap):
         return 1
 
-    adapter = Adapter()
+    # #5: defensive identity guard. A resolved BlueZ path encodes the device
+    # MAC (``.../dev_AA_BB_CC_DD_EE_FF``). Refuse to pair if the resolved path
+    # does not match the requested MAC — this prevents ever bonding a different
+    # identity (e.g. a dual-mode peer's rotating LE resolvable-private address)
+    # if resolution/rescan ever returns the wrong device.
+    _expected_suffix = f"dev_{mac.replace(':', '_').upper()}"
+
+    def _guard_identity(path: str) -> bool:
+        if path and path.upper().endswith(_expected_suffix.upper()):
+            return True
+        _found = ""
+        import re as _re
+        _m = _re.search(r"dev_([0-9A-Fa-f_]{17})", path or "")
+        if _m:
+            _found = _m.group(1).replace("_", ":").upper()
+        print_and_log(
+            f"[-] Refusing to pair: requested {mac} but resolved a different "
+            f"identity ({_found or path}). Aborting to avoid bonding the wrong device.",
+            LOG__GENERAL,
+        )
+        return False
+
+    adapter = Adapter(getattr(args, "adapter", None) or "hci0")
     device_path = resolve_device_for_pair(mac, adapter)
     if device_path is None:
-        print(f"[-] Device {mac} not found. Ensure it is powered on and in range.", file=sys.stderr)
+        print_and_log(f"[-] Device {mac} not found. Ensure it is powered on and in range.", LOG__GENERAL)
+        return 1
+    if not _guard_identity(device_path):
         return 1
 
     if args.reset:
         device_path = remove_stale_bond(mac, device_path, adapter)
         if device_path is None:
-            print(f"[-] Device {mac} not re-discovered after bond removal.", file=sys.stderr)
+            print_and_log(f"[-] Device {mac} not re-discovered after bond removal.", LOG__GENERAL)
+            return 1
+        if not _guard_identity(device_path):
             return 1
 
     agent = getattr(_agent_mod, "_DEFAULT_AGENT", None)
     if not isinstance(agent, PairingAgent):
-        print("[-] Default agent is not a PairingAgent – cannot pair", file=sys.stderr)
+        print_and_log("[-] Default agent is not a PairingAgent – cannot pair", LOG__GENERAL)
         return 1
 
     set_trusted = not args.no_trust
     success = agent.pair_device(device_path, set_trusted=set_trusted, timeout=args.timeout)
 
+    # P2-B2: Persist pairing event
+    try:
+        from bleep.core import observations as _obs
+        post_status = check_pair_status(mac) if success else None
+        _obs.store_pairing_event(
+            mac,
+            method=agent.get_last_auth_type() if hasattr(agent, 'get_last_auth_type') else None,
+            pin=getattr(args, 'pin', None) or getattr(args, 'passkey', None),
+            result="success" if success else "failed",
+            capabilities=getattr(args, 'cap', None),
+            pre_pair_state=status if isinstance(status, dict) else None,
+            post_pair_state=post_status,
+        )
+        if success:
+            _obs.upsert_device(mac, paired=True, trusted=set_trusted)
+    except Exception:
+        pass
+
     if not success:
-        print(f"[-] Pairing with {mac} failed (see logs for details)", file=sys.stderr)
+        print_and_log(f"[-] Pairing with {mac} failed (see logs for details)", LOG__GENERAL)
         return 1
 
-    print(f"[+] Paired with {mac} successfully")
+    print_and_log(f"[+] Paired with {mac} successfully", LOG__GENERAL)
 
     if not args.no_connect:
         _post_pair_connect_cli(
             mac, device_path,
             activate_profiles=getattr(args, "activate_profiles", True),
+            adapter_name=getattr(args, "adapter", None),
         )
 
     return 0
@@ -300,6 +395,7 @@ def _post_pair_connect_cli(
     device_path: str,
     *,
     activate_profiles: bool = True,
+    adapter_name: str | None = None,
 ) -> None:
     """Best-effort post-pair connection report for CLI mode.
 
@@ -336,7 +432,7 @@ def _post_pair_connect_cli(
                     system_dbus__bluez_device__classic as _ClassicDevice,
                 )
                 if _svc_map_has_audio_uuid(svc_map):
-                    _activate_bluez_profiles(_ClassicDevice(mac), mac)
+                    _activate_bluez_profiles(_ClassicDevice(mac, adapter_name=adapter_name) if adapter_name else _ClassicDevice(mac), mac)
         except Exception as exc:
             print_and_log(f"[*] SDP enumeration unavailable: {exc}", LOG__DEBUG)
     else:
@@ -344,7 +440,7 @@ def _post_pair_connect_cli(
             from bleep.ble_ops.le.connect import (
                 connect_and_enumerate__bluetooth__low_energy as _connect_enum,
             )
-            device, mapping, _, _ = _connect_enum(mac)
+            device, mapping, _, _ = _connect_enum(mac, adapter_name=adapter_name)
             svc_count = len(mapping) if mapping else 0
             print_and_log(f"[+] Connected to {mac} – {svc_count} GATT service(s) enumerated", LOG__GENERAL)
         except Exception as exc:
@@ -355,10 +451,20 @@ def _post_pair_connect_cli(
 # Public entry point
 # ---------------------------------------------------------------------
 
-def main(argv: list[str] | None = None) -> int:
-    """Run the ``bleep pair`` CLI mode."""
-    argv = argv or sys.argv[2:]
-    args = _build_arg_parser().parse_args(argv)
+def run(args: argparse.Namespace, output: "OutputContext | None" = None) -> int:
+    """Execute pair mode with parsed args and optional OutputContext.
+
+    This is the canonical entry point for Phase 3+ callers that pass a
+    pre-parsed ``argparse.Namespace`` and an ``OutputContext``.  The older
+    ``main(argv)`` wrapper remains for backward compatibility.
+    """
+    from bleep.core.output import OutputContext
+    from bleep.core.log import set_output_mode
+
+    if output is None:
+        output = OutputContext()
+
+    set_output_mode(output.mode)
 
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
@@ -368,12 +474,19 @@ def main(argv: list[str] | None = None) -> int:
         return _do_check(mac)
 
     if args.probe:
-        return _do_probe(mac, args.timeout)
+        return _do_probe(mac, args.timeout, getattr(args, "adapter", "hci0"))
 
     if args.brute or args.passkey_brute:
         return _do_brute(mac, args)
 
     return _do_pair(mac, args)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the ``bleep pair`` CLI mode (backward-compatible wrapper)."""
+    argv = argv or sys.argv[2:]
+    args = _build_arg_parser().parse_args(argv)
+    return run(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

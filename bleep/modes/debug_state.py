@@ -6,6 +6,8 @@ the session state previously held in module-level globals.
 
 from __future__ import annotations
 
+import contextlib
+import signal as _signal
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -53,6 +55,13 @@ class DebugState:
     obs: Any = None
     pan_client: Any = None
     pan_server: Any = None
+    survey_thread: Optional[threading.Thread] = None
+    survey_stop_event: threading.Event = field(default_factory=threading.Event)
+    survey_census: Any = None
+    survey_round: int = 0
+    survey_elapsed: float = 0.0
+    survey_duration: int = 0
+    survey_output: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -97,3 +106,29 @@ def stop_glib_mainloop(state: DebugState) -> None:
     if state.glib_thread is not None:
         state.glib_thread.join(timeout=2.0)
         state.glib_thread = None
+
+
+@contextlib.contextmanager
+def foreground_loop_handoff(state: DebugState):
+    """Hand the GLib default context to a core that runs its own foreground loop.
+
+    Several shared CLI cores (``monitor``/``signal``/``gatt_server``/``advertise``)
+    create their own ``GLib.MainLoop`` and install SIGINT/SIGTERM handlers. When a
+    debug verb delegates to one of them we must:
+
+    * stop the background debug loop first, so the default ``GMainContext`` is not
+      owned by two threads (only one thread may iterate it), and
+    * save/restore the shell's SIGINT/SIGTERM handlers, so Ctrl-C stops the core's
+      loop and then returns cleanly to the interactive prompt.
+
+    Both invariants are restored in ``finally`` even if the core raises.
+    """
+    prev_sigint = _signal.getsignal(_signal.SIGINT)
+    prev_sigterm = _signal.getsignal(_signal.SIGTERM)
+    stop_glib_mainloop(state)
+    try:
+        yield
+    finally:
+        _signal.signal(_signal.SIGINT, prev_sigint)
+        _signal.signal(_signal.SIGTERM, prev_sigterm)
+        ensure_glib_mainloop(state)

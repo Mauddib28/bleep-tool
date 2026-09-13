@@ -25,6 +25,9 @@ The BLEEP framework includes a comprehensive Bluetooth agent implementation for 
 | `InteractiveAgent` | CLI-based interactive agent — prompts the user for PIN/passkey |
 | `EnhancedAgent` | Callback-based agent — delegates decisions to an I/O handler |
 | `PairingAgent` | Full-featured agent with state machine, storage, and brute-force support |
+| `TrustManager` | Manages device trust state (trust/untrust, trusted-device queries) |
+| `system_dbus__bluez_generic_agent` | Backwards-compat alias of `SimpleAgent` |
+| `system_dbus__bluez_agent_user_interface` | Backwards-compat alias of `InteractiveAgent` |
 
 ### I/O Handlers (`bleep/dbuslayer/agent_io.py`)
 
@@ -34,6 +37,17 @@ The BLEEP framework includes a comprehensive Bluetooth agent implementation for 
 | `CliIOHandler` | Terminal-based interaction (stdin/stdout) |
 | `ProgrammaticIOHandler` | Callback-based interaction for embedding in other tools |
 | `AutoAcceptIOHandler` | Auto-accept all requests (no user interaction) |
+| `BruteForceIOHandler` | Feeds candidate PINs/passkeys from a `PinBruteForcer` for brute-force pairing |
+
+### Brute-force PIN handling (`bleep/dbuslayer/pin_brute.py`)
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `PinBruteForcer` | class | Drives sequential/ranged PIN attempts with lockout-aware backoff |
+| `BruteForceResult` | dataclass | Outcome of a brute-force run (success PIN, attempts, lockout state) |
+| `pin_range(start="0000", end="9999")` | function | Iterator over the numeric PIN space for a brute-force sweep |
+| `passkey_range(start=0, end=999999)` | function | Iterator over the numeric passkey space (`RequestPasskey`) |
+| `pins_from_file(path)` | function | Yield candidate PINs/passkeys from a wordlist file |
 
 ### State Machine (`bleep/dbuslayer/pairing_state.py`)
 
@@ -59,4 +73,4 @@ The BLEEP framework includes a comprehensive Bluetooth agent implementation for 
 
 ---
 
-*Last updated: 2026-03-18*
+*Last updated: 2026-09-13 (added `BruteForceIOHandler`, the `pin_brute.py` brute-force API — `PinBruteForcer` / `BruteForceResult` / `pin_range()` / `passkey_range()` / `pins_from_file()` — `TrustManager`, and the `system_dbus__bluez_*` compatibility aliases)*

@@ -359,22 +359,22 @@ class GATTTestSuite(TestSuite):
     def _create_mock_mapping(self):
         """Create mock GATT mapping."""
         return {
-            "00001800-0000-1000-8000-00805f9b34fb": {
+            "00001800-0000-1000-8000-00805F9B34FB": {
                 "Service": "/org/bluez/hci0/dev_00_11_22_33_44_55/service0001",
                 "Characteristics": {
-                    "00002a00-0000-1000-8000-00805f9b34fb": {
-                        "UUID": "00002a00-0000-1000-8000-00805f9b34fb",
+                    "00002A00-0000-1000-8000-00805F9B34FB": {
+                        "UUID": "00002A00-0000-1000-8000-00805F9B34FB",
                         "Handle": 3,
                         "Properties": ["read"],
                         "Path": "/org/bluez/hci0/dev_00_11_22_33_44_55/service0001/char0002"
                     }
                 }
             },
-            "00001801-0000-1000-8000-00805f9b34fb": {
+            "00001801-0000-1000-8000-00805F9B34FB": {
                 "Service": "/org/bluez/hci0/dev_00_11_22_33_44_55/service0004",
                 "Characteristics": {
-                    "00002a05-0000-1000-8000-00805f9b34fb": {
-                        "UUID": "00002a05-0000-1000-8000-00805f9b34fb",
+                    "00002A05-0000-1000-8000-00805F9B34FB": {
+                        "UUID": "00002A05-0000-1000-8000-00805F9B34FB",
                         "Handle": 5,
                         "Properties": ["indicate"],
                         "Path": "/org/bluez/hci0/dev_00_11_22_33_44_55/service0004/char0005"

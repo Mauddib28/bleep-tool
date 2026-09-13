@@ -2,8 +2,10 @@
 BLEEP - Bluetooth Landscape Exploration & Enumeration Platform
 """
 
-__version__ = "2.8.4"
+__version__ = "3.1.0"
 __author__ = "Paul A. Wortman"
+
+__all__ = ["__version__", "__author__"]
 
 # Functional Debug Mode - 2025/07/09
 # Refactor vs Monolith Gap Analysis - Initial Complete - 2025/07/09

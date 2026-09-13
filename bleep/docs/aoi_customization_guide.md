@@ -17,8 +17,9 @@ Services are marked as "notable" based on the following criteria:
 - UUID `1801` (Generic Attribute Profile)
 
 **Firmware Update Services**:
-- Service name contains "OTA" (case-insensitive)
-- Service name contains "dfu" (case-insensitive)
+- Service name contains "OTA" (**case-sensitive** acronym, to avoid substrings like "toyota")
+- Service name contains "dfu" or "firmware" (case-insensitive)
+- **OR** the canonical UUID matches a curated vendor OTA/DFU set (Nordic, TI OAD, Silicon Labs, MCUmgr SMP)
 
 **Security Services**:
 - Service name contains "auth" (case-insensitive)
@@ -26,23 +27,32 @@ Services are marked as "notable" based on the following criteria:
 
 ### Security Concern Detection Criteria
 
-Characteristics are flagged as security concerns when:
+Characteristics are flagged as security concerns by two branches (first match
+wins) — see [aoi_security_algorithms.md](aoi_security_algorithms.md) §2 for the
+authoritative description:
 
-**Authentication Weakness Pattern**:
-- Characteristic has `write-without-response` property
-- **AND** characteristic name contains one of: "auth", "password", "key" (case-insensitive)
+**Branch A — writable auth/credential characteristic**:
+- Characteristic is writable (`write` **or** `write-without-response`)
+- **AND** its effective name contains one of: `auth`, `password`, `passphrase`,
+  `key`, `pin`, `token`, `credential` (case-insensitive)
+
+**Branch B — unauthenticated custom write surface** (flagged medium):
+- Characteristic has `write-without-response`, **lacks**
+  `authenticated-signed-writes`, and the UUID has no SIG name
 
 ### Unusual Characteristic Detection Criteria
 
 Characteristics are marked as unusual when:
 
-**Pattern 1: Multiple Operations**:
-- Characteristic has more than 3 properties
-- **AND** characteristic has both "write" and "notify" properties
+**Pattern 1: Bidirectional Control Channel**:
+- Characteristic is writable (`write` or `write-without-response`)
+- **AND** supports `notify` or `indicate` (case-insensitive)
+- *(The earlier arbitrary "more than 3 properties" threshold was removed — the
+  write + notify/indicate combination is the meaningful signal.)*
 
 **Pattern 2: Unusually Long Values**:
-- Characteristic has a default value
-- **AND** value is a string longer than 20 characters
+- Characteristic has a string default value **longer than 40 characters**
+- **AND** the value is hex-like (only `0-9a-fA-F`) — ≈20+ bytes of embedded data
 
 ### Critical UUID Detection
 
@@ -109,10 +119,11 @@ def _analyse_characteristic(self, uuid: str, char_info: Dict[str, Any]) -> Dict[
     properties = char_info.get("properties", [])
     name_lower = char_report["name"].lower()
     
-    # Existing rule...
-    if "write-without-response" in properties and any(kw in name_lower for kw in ["auth", "password", "key"]):
+    # Existing rule (see aoi_security_algorithms.md §2 for the full two-branch logic):
+    writable = "write" in properties or "write-without-response" in properties
+    if writable and any(kw in name_lower for kw in ["auth", "password", "passphrase", "key", "pin", "token", "credential"]):
         char_report["security_concern"] = True
-        char_report["security_reason"] = "Authentication-related characteristic allows write without response"
+        char_report["security_reason"] = f"Authentication-related characteristic '{char_report['name']}' is writable"
     
     # Add your custom security rule:
     if "write" in properties and "encryption" not in properties and "admin" in name_lower:

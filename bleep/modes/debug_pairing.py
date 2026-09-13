@@ -159,10 +159,53 @@ def _post_pair_connect_le(mac: str, state: DebugState) -> None:
 # Agent command
 # ---------------------------------------------------------------------------
 
+# Debug agent management subcommands → CLI `agent` flag form (CDU-M7b). Each
+# delegates to the same bleep.modes.agent.run the CLI uses; these flags run as
+# one-shot ops that return before the agent loop (bleep/modes/agent.py).
+_AGENT_MGMT = {
+    "trust":        ("--trust", True),
+    "untrust":      ("--untrust", True),
+    "remove-bond":  ("--remove-bond", True),
+    "list-trusted": ("--list-trusted", False),
+    "list-bonded":  ("--list-bonded", False),
+}
+
+
+def _cmd_agent_management(args: List[str]) -> None:
+    """Handle ``agent <trust|untrust|remove-bond|list-trusted|list-bonded> [MAC]``."""
+    verb = args[0]
+    flag, needs_mac = _AGENT_MGMT[verb]
+    if needs_mac:
+        if len(args) < 2:
+            print_and_log(f"Usage: agent {verb} <MAC>", LOG__GENERAL)
+            return
+        cli_tokens = [flag, args[1]]
+    else:
+        cli_tokens = [flag]
+
+    from bleep.modes.debug_cli_adapters import parse_as_cli
+
+    ns = parse_as_cli("agent", cli_tokens)
+    if ns is None:
+        return
+    from bleep.modes.agent import run as _agent_run
+
+    _agent_run(ns)
+
+
 def cmd_agent(args: List[str], state: DebugState) -> None:
-    """Agent visibility/control for debug mode."""
+    """Agent visibility/control for debug mode.
+
+    Native session verbs: ``status`` / ``register`` / ``unregister``. Device
+    management verbs (``trust``/``untrust``/``remove-bond``/``list-trusted``/
+    ``list-bonded``) delegate to the shared CLI ``agent`` core (CDU-M7b).
+    """
     import argparse
     from bleep.dbuslayer.agent import ensure_default_pairing_agent, clear_default_pairing_agent
+
+    if args and args[0] in _AGENT_MGMT:
+        _cmd_agent_management(args)
+        return
 
     parser = argparse.ArgumentParser(prog="agent", add_help=False)
     sub = parser.add_subparsers(dest="subcmd", required=True)
@@ -285,28 +328,12 @@ def cmd_pair(args: List[str], state: DebugState) -> None:
 
     parser = _ap.ArgumentParser(prog="pair", add_help=False)
     parser.add_argument("mac")
-    parser.add_argument("--pin", default=None)
-    parser.add_argument("--passkey", type=int, default=None)
-    parser.add_argument("--interactive", action="store_true")
+    # Shared canonical pairing option set (single source of truth with the CLI
+    # `pair` subparser) — this is how the debug shell gains --no-connect /
+    # --no-trust parity. The debug-only --test PoC flag is added afterwards.
+    from bleep.cli.parsers.pairing import _add_pair_arguments
+    _add_pair_arguments(parser)
     parser.add_argument("--test", action="store_true")
-    parser.add_argument("--check", action="store_true",
-                        help="Check pairing state only – do not pair")
-    parser.add_argument("--reset", action="store_true",
-                        help="Force-remove existing bond before pairing")
-    parser.add_argument("--brute", action="store_true")
-    parser.add_argument("--passkey-brute", action="store_true")
-    parser.add_argument("--range", default=None, dest="pin_range")
-    parser.add_argument("--pin-list", default=None)
-    parser.add_argument("--delay", type=float, default=0.5)
-    parser.add_argument("--max-attempts", type=int, default=0)
-    parser.add_argument("--timeout", type=int, default=60)
-    parser.add_argument("--lockout-cooldown", type=float, default=60.0)
-    parser.add_argument("--max-lockout-retries", type=int, default=3)
-    parser.add_argument("--cap", default="KeyboardDisplay",
-                        choices=["NoInputNoOutput", "DisplayOnly", "DisplayYesNo",
-                                 "KeyboardOnly", "KeyboardDisplay"])
-    parser.add_argument("--probe", action="store_true",
-                        help="Discover auth method by cycling capabilities, then cancel")
 
     try:
         opts = parser.parse_args(args)
@@ -328,11 +355,15 @@ def cmd_pair(args: List[str], state: DebugState) -> None:
         _cmd_pair_brute(mac, opts, cap, state)
     elif opts.interactive:
         _cmd_pair_single(mac, cap, opts.timeout, "cli",
-                         test_mode=opts.test, reset=opts.reset, state=state)
+                         test_mode=opts.test, reset=opts.reset,
+                         no_connect=opts.no_connect, no_trust=opts.no_trust,
+                         state=state)
     else:
         pin = opts.pin if opts.pin is not None else "0000"
         _cmd_pair_single(mac, cap, opts.timeout, "auto", pin=pin, passkey=opts.passkey,
-                         test_mode=opts.test, reset=opts.reset, state=state)
+                         test_mode=opts.test, reset=opts.reset,
+                         no_connect=opts.no_connect, no_trust=opts.no_trust,
+                         state=state)
 
 
 def _cmd_pair_probe(mac: str, timeout: int, state: DebugState) -> None:
@@ -376,9 +407,15 @@ def _cmd_pair_single(
     mac: str, cap: str, timeout: int, io_mode: str,
     pin: str = "0000", passkey: int | None = None,
     test_mode: bool = False, reset: bool = False,
+    no_connect: bool = False, no_trust: bool = False,
     *, state: DebugState,
 ) -> None:
-    """Execute a single pairing attempt."""
+    """Execute a single pairing attempt.
+
+    ``no_connect`` skips the post-pair connection flow (pair only);
+    ``no_trust`` leaves the device untrusted after a successful pair. Both
+    mirror the CLI ``pair --no-connect`` / ``--no-trust`` semantics.
+    """
     from bleep.dbuslayer.agent import PairingAgent
     from bleep.dbuslayer.agent_io import create_io_handler
     from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as Adapter
@@ -390,6 +427,10 @@ def _cmd_pair_single(
         report_pair_status(mac, status)
         if status["connected"]:
             print("[*] Device is already paired and connected – skipping pairing")
+            print("[*] Use --reset to force-remove the existing bond and re-pair")
+            return
+        if no_connect:
+            print("[*] Device is already paired – --no-connect set, skipping connection")
             print("[*] Use --reset to force-remove the existing bond and re-pair")
             return
         print("[*] Device is already paired – attempting connection only")
@@ -438,9 +479,26 @@ def _cmd_pair_single(
         return
 
     connect_time = time.time()
-    success = agent.pair_device(device_path, set_trusted=True, timeout=timeout)
+    success = agent.pair_device(device_path, set_trusted=not no_trust, timeout=timeout)
 
     ensure_glib_mainloop(state)
+
+    # P2-B2: Persist pairing event from debug shell
+    try:
+        from bleep.core import observations as _obs
+        _obs.store_pairing_event(
+            mac,
+            method=agent.get_last_auth_type() if hasattr(agent, 'get_last_auth_type') else None,
+            pin=pin,
+            result="success" if success else "failed",
+            capabilities=cap,
+            pre_pair_state=status if isinstance(status, dict) else None,
+            post_pair_state=check_pair_status(mac) if success else None,
+        )
+        if success:
+            _obs.upsert_device(mac, paired=True, trusted=not no_trust)
+    except Exception:
+        pass
 
     if not success:
         print(f"[-] Pairing with {mac} failed (see logs for details)")
@@ -450,6 +508,8 @@ def _cmd_pair_single(
 
     if test_mode:
         _post_pair_monitor(mac, device_path, connect_time)
+    elif no_connect:
+        print("[*] --no-connect set – pairing complete, skipping post-pair connection")
     else:
         _post_pair_connect(mac, device_path, state)
 

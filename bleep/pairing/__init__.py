@@ -20,18 +20,38 @@ from bleep.bt_ref.constants import (
 )
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__AGENT
 
+__all__ = [
+    "find_device_path",
+    "resolve_device_for_pair",
+    "check_pair_status",
+    "report_pair_status",
+    "remove_stale_bond",
+    "register_pair_agent",
+    "classic_connect_sdp_rfcomm",
+]
+
 
 # ---------------------------------------------------------------------
 # Device-path resolution
 # ---------------------------------------------------------------------
 
-def find_device_path(mac: str) -> Optional[str]:
+def find_device_path(mac: str, adapter: Optional[str] = None) -> Optional[str]:
     """Resolve a MAC address to its BlueZ D-Bus object path.
 
     Walks ``GetManagedObjects`` on the system bus.  Returns ``None`` when
     the device has not been discovered yet.
+
+    Parameters
+    ----------
+    mac : str
+        Target Bluetooth MAC address.
+    adapter : str or None
+        If given (e.g. ``"hci1"``), only paths under ``/org/bluez/<adapter>/``
+        match.  Without it the first Device1 with that Address wins — wrong
+        on a two-radio host where both adapters have seen the MAC.
     """
     mac = mac.strip().upper()
+    prefix = f"/org/bluez/{adapter}/" if adapter else None
     try:
         bus = dbus.SystemBus()
         om = dbus.Interface(
@@ -39,6 +59,8 @@ def find_device_path(mac: str) -> Optional[str]:
             "org.freedesktop.DBus.ObjectManager",
         )
         for path, ifaces in om.GetManagedObjects().items():
+            if prefix and not str(path).startswith(prefix):
+                continue
             dev = ifaces.get(DEVICE_INTERFACE)
             if dev and str(dev.get("Address", "")).upper() == mac:
                 return str(path)
@@ -62,7 +84,8 @@ def resolve_device_for_pair(mac: str, adapter) -> Optional[str]:
     str or None
         D-Bus object path, or ``None`` if the device cannot be found.
     """
-    device_path = find_device_path(mac)
+    adapter_name = getattr(adapter, "adapter_name", None)
+    device_path = find_device_path(mac, adapter=adapter_name)
     if device_path is None:
         print_and_log(
             f"[*] Device {mac} not in BlueZ object tree – running 15 s discovery…",
@@ -70,7 +93,7 @@ def resolve_device_for_pair(mac: str, adapter) -> Optional[str]:
         )
         adapter.set_discovery_filter({"Transport": "auto"})
         adapter.run_scan__timed(duration=15)
-        device_path = find_device_path(mac)
+        device_path = find_device_path(mac, adapter=adapter_name)
     return device_path
 
 
@@ -262,13 +285,13 @@ def _svc_map_has_audio_uuid(svc_map: dict) -> bool:
     for entry in svc_map.values():
         if not isinstance(entry, dict):
             continue
-        u = (entry.get("uuid") or "").lower()
+        u = (entry.get("uuid") or "").upper()
         if not u:
             continue
         if u in AUDIO_SERVICE_UUIDS:
             return True
-        if u.startswith("0x") and len(u) == 6:
-            full = f"0000{u[2:]}-0000-1000-8000-00805f9b34fb"
+        if u.startswith("0X") and len(u) == 6:
+            full = f"0000{u[2:]}-0000-1000-8000-00805F9B34FB"
             if full in AUDIO_SERVICE_UUIDS:
                 return True
     return False
@@ -316,6 +339,7 @@ def classic_connect_sdp_rfcomm(
     open_keepalive: bool = True,
     keepalive_timeout: float = 5.0,
     activate_profiles: bool = True,
+    adapter_name: Optional[str] = None,
 ) -> dict:
     """Connect to a Classic device via SDP discovery and a raw RFCOMM socket.
 
@@ -373,7 +397,7 @@ def classic_connect_sdp_rfcomm(
     from bleep.ble_ops.classic.connect import classic_rfccomm_open
 
     mac = mac.strip().upper()
-    device = _ClassicDevice(mac)
+    device = _ClassicDevice(mac, adapter_name=adapter_name) if adapter_name else _ClassicDevice(mac)
 
     svc_map: dict = {}
     try:

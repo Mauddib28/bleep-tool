@@ -166,21 +166,26 @@ setup fails, the `Connected` property transitions to `False` but the original
 
 ### 3.3  Mitigation in BLEEP
 
-`NetworkClient.connect()` now performs a post-connect verification:
+`NetworkClient.connect()` performs an **event-driven** post-connect
+verification (`_verify_connected()`):
 
 ```python
-if verify:
-    time.sleep(0.5)
-    if not self.connected:
-        raise RuntimeError(
-            f"PAN Connect to {self.mac} returned interface "
-            f"'{iface_name}' but the BNEP session did not persist ..."
-        )
+if verify and not self._verify_connected(verify_timeout):  # verify_timeout=2.0 default
+    raise _ConnectionError(
+        self.mac,
+        f"PAN Connect returned interface '{iface_name}' but the "
+        f"BNEP session did not persist (Connected=False after "
+        f"{verify_timeout:g} s) ...",
+    )
 ```
 
-This catches the "optimistic success" scenario by waiting 500 ms for the
-asynchronous BNEP setup to either stabilise or fail, then checking the
-`Connected` property.
+`_verify_connected()` fast-paths when `Connected` is already True; otherwise it
+waits on the `Network1` `PropertiesChanged` signal (via `NetworkMonitor`) for up
+to `verify_timeout` seconds (default **2.0 s**). If the signal path is
+unavailable (e.g. no GLib loop), it degrades gracefully to a single 0.5 s poll.
+This catches the "optimistic success" scenario without a fixed sleep.  (As of
+Phase 2 the raised type is `core.errors.ConnectionError`, a `BLEEPError`
+subclass, rather than a bare `RuntimeError` — see §5.1 and the changelog.)
 
 ---
 
@@ -201,8 +206,8 @@ The Agent Pairing issues stemmed from:
 
 These are documented in:
 - `bleep/docs/mainloop_architecture.md`
-- `bleep/docs/mainloop_requirement_analysis.md`
-- `bleep/docs/agent_dbus_communication_issue.md`
+- `bleep/docs/archive/mainloop_requirement_analysis.md`
+- `bleep/docs/archive/agent_dbus_communication_issue.md`
 
 ### 4.2  Why PAN client is not affected
 
@@ -241,15 +246,15 @@ failure modes, a successful PAN client connection requires ALL of the following:
 | Requirement | How to verify | BLEEP status |
 |-------------|--------------|-------------|
 | BlueZ ≥ 5.55 running | `bluetoothctl --version` | Assumed (documented prerequisite) |
-| `bnep` kernel module loaded | `lsmod \| grep bnep` | Not checked by BLEEP |
+| `bnep` kernel module loaded | `lsmod \| grep bnep` | **Checked** (Phase 1 preflight: `core.preflight.check_pan_prerequisites`, via `/sys/module/bnep` + `/proc/modules`) |
 | Adapter powered and up | `hciconfig hci0` or BLEEP preflight | Checked |
-| Device paired and trusted | `bluetoothctl info <MAC>` | Assumed (documented prerequisite) |
+| Device paired and trusted | `bluetoothctl info <MAC>` | **Checked** (Phase 2 precheck: `ble_ops/classic/pan._precheck_pan_target` warns if unpaired / no PAN SDP; `--trust` sets Trusted) |
 
 ### 5.2  Remote device requirements
 
 | Requirement | How to verify | Notes |
 |-------------|--------------|-------|
-| Remote runs a PAN NAP/PANU/GN service | SDP query for UUID 0x1115/0x1116/0x1117 | BLEEP can check via `csdp` / `classic-sdp` |
+| Remote runs a PAN NAP/PANU/GN service | SDP query for UUID 0x1115/0x1116/0x1117 | BLEEP can check via debug-shell `csdp`, or the CLI `classic-enum` command |
 | Remote accepts BNEP connections on PSM 0x000F | Attempt connection | No pre-check possible |
 | Remote supports requested role | Match local role to remote capability | NAP↔PANU or GN↔GN |
 | Remote PAN service is actually active (not just advertised) | Attempt connection | SDP may advertise inactive services |
@@ -278,7 +283,7 @@ python -m bleep.cli classic-pan connect <PHONE_MAC> --role nap
 | IP forwarding enabled (for NAP) | `echo 1 > /proc/sys/net/ipv4/ip_forward` |
 | NAT/masquerade configured (for NAP) | `iptables -t nat -A POSTROUTING -o <WAN_IF> -j MASQUERADE` |
 | DHCP server on bridge (for NAP) | `dnsmasq --interface=pan0 --dhcp-range=...` |
-| BLEEP process stays alive | `classic-pan serve` blocks with `signal.pause()` |
+| BLEEP process stays alive | `classic-pan server-reg` blocks with `signal.pause()` |
 
 ---
 
@@ -326,9 +331,9 @@ When a PAN `connect` fails (post-verification catches it), run through:
 ## 7  Related Documentation
 
 - [Network capability summary](network_capability_summary.md) — implementation overview and status
-- [Network capability plan](network_capability_plan.md) — original design plan (Phases 2-5 future work)
-- [Bluetooth Classic mode](bl_classic_mode.md) §2.9 — user-facing `cpan` / `classic-pan` docs
+- [Network capability plan](archive/network_capability_plan.md) — original design plan (Phases 2–5 now implemented; see `network_capability_summary.md` and `bl_classic_mode.md` §2.11)
+- [Bluetooth Classic mode](bl_classic_mode.md) §2.11 — user-facing `cpan` / `classic-pan` docs
 - [Mainloop architecture](mainloop_architecture.md) — GLib MainLoop and agent dispatch (for contrast)
-- [Agent D-Bus communication issue](agent_dbus_communication_issue.md) — historical agent pairing analysis
+- [Agent D-Bus communication issue](archive/agent_dbus_communication_issue.md) — historical agent pairing analysis
 - [D-Bus best practices](dbus_best_practices.md) — general BlueZ D-Bus reliability patterns
 - [Changelog](changelog.md) — "PAN Reliability Fixes" section

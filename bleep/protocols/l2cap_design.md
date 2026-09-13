@@ -10,7 +10,7 @@
 BLEEP currently supports two transport paths for Classic Bluetooth:
 
 1. **RFCOMM sockets** — via `classic_rfccomm_open()` in
-   `bleep/ble_ops/classic_connect.py`.  RFCOMM provides reliable stream
+   `bleep/ble_ops/classic/connect.py`.  RFCOMM provides reliable stream
    semantics over L2CAP.
 2. **D-Bus (obexd / BlueZ)** — higher-level APIs that abstract away the
    transport entirely.
@@ -339,5 +339,5 @@ def extract_l2cap_psms(sdp_records: dict) -> Dict[str, int]:
 * BlueZ `l2cap.rst` documentation (see `workDir/BlueZDocs/l2cap.rst`)
 * BlueZ `hci.rst` documentation (see `workDir/BlueZDocs/hci.rst`)
 * Bluetooth SIG Assigned Numbers: `References/psm.yaml`
-* BLEEP RFCOMM connector: `bleep/ble_ops/classic_connect.py:classic_rfccomm_open()`
+* BLEEP RFCOMM connector: `bleep/ble_ops/classic/connect.py:classic_rfccomm_open()`
 * Python `socket` module: https://docs.python.org/3/library/socket.html

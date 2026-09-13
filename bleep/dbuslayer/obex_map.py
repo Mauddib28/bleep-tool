@@ -8,8 +8,13 @@ Prerequisites:
   - Target device must be paired and trusted.
   - Device must advertise MAP-MSE (UUID 0x1132) or MAP (UUID 0x1134).
 
+Multi-instance MAS is supported via the ``instance`` parameter (RFCOMM channel
+byte passed to ``CreateSession``); see ``classic_map.list_mas_instances``.
+
+CreateSession failures are mapped to Convention-aligned ``BLEEPError`` types with
+actionable diagnostics via the shared ``_obex_common.obex_session_error`` mapper.
+
 Limitations (future expansion):
-  - No multi-instance MAP support (MAS instance selection).
   - ``PushMessage`` sends to ``telecom/msg/outbox`` by default.
 """
 
@@ -36,6 +41,12 @@ from bleep.bt_ref.constants import (
 from bleep.dbuslayer._obex_common import (
     poll_obex_transfer as _poll_transfer_common,
     unwrap_dbus as _unwrap,
+    obex_session_error as _obex_session_error,
+)
+from bleep.core.errors import (
+    BLEEPError,
+    NotSupportedError,
+    OperationInProgressError,
 )
 
 try:
@@ -70,9 +81,11 @@ class MapSession:
             client_obj = self._bus.get_object(_OBEX_SERVICE, OBEX_ROOT_PATH)
             self._client = dbus.Interface(client_obj, _OBEX_CLIENT_IFACE)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
+            from bleep.bt_ref.constants import RESULT_ERR_WRONG_STATE
+            raise BLEEPError(
                 f"BlueZ obexd not running or D-Bus error: "
-                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
+                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}",
+                RESULT_ERR_WRONG_STATE,
             ) from exc
 
         session_args = dbus.Dictionary({"Target": "map"}, signature="sv")
@@ -89,9 +102,8 @@ class MapSession:
                 self.mac, session_args
             )
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"MAP CreateSession failed: {exc.get_dbus_name()}: "
-                f"{exc.get_dbus_message() or ''}"
+            raise _obex_session_error(
+                exc, self.mac, profile="MAP", service_hint="MAP (0x1132/0x1134)",
             ) from exc
 
         session_obj = self._bus.get_object(_OBEX_SERVICE, self._session_path)
@@ -309,12 +321,12 @@ class MapSession:
         Call :meth:`stop_notification_watch` to tear down.
         """
         if not _HAS_GLIB:
-            raise RuntimeError(
-                "GLib mainloop not available – install PyGObject "
-                "(apt install python3-gi gir1.2-glib-2.0)"
+            raise NotSupportedError(
+                "MAP notification watch — GLib mainloop not available "
+                "(install PyGObject: apt install python3-gi gir1.2-glib-2.0)"
             )
         if getattr(self, "_mns_loop", None) is not None:
-            raise RuntimeError("Notification watch already running")
+            raise OperationInProgressError("MAP notification watch")
 
         DBusGMainLoop(set_as_default=True)
         self._mns_callback = callback

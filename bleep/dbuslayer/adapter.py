@@ -16,6 +16,7 @@ from gi.repository import GLib
 import shutil
 import subprocess
 import time
+from enum import Enum
 from typing import Optional
 
 from bleep.bt_ref.constants import *
@@ -23,11 +24,41 @@ from bleep.bt_ref.exceptions import *
 from bleep.bt_ref.utils import dbus_to_python
 from bleep.core.log import get_logger
 from bleep.core.errors import BleepError
+from bleep.dbuslayer.bus import get_bus as _get_bus
 from bleep.dbuslayer.manager import (
     system_dbus__bluez_device_manager as _DeviceManager,
 )
 
 logger = get_logger(__name__)
+
+# B-2: bound Adapter1.ConnectDevice at the D-Bus layer.
+#
+# dbus-python defaults blocking calls to DBUS_TIMEOUT_USE_DEFAULT
+# (``timeout=-1.0`` in ``dbus/connection.py::call_blocking``), which libdbus
+# resolves to 25 s.  ``ConnectDevice`` does not reply until BlueZ finishes
+# scanning/paging, so an unreachable target burnt a full 25 s
+# ``org.freedesktop.DBus.Error.NoReply`` before the caller regained control
+# (measured 2026-09-05: 25 s per unreachable survey target).  Pass an explicit
+# timeout instead, mirroring ``obex_opp._DBUS_CALL_TIMEOUT_S``.
+_CONNECT_DEVICE_DBUS_TIMEOUT_S = 10.0
+
+
+class ConnectDeviceOutcome(Enum):
+    """Why an ``Adapter1.ConnectDevice`` attempt ended the way it did.
+
+    A timeout means *this transport did not answer*, which is **not** the same
+    as the method being unavailable and **not** the same as "device absent".
+    A BR/EDR-only device will never answer an LE connect and vice versa, so
+    callers must not collapse these into a single failure
+    (``AddressType`` "public" is inconclusive for transport — see
+    ``docs/device_type_classification.md``).
+    """
+
+    CONNECTED = "connected"      # Device1 for the target exists on this adapter
+    UNSUPPORTED = "unsupported"  # ConnectDevice missing (non-experimental BlueZ)
+    NO_ANSWER = "no-answer"      # NoReply/timeout — transport did not answer
+    NO_DEVICE = "no-device"      # call accepted, Device1 never appeared
+    ERROR = "error"              # other D-Bus failure (already logged)
 
 
 class system_dbus__bluez_adapter:
@@ -40,13 +71,16 @@ class system_dbus__bluez_adapter:
         self.timer_id = None
         self.timer__default_time__ms = 5000
         self._device_manager: _DeviceManager | None = None
+        # Diagnosability: last swallowed discovery-call failure (Step-3).
+        # Populated by _note_discovery_error(); None while no failure seen.
+        self._last_discovery_error: Optional[dict] = None
         self._initialize_dbus()
 
     def _initialize_dbus(self):
         """Initialize D-Bus connection and mainloop."""
         try:
             dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-            self.system_bus = dbus.SystemBus()
+            self.system_bus = _get_bus()
             self.mainloop = GLib.MainLoop()
 
             self.adapter_object = self.system_bus.get_object(
@@ -62,6 +96,41 @@ class system_dbus__bluez_adapter:
         except Exception as e:
             logger.error(f"Failed to initialize D-Bus: {e}")
             raise BleepError("D-Bus initialization failed")
+
+    def _note_discovery_error(self, method: str, exc: Exception) -> None:
+        """Surface (do not swallow) a discovery-call failure.
+
+        Records the failure on ``self._last_discovery_error`` for programmatic
+        inspection and logs a WARNING carrying the exact D-Bus error name plus
+        the adapter's current ``Discovering`` state. Diagnosability only — the
+        caller's control flow and return value are unchanged (Step-3 evidence:
+        swallowed StartDiscovery/StopDiscovery/SetDiscoveryFilter errors hide the
+        LE<->Classic transition race on affected builds).
+        """
+        if isinstance(exc, dbus.exceptions.DBusException):
+            err_name = exc.get_dbus_name() or "unknown"
+            err_msg = exc.get_dbus_message() or ""
+        else:
+            err_name = exc.__class__.__name__
+            err_msg = str(exc)
+        try:
+            discovering = self.get_discovering()
+        except Exception:
+            discovering = None
+        self._last_discovery_error = {
+            "method": method,
+            "error_name": err_name,
+            "error_message": err_msg,
+            "discovering": discovering,
+        }
+        logger.warning(
+            "[!] %s failed on %s: %s%s (Discovering=%s)",
+            method,
+            self.adapter_path,
+            err_name,
+            f": {err_msg}" if err_msg else "",
+            discovering,
+        )
 
     def run_scan(self):
         """Execute basic scan."""
@@ -81,6 +150,10 @@ class system_dbus__bluez_adapter:
         timeout_ms = int(duration * 1000) if duration else self.timer__default_time__ms
         try:
             self.adapter_interface.StartDiscovery()
+        except Exception as e:
+            self._note_discovery_error("StartDiscovery", e)
+            return False
+        try:
             self.timer_id = GLib.timeout_add(timeout_ms, self._discovery_timeout)
             self.mainloop.run()
             return True
@@ -89,15 +162,23 @@ class system_dbus__bluez_adapter:
             return False
 
     def _discovery_timeout(self):
-        """Handle discovery timeout."""
+        """Handle discovery timeout — always quit the mainloop."""
         try:
             self.adapter_interface.StopDiscovery()
-            self.mainloop.quit()
-            GLib.source_remove(self.timer_id)
-            return False
         except Exception as e:
-            logger.error(f"Discovery timeout handling failed: {e}")
-            return False
+            self._note_discovery_error("StopDiscovery", e)
+        try:
+            if self.mainloop is not None and self.mainloop.is_running():
+                self.mainloop.quit()
+        except Exception:
+            pass
+        try:
+            if self.timer_id is not None:
+                GLib.source_remove(self.timer_id)
+                self.timer_id = None
+        except Exception:
+            pass
+        return False
 
     def set_discovery_filter(self, discovery_filter):
         """Set discovery filter."""
@@ -105,7 +186,7 @@ class system_dbus__bluez_adapter:
             self.adapter_interface.SetDiscoveryFilter(discovery_filter)
             return True
         except Exception as e:
-            logger.error(f"Failed to set discovery filter: {e}")
+            self._note_discovery_error("SetDiscoveryFilter", e)
             return False
 
     def get_managed_objects(self):
@@ -134,8 +215,15 @@ class system_dbus__bluez_adapter:
         Device type mapping:
         - "classic" -> "br/edr" (for compatibility with classic-scan filter)
         - "le", "dual", "unknown" -> unchanged
+
+        Note: For LE discovery that must retain non-connectable beacons, prefer
+        ``DeviceManager.take_last_harvest()`` / ``snapshot_discovered_devices()``
+        (R1) — BlueZ removes unpaired non-connectable Device1 objects on
+        ``StopDiscovery``.
         """
         try:
+            from bleep.dbuslayer.manager import build_discovered_device_dict
+
             managed_objects = self.get_managed_objects()
             if not managed_objects:
                 return []
@@ -155,58 +243,9 @@ class system_dbus__bluez_adapter:
                     cached_rssi = self._device_manager.get_captured_rssi(device_address_upper)
                     if cached_rssi is not None:
                         rssi = cached_rssi
-                
-                # Determine device type using existing classification method
-                device_type = self._determine_device_type(properties)
-                # Map "classic" to "br/edr" for compatibility with classic-scan filter
-                type_display = "br/edr" if device_type == BT_DEVICE_TYPE_CLASSIC else device_type
-                
-                # ManufacturerData: Dict[UInt16, Array[Byte]] → {int: bytes}
-                mfr_raw = properties.get("ManufacturerData")
-                if mfr_raw:
-                    try:
-                        mfr_data = {int(k): bytes(v) for k, v in mfr_raw.items()}
-                    except (TypeError, ValueError):
-                        mfr_data = {}
-                else:
-                    mfr_data = {}
-
-                # ServiceData: Dict[String, Array[Byte]] → {str: bytes}
-                sd_raw = properties.get("ServiceData")
-                if sd_raw:
-                    try:
-                        sd_data = {str(k): bytes(v) for k, v in sd_raw.items()}
-                    except (TypeError, ValueError):
-                        sd_data = {}
-                else:
-                    sd_data = {}
 
                 devices.append(
-                    {
-                        "path": path,
-                        "address": device_address,
-                        "name": properties.get("Name", ""),
-                        "rssi": rssi,
-                        "alias": properties.get("Alias", ""),
-                        "address_type": properties.get("AddressType"),
-                        "device_class": properties.get("Class"),
-                        "uuids": [str(uuid) for uuid in properties.get("UUIDs", [])] if properties.get("UUIDs") else [],
-                        "connected": properties.get("Connected", False),
-                        "type": type_display,
-                        "manufacturer_data": mfr_data,
-                        "service_data": sd_data,
-                        "tx_power": int(properties["TxPower"]) if "TxPower" in properties else None,
-                        "appearance": int(properties["Appearance"]) if "Appearance" in properties else None,
-                        "modalias": str(properties["Modalias"]) if "Modalias" in properties else None,
-                        "paired": bool(properties.get("Paired", False)),
-                        "bonded": bool(properties.get("Bonded", False)),
-                        "trusted": bool(properties.get("Trusted", False)),
-                        "blocked": bool(properties.get("Blocked", False)),
-                        "wake_allowed": bool(properties.get("WakeAllowed", False)),
-                        "icon": str(properties["Icon"]) if "Icon" in properties else None,
-                        "advertising_flags": bytes(properties["AdvertisingFlags"]) if "AdvertisingFlags" in properties else None,
-                        "advertising_data": {int(k): bytes(v) for k, v in properties["AdvertisingData"].items()} if "AdvertisingData" in properties else None,
-                    }
+                    build_discovered_device_dict(str(path), properties, rssi=rssi)
                 )
 
             # Phase 3: Properties.Get() fallback for connected devices only
@@ -237,9 +276,27 @@ class system_dbus__bluez_adapter:
         return self._device_manager
 
     # Convenience pass-throughs ------------------------------------------
-    def start_discovery(self, uuids: list[str] | None = None, timeout: int = 60):
-        """Start LE discovery via the underlying device manager."""
-        self.create_device_manager().start_discovery(uuids, timeout)
+    def start_discovery(
+        self,
+        uuids: list[str] | None = None,
+        timeout: int = 60,
+        transport: str = "le",
+        *,
+        duplicate_data: bool | None = None,
+        pattern: str | None = None,
+        rssi: int | None = None,
+        pathloss: int | None = None,
+    ):
+        """Start discovery via the underlying device manager (one merged filter)."""
+        self.create_device_manager().start_discovery(
+            service_uuids=uuids,
+            timeout=timeout,
+            transport=transport,
+            duplicate_data=duplicate_data,
+            pattern=pattern,
+            rssi=rssi,
+            pathloss=pathloss,
+        )
 
     def stop_discovery(self):
         """Stop discovery if a manager is present."""
@@ -257,16 +314,39 @@ class system_dbus__bluez_adapter:
     # ------------------------------------------------------------------
 
     def power_cycle(self, off_delay: float = 0.5):
-        """Toggle *Powered* property OFF → ON to reset the controller."""
+        """Toggle *Powered* property OFF → ON to reset the controller.
+
+        The power-on is retried once and reported distinctly from the
+        power-off, because a recovery routine that leaves the adapter dark is
+        worse than the fault it was called for.  Survey Run E hit exactly that:
+        the off succeeded, the on timed out against a wedged bluetoothd, and
+        hci0 was still DOWN after the process exited with nothing in the log
+        saying so (docs/todo_tracker.md B.19-B.23).
+        """
         try:
             self.adapter_properties.Set(ADAPTER_INTERFACE, "Powered", dbus.Boolean(False))
-            time.sleep(off_delay)
-            self.adapter_properties.Set(ADAPTER_INTERFACE, "Powered", dbus.Boolean(True))
-            logger.debug("Adapter power-cycled successfully")
-            return True
         except Exception as e:
-            logger.error(f"Adapter power-cycle failed: {e}")
+            logger.error(f"Adapter power-cycle failed to power off: {e}")
             return False
+
+        time.sleep(off_delay)
+
+        last_error = None
+        for attempt in (1, 2):
+            try:
+                self.adapter_properties.Set(ADAPTER_INTERFACE, "Powered", dbus.Boolean(True))
+                logger.debug("Adapter power-cycled successfully")
+                return True
+            except Exception as e:
+                last_error = e
+                if attempt == 1:
+                    time.sleep(off_delay)
+
+        logger.error(
+            f"Adapter power-cycle could not power {self.adapter_name} back on "
+            f"({last_error}) — it is LEFT POWERED OFF"
+        )
+        return False
 
     def _determine_device_type(self, properties: dict) -> str:
         """
@@ -294,7 +374,7 @@ class system_dbus__bluez_adapter:
             context = {
                 "device_class": properties.get("Class"),
                 "address_type": properties.get("AddressType"),
-                "uuids": [str(uuid) for uuid in properties.get("UUIDs", [])],
+                "uuids": [str(uuid).strip().upper() for uuid in properties.get("UUIDs", [])],
                 "connected": properties.get("Connected", False),
                 "service_data": dict(properties.get("ServiceData", {})),
                 "advertising_data": dict(properties.get("AdvertisingData", {})),
@@ -638,6 +718,151 @@ class system_dbus__bluez_adapter:
         """Toggle wideband speech (HFP WBS) via management socket."""
         ok, _ = self._mgmt_cmd("mgmt.wbs", "on" if enabled else "off")
         return ok
+
+    # -- Admin Policy (BZ-13/14) -------------------------------------------
+
+    def set_service_allow_list(self, uuids: list[str]) -> bool:
+        """Set the service allow list via ``AdminPolicySet1`` (BZ-13a).
+
+        When set, bluetoothd blocks connections to services not in *uuids*.
+        Pass an empty list to clear the filter.  Requires BlueZ
+        ``--experimental`` flag.
+        """
+        try:
+            policy_obj = self.system_bus.get_object(
+                BLUEZ_SERVICE_NAME, self.adapter_path,
+            )
+            policy_iface = dbus.Interface(policy_obj, ADMIN_POLICY_SET_INTERFACE)
+            policy_iface.SetServiceAllowList(
+                dbus.Array(uuids, signature="s"),
+            )
+            logger.info(f"Service allow list set: {uuids}")
+            return True
+        except dbus.exceptions.DBusException as exc:
+            logger.warning(f"SetServiceAllowList failed: {exc}")
+            return False
+
+    def get_service_allow_list(self) -> list[str] | None:
+        """Read current service allow list from ``AdminPolicyStatus1`` (BZ-14).
+
+        Returns ``None`` if the interface is unavailable (BlueZ built without
+        ``--experimental``).
+        """
+        try:
+            val = self.adapter_properties.Get(
+                ADMIN_POLICY_STATUS_INTERFACE, "ServiceAllowList",
+            )
+            return [str(u) for u in val]
+        except dbus.exceptions.DBusException:
+            return None
+
+    def connect_device_ex(
+        self,
+        address: str,
+        address_type: str | None = None,
+        timeout: float = 15.0,
+        dbus_timeout: float | None = None,
+    ) -> "ConnectDeviceOutcome":
+        """Connect without General Discovery via Adapter1.ConnectDevice.
+
+        Returns a :class:`ConnectDeviceOutcome` so callers can tell
+        "unsupported method" from "this transport did not answer" — the two
+        used to collapse into a single ``False``/raise, which made a BR/EDR-only
+        device indistinguishable from a BlueZ without the experimental
+        interface.
+
+        *timeout* bounds the wait for the ``Device1`` object to appear.
+        *dbus_timeout* bounds the blocking ``ConnectDevice`` call itself
+        (defaults to ``_CONNECT_DEVICE_DBUS_TIMEOUT_S``); without it libdbus
+        applies its 25 s default.
+        """
+        props: dict = {"Address": address.strip().upper()}
+        if address_type:
+            props["AddressType"] = str(address_type).lower()
+        call_timeout = (
+            _CONNECT_DEVICE_DBUS_TIMEOUT_S if dbus_timeout is None
+            else float(dbus_timeout)
+        )
+        try:
+            self.adapter_interface.ConnectDevice(props, timeout=call_timeout)
+        except dbus.exceptions.DBusException as exc:
+            name = exc.get_dbus_name() or ""
+            blob = " ".join(
+                p for p in (name, exc.get_dbus_message() or "", str(exc)) if p
+            )
+            if any(
+                token in blob
+                for token in (
+                    "UnknownMethod",
+                    "NotSupported",
+                    "NotAvailable",
+                    "NotPermitted",
+                )
+            ):
+                logger.debug(
+                    "ConnectDevice unavailable on %s: %s",
+                    self.adapter_name,
+                    blob,
+                )
+                return ConnectDeviceOutcome.UNSUPPORTED
+            # NoReply/Timeout: BlueZ never finished scanning/paging within the
+            # call budget.  Not fatal and not "unsupported" — the target simply
+            # did not answer on this transport, so do not raise and do not let
+            # the caller trigger an unsupported-method fallback.
+            if "NoReply" in blob or "Timeout" in blob or "TimedOut" in blob:
+                logger.debug(
+                    "ConnectDevice no answer for %s on %s (%.1fs budget): %s",
+                    address.strip().upper(),
+                    self.adapter_name,
+                    call_timeout,
+                    blob,
+                )
+                return ConnectDeviceOutcome.NO_ANSWER
+            # AlreadyExists / InProgress: Device1 may still appear.
+            if "AlreadyExists" not in blob and "InProgress" not in blob:
+                logger.debug(
+                    "ConnectDevice error for %s on %s: %s",
+                    address.strip().upper(),
+                    self.adapter_name,
+                    blob,
+                )
+                raise
+        deadline = time.monotonic() + timeout
+        prefix = f"/org/bluez/{self.adapter_name}/"
+        target = address.strip().upper()
+        while time.monotonic() < deadline:
+            managed = self.get_managed_objects() or {}
+            for path, ifaces in managed.items():
+                if not str(path).startswith(prefix):
+                    continue
+                dev = ifaces.get(DEVICE_INTERFACE) or {}
+                if str(dev.get("Address", "")).upper() == target:
+                    return ConnectDeviceOutcome.CONNECTED
+            time.sleep(0.2)
+        return ConnectDeviceOutcome.NO_DEVICE
+
+    def connect_device(
+        self,
+        address: str,
+        address_type: str | None = None,
+        timeout: float = 15.0,
+        dbus_timeout: float | None = None,
+    ) -> bool:
+        """Boolean wrapper over :meth:`connect_device_ex` (legacy callers).
+
+        True only when a ``Device1`` for *address* exists on this adapter.
+        Callers that must distinguish *unsupported* from *no answer* should use
+        :meth:`connect_device_ex` instead.
+        """
+        return (
+            self.connect_device_ex(
+                address,
+                address_type=address_type,
+                timeout=timeout,
+                dbus_timeout=dbus_timeout,
+            )
+            is ConnectDeviceOutcome.CONNECTED
+        )
 
 
 # Re-export the class

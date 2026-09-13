@@ -56,7 +56,7 @@ def send_file(
         RFCOMM channel for OPP on the target (from prior SDP).
 
     Returns a dict with ``status``, ``transferred``, ``size`` keys on success.
-    Raises ``RuntimeError`` on failure.
+    Raises :class:`~bleep.core.errors.BLEEPError` on failure.
     """
     mac_address = mac_address.strip().upper()
     filepath = os.path.abspath(filepath)
@@ -94,7 +94,7 @@ def pull_business_card(
         RFCOMM channel for OPP on the target (from prior SDP).
 
     Returns the ``Path`` to the downloaded file.
-    Raises ``RuntimeError`` on failure.
+    Raises :class:`~bleep.core.errors.BLEEPError` on failure.
     """
     mac_address = mac_address.strip().upper()
 
@@ -131,7 +131,7 @@ def exchange_business_cards(
         RFCOMM channel for OPP on the target (from prior SDP).
 
     Returns the ``Path`` to the downloaded remote card.
-    Raises ``RuntimeError`` on failure.
+    Raises :class:`~bleep.core.errors.BLEEPError` on failure.
     """
     mac_address = mac_address.strip().upper()
 

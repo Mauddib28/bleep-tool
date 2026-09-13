@@ -277,7 +277,31 @@ class SDPAnalyzer:
                     "uuid": rec.get("uuid"),
                     "handle": rec.get("handle"),
                 })
-        
+
+        # Cross-source discrepancies (bc-source-union): when records are unioned
+        # via source="merge"/"all", a per-field ``source_conflicts`` map records
+        # where two discovery sources disagreed on a scalar value. A mismatch can
+        # indicate an SDP server that answers browse/records/XML inconsistently
+        # (honeypot fingerprint, attribute stripping, or a stale cache).
+        for rec in self.records:
+            conflicts = rec.get("source_conflicts") or {}
+            for field, per_source in conflicts.items():
+                rendered = ", ".join(f"{s}={v}" for s, v in per_source.items())
+                label = rec.get("name") or rec.get("uuid") or (
+                    f"handle 0x{rec['handle']:04X}" if rec.get("handle") is not None else "record"
+                )
+                anomalies.append({
+                    "type": "source_discrepancy",
+                    "severity": "medium",
+                    "description": (
+                        f"SDP sources disagree on '{field}' for {label}: {rendered}"
+                    ),
+                    "field": field,
+                    "uuid": rec.get("uuid"),
+                    "handle": rec.get("handle"),
+                    "values": per_source,
+                })
+
         return anomalies
     
     def _analyze_relationships(self) -> Dict[str, Any]:
@@ -321,9 +345,87 @@ class SDPAnalyzer:
         
         return dict(all_attrs)
     
-    def generate_report(self) -> str:
+    def cross_validate_lmp(self, lmp_version: int) -> Optional[Dict[str, Any]]:
+        """Cross-validate actual LMP version against SDP-inferred profile versions.
+
+        Compares the device's authoritative LMP version (from HCI Read Remote
+        Version) against the highest profile version advertised in SDP records.
+        A mismatch may indicate firmware spoofing or misconfiguration.
+
+        Parameters
+        ----------
+        lmp_version : int
+            Actual LMP version byte (0–15) from ``query_remote_version()``.
+
+        Returns
+        -------
+        Optional[Dict[str, Any]]
+            Anomaly dict if a mismatch is detected, None otherwise.
+            Format matches ``_detect_anomalies()`` entries.
+        """
+        if not self.analysis:
+            self.analyze()
+
+        inferred = self.analysis.get("version_inference", {})
+        inferred_spec = inferred.get("inferred_version")
+        if not inferred_spec:
+            return None
+
+        actual_spec = map_lmp_version_to_spec(lmp_version)
+        if not actual_spec:
+            return None
+
+        # Convert inferred profile spec hint (e.g. "1.2") to a comparable
+        # major.minor tuple. LMP spec strings are "Bluetooth X.Y [+ ...]".
+        try:
+            inferred_parts = tuple(int(x) for x in inferred_spec.split("."))
+            actual_match = re.search(r'(\d+)\.(\d+)', actual_spec)
+            if not actual_match:
+                return None
+            actual_parts = (int(actual_match.group(1)), int(actual_match.group(2)))
+        except (ValueError, AttributeError):
+            return None
+
+        # Flag if SDP profiles claim a higher spec than the device actually supports
+        if inferred_parts > actual_parts:
+            return {
+                "type": "lmp_sdp_version_mismatch",
+                "severity": "medium",
+                "description": (
+                    f"Version mismatch: device runs {actual_spec} (LMP {lmp_version}) "
+                    f"but SDP profiles claim spec ~{inferred_spec} — "
+                    "possible firmware spoofing or misconfiguration"
+                ),
+                "actual_lmp": lmp_version,
+                "actual_spec": actual_spec,
+                "sdp_inferred_spec": inferred_spec,
+            }
+
+        return None
+
+    def generate_report(self, authoritative_spec: Optional[str] = None,
+                        lmp_version: Optional[int] = None,
+                        version_info_requested: bool = False) -> str:
         """Generate human-readable analysis report.
-        
+
+        Parameters
+        ----------
+        authoritative_spec : Optional[str]
+            The device's true Core Specification string derived from the HCI
+            Read Remote Version (LMP) exchange, when available. When provided
+            it is rendered as authoritative and the SDP profile-version
+            inference is demoted to a non-authoritative *hint*. This avoids the
+            #8 mislabel where per-profile versions (e.g. HFP 1.6) were presented
+            as if they were the device core-spec version.
+        lmp_version : Optional[int]
+            The raw LMP version byte, shown alongside the authoritative spec.
+        version_info_requested : bool
+            True when ``--version-info`` was requested but no authoritative spec
+            resulted (the remote HCI Read Remote Version query returned nothing —
+            e.g. the device refused / never ACL-connected). Lets the NOTE
+            distinguish "not requested" from "requested but the query failed",
+            instead of misleadingly advising the user to add a flag they used.
+
         Returns
         -------
         str
@@ -350,16 +452,47 @@ class SDPAnalyzer:
         lines.append(f"\n--- Profile Analysis ---")
         lines.append(f"Unique Profiles: {profile_analysis['unique_profiles']}")
         if profile_analysis.get("version_distribution"):
-            lines.append("Version Distribution:")
+            lines.append("Profile version distribution (per-profile spec hints, NOT the device core spec):")
             for version, count in profile_analysis["version_distribution"].items():
-                lines.append(f"  Bluetooth {version}: {count} profile(s)")
-        
-        # Version Inference
+                lines.append(f"  profile spec-hint {version}: {count} profile(s)")
+
+        # Bluetooth Core Specification
+        # #8: distinguish the authoritative HCI/LMP core-spec version from the
+        # SDP profile-version inference (which only reflects profile revisions).
         version_inf = self.analysis["version_inference"]
-        if version_inf.get("inferred_version"):
-            lines.append(f"\n--- Version Inference ---")
-            lines.append(f"Inferred Bluetooth Spec: {version_inf['inferred_version']}")
-            lines.append(f"Confidence: {version_inf['confidence']:.1%}")
+        lines.append(f"\n--- Bluetooth Core Specification ---")
+        if authoritative_spec:
+            _lmp = f" (LMP {lmp_version})" if lmp_version is not None else ""
+            lines.append(f"Core Spec (authoritative, HCI Read Remote Version): {authoritative_spec}{_lmp}")
+            if version_inf.get("inferred_version"):
+                lines.append(
+                    f"SDP profile-derived hint: ~{version_inf['inferred_version']} "
+                    f"(confidence {version_inf['confidence']:.1%}) — profile versions only, "
+                    "not the core spec"
+                )
+        elif version_inf.get("inferred_version"):
+            lines.append(
+                f"SDP profile-derived hint: ~{version_inf['inferred_version']} "
+                f"(confidence {version_inf['confidence']:.1%})"
+            )
+            if version_info_requested:
+                lines.append(
+                    "  NOTE: derived from SDP profile versions, NOT the device core spec. "
+                    "The remote HCI/LMP version query returned no result "
+                    "(device refused / did not ACL-connect)."
+                )
+            else:
+                lines.append(
+                    "  NOTE: derived from SDP profile versions, NOT the device core spec. "
+                    "Add --version-info for the authoritative HCI/LMP version."
+                )
+        elif version_info_requested:
+            lines.append(
+                "  No core-spec evidence: remote HCI/LMP version query returned no result "
+                "(device refused / did not ACL-connect), and no profile versions in SDP."
+            )
+        else:
+            lines.append("  No core-spec evidence (no HCI/LMP query, no profile versions in SDP)")
         
         # Anomalies
         anomalies = self.analysis["anomalies"]

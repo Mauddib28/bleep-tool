@@ -26,6 +26,11 @@ For debug mode capabilities, see [`debug_mode.md`](debug_mode.md).
 
 ### Key Features:
 
+> **Note:** `SignalCapture`/`SignalCorrelator` are the *legacy* correlation
+> layer.  New code should use `DBusEventCapture` and the
+> [Unified D-Bus Event Aggregator](unified_dbus_event_aggregator.md); the
+> classes below remain for backward compatibility.
+
 #### Signal Capture
 - **`SignalCapture`** class - Container for captured signal information
 - Captures: `PropertiesChanged`, `InterfacesAdded`, `InterfacesRemoved`
@@ -43,10 +48,15 @@ For debug mode capabilities, see [`debug_mode.md`](debug_mode.md).
 
 ### Code References:
 
-```31:39:bleep/dbuslayer/signals.py
+```python
+# bleep/dbuslayer/signals.py
 @dataclass
 class SignalCapture:
-    """Container for captured signal information."""
+    """Container for captured signal information.
+
+    **DEPRECATED**: Use ``DBusEventCapture`` for new code. This class is retained
+    for backward compatibility with existing signal correlation code.
+    """
     interface: str
     path: str
     signal_name: str
@@ -55,7 +65,8 @@ class SignalCapture:
     source: str = ""  # 'read', 'write', 'notification', 'property_change', etc.
 ```
 
-```464:520:bleep/dbuslayer/signals.py
+```python
+# bleep/dbuslayer/signals.py
     def _properties_changed(
         self, interface, changed, invalidated, path: str | None = None
     ):
@@ -99,7 +110,8 @@ class SignalCapture:
 
 ### Signal Registration Methods:
 
-```197:229:bleep/dbuslayer/signals.py
+```python
+# bleep/dbuslayer/signals.py
     def register_notification_callback(self, char_path: str, callback: Callable) -> None:
         """Register a callback for notifications from a specific characteristic.
         
@@ -160,9 +172,12 @@ class SignalCapture:
 - **FORWARD** - Forward signals to external systems
 - **TRANSFORM** - Transform signals before processing
 
+> **Caveat:** `FORWARD` and `TRANSFORM` are currently **stubs** — `ActionExecutor._execute_forward` / `_execute_transform` in `bleep/signals/router.py` only log `"Would forward…"` / `"Would apply…"` and perform no actual forwarding or transformation yet.
+
 ### Code References:
 
-```92:117:bleep/signals/router.py
+```python
+# bleep/signals/router.py
     def _execute_log(self, action: SignalAction, signal_data: Dict[str, Any]) -> None:
         """Execute a LOG action.
         
@@ -201,14 +216,19 @@ class SignalCapture:
 
 ### Log Files:
 
-| Log Type | File Path | Purpose |
-|----------|-----------|---------|
-| `LOG__DEBUG` | `/tmp/bti__logging__debug.txt` | Debug-level messages |
-| `LOG__GENERAL` | `/tmp/bti__logging__general.txt` | General messages |
-| `LOG__ENUM` | `/tmp/bti__logging__enumeration.txt` | Enumeration operations |
-| `LOG__USER` | `/tmp/bti__logging__usermode.txt` | User mode operations |
-| `LOG__AGENT` | `/tmp/bti__logging__agent.txt` | Pairing agent operations |
-| `LOG__DATABASE` | `/tmp/bti__logging__database.txt` | Database operations |
+Primary logs are written under the XDG data directory
+(`~/.local/share/bleep/logs/*.log`).  For backward compatibility, `bleep.core.log`
+also maintains legacy symlinks at `/tmp/bti__logging__*.txt` that point at the
+primary files.
+
+| Log Type | Primary File Path | Legacy Symlink | Purpose |
+|----------|-------------------|----------------|---------|
+| `LOG__DEBUG` | `~/.local/share/bleep/logs/debug.log` | `/tmp/bti__logging__debug.txt` | Debug-level messages |
+| `LOG__GENERAL` | `~/.local/share/bleep/logs/general.log` | `/tmp/bti__logging__general.txt` | General messages |
+| `LOG__ENUM` | `~/.local/share/bleep/logs/enumeration.log` | `/tmp/bti__logging__enumeration.txt` | Enumeration operations |
+| `LOG__USER` | `~/.local/share/bleep/logs/usermode.log` | `/tmp/bti__logging__usermode.txt` | User mode operations |
+| `LOG__AGENT` | `~/.local/share/bleep/logs/agent.log` | `/tmp/bti__logging__agent.txt` | Pairing agent operations |
+| `LOG__DATABASE` | `~/.local/share/bleep/logs/database.log` | `/tmp/bti__logging__database.txt` | Database operations |
 
 ### Usage:
 
@@ -224,11 +244,15 @@ print_and_log("[INFO] Operation completed", LOG__GENERAL)
 
 ### Code References:
 
-```152:156:bleep/core/log.py
+```python
+# bleep/core/log.py
 def print_and_log(output_string: str, log_type: str = LOG__GENERAL) -> None:
-    """Print to stdout and log to the specified log type."""
+    """Print to stdout (or stderr in json/quiet mode) and log to the specified log type."""
     if log_type not in (LOG__DEBUG, LOG__ENUM):
-        print(output_string)
+        if get_output_mode() in ("json", "quiet"):
+            print(output_string, file=sys.stderr, flush=True)
+        else:
+            print(output_string, flush=True)
     logging__log_event(log_type, output_string)
 ```
 
@@ -255,7 +279,8 @@ def print_and_log(output_string: str, log_type: str = LOG__GENERAL) -> None:
 
 ### Code References:
 
-```146:183:bleep/dbuslayer/bluez_monitor.py
+```python
+# bleep/dbuslayer/bluez_monitor.py
     def _check_service_health(self) -> bool:
         """
         Check if BlueZ service is responsive.
@@ -362,9 +387,10 @@ python -m bleep.modes.signal CC:50:E3:B6:BC:A6 0000ff0b-0000-1000-8000-00805f9b3
 
 ### Code References:
 
-```38:40:bleep/modes/signal.py
-    def _notify_cb(uuid, value: bytes):  # type: ignore
-        print_and_log(f"[NOTIFY] {uuid}: {value.hex()}", LOG__GENERAL)
+```python
+# bleep/modes/signal.py
+    def _notify_cb(char_path, value: bytes):  # type: ignore
+        print_and_log(f"[NOTIFY] {char_path}: {value.hex()}", LOG__GENERAL)
 ```
 
 ---
@@ -384,7 +410,8 @@ python -m bleep.modes.signal CC:50:E3:B6:BC:A6 0000ff0b-0000-1000-8000-00805f9b3
 
 ### Code References:
 
-```218:224:bleep/dbus/connection_pool.py
+```python
+# bleep/dbus/connection_pool.py
             elapsed = time.time() - start_time
             record_operation("dbus_connection_create", elapsed, True)
             
@@ -394,7 +421,8 @@ python -m bleep.modes.signal CC:50:E3:B6:BC:A6 0000ff0b-0000-1000-8000-00805f9b3
             )
 ```
 
-```305:309:bleep/dbus/connection_pool.py
+```python
+# bleep/dbus/connection_pool.py
                     # Report stats
                     stats = self._get_connection_stats()
                     print_and_log(
@@ -424,10 +452,13 @@ python -m bleep.modes.signal CC:50:E3:B6:BC:A6 0000ff0b-0000-1000-8000-00805f9b3
 
 ### For Comprehensive Signal Logging:
 
-1. **Use Signal Capture System** for automated logging:
-   - Signals are automatically captured via `SignalCapture` class
+1. **Prefer the unified aggregator** (`DBusEventCapture` + the
+   [Unified D-Bus Event Aggregator](unified_dbus_event_aggregator.md)) for new
+   automated logging.  The legacy `SignalCapture`/`SignalCorrelator` layer
+   remains available for backward compatibility but should not be used in new code:
+   - Signals are captured and correlated in one unified system
    - Configure routes in `bleep/signals/capture_config.py`
-   - View logs in `/tmp/bti__logging__debug.txt`
+   - View logs in `~/.local/share/bleep/logs/debug.log` (legacy symlink: `/tmp/bti__logging__debug.txt`)
 
 2. **Use Signal Router** for filtering and processing:
    - Filter signals by device, service, characteristic, path patterns
@@ -443,7 +474,7 @@ python -m bleep.modes.signal CC:50:E3:B6:BC:A6 0000ff0b-0000-1000-8000-00805f9b3
 
 2. **Check Connection Pool Stats**:
    - Stats are logged to `LOG__DEBUG` automatically
-   - View in `/tmp/bti__logging__debug.txt`
+   - View in `~/.local/share/bleep/logs/debug.log` (legacy symlink: `/tmp/bti__logging__debug.txt`)
 
 ### For Signal Correlation:
 
@@ -467,7 +498,7 @@ python -m bleep.modes.signal CC:50:E3:B6:BC:A6 0000ff0b-0000-1000-8000-00805f9b3
 
 ## Notes
 
-- All debugging output goes to log files in `/tmp/bti__logging__*.txt`
+- All debugging output goes to log files under `~/.local/share/bleep/logs/*.log` (with legacy symlinks at `/tmp/bti__logging__*.txt`)
 - Signal capture system provides the most automated logging
 - External `dbus-monitor` tool can be used alongside BLEEP for complete visibility:
   ```bash

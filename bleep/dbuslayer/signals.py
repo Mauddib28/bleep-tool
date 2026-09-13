@@ -10,6 +10,7 @@ class is gradually extracted into smaller, testable components.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -423,11 +424,33 @@ class PropertyMonitor:
             return []
 
 
+# Sentinel key used when a DeviceManager is registered without an ``adapter_name``
+# (legacy single-adapter callers / test stubs).
+_DEFAULT_ADAPTER_KEY = "__default__"
+
+# Extract the ``hciN`` adapter name from a BlueZ object path such as
+# ``/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF``.
+_ADAPTER_FROM_PATH_RE = re.compile(r"^/org/bluez/(hci\d+)/", re.IGNORECASE)
+
+
+def _adapter_from_device_path(path: str) -> Optional[str]:
+    """Return the ``hciN`` adapter name embedded in a BlueZ object path, or None."""
+    if not path:
+        return None
+    match = _ADAPTER_FROM_PATH_RE.match(path)
+    return match.group(1).lower() if match else None
+
+
 class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
     """Centralised BlueZ signal manager.
 
     Replaces the ad-hoc listeners in the monolith. Handles property changes,
     notifications, and other signal events for BlueZ devices.
+
+    Adapter-aware routing (D1): RSSI observations are forwarded to the
+    DeviceManager that owns the emitting adapter.  Multiple DeviceManagers (one
+    per ``hciN``) may be registered concurrently; each is keyed by its
+    ``adapter_name`` so a sighting on ``hci1`` never lands in ``hci0``'s cache.
     """
 
     def __init__(self):
@@ -437,8 +460,9 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
         # Map device-path prefix -> device instance
         self._devices: dict[str, object] = {}
         
-        # DeviceManager instance for RSSI forwarding (optional)
-        self._device_manager: Optional[Any] = None
+        # DeviceManager instances for RSSI forwarding, keyed by adapter name
+        # (e.g. ``"hci0"``).  Multiple adapters may be registered concurrently.
+        self._device_managers: Dict[str, Any] = {}
         
         # Agent instance for method invocation correlation (optional)
         self._agent_instance: Optional[Any] = None
@@ -495,11 +519,69 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
 
     def register_device_manager(self, device_manager: Any) -> None:
         """Register a DeviceManager instance for RSSI forwarding.
-        
+
+        Keyed by the manager's ``adapter_name`` so several adapters can be
+        registered at once (D1 adapter-aware routing).  A manager without an
+        ``adapter_name`` is stored under a default sentinel to preserve the
+        historical single-adapter behaviour.
+
         Args:
             device_manager: Instance of system_dbus__bluez_device_manager
         """
-        self._device_manager = device_manager
+        key = getattr(device_manager, "adapter_name", None) or _DEFAULT_ADAPTER_KEY
+        self._device_managers[key] = device_manager
+
+    def unregister_device_manager(self, device_manager: Any) -> None:
+        """Remove a previously registered DeviceManager (by adapter or identity).
+
+        Called from ``DeviceManager._cleanup_after_run`` so a finished adapter
+        stops receiving routed RSSI observations.
+        """
+        key = getattr(device_manager, "adapter_name", None) or _DEFAULT_ADAPTER_KEY
+        if self._device_managers.get(key) is device_manager:
+            self._device_managers.pop(key, None)
+            return
+        # Fall back to identity removal (adapter_name changed or default key).
+        for existing_key, existing in list(self._device_managers.items()):
+            if existing is device_manager:
+                self._device_managers.pop(existing_key, None)
+
+    @property
+    def _device_manager(self) -> Optional[Any]:
+        """Back-compat accessor: the sole DeviceManager when exactly one is registered.
+
+        Retained so existing single-adapter callers and test stubs that read or
+        assign ``_device_manager`` keep working.  Returns ``None`` when zero or
+        multiple managers are registered (use adapter-aware routing instead).
+        """
+        if len(self._device_managers) == 1:
+            return next(iter(self._device_managers.values()))
+        return None
+
+    @_device_manager.setter
+    def _device_manager(self, device_manager: Optional[Any]) -> None:
+        if device_manager is None:
+            self._device_managers = {}
+        else:
+            key = getattr(device_manager, "adapter_name", None) or _DEFAULT_ADAPTER_KEY
+            self._device_managers = {key: device_manager}
+
+    def _resolve_manager_for_path(self, path: str) -> Optional[Any]:
+        """Return the DeviceManager that owns *path*'s adapter.
+
+        Prefers an exact ``hciN`` match; when the adapter cannot be
+        disambiguated and exactly one manager is registered, falls back to that
+        manager (single-adapter back-compat).  With two or more managers and no
+        adapter match, returns ``None`` so an observation is never mis-routed.
+        """
+        adapter = _adapter_from_device_path(path)
+        if adapter is not None:
+            manager = self._device_managers.get(adapter)
+            if manager is not None:
+                return manager
+        if len(self._device_managers) == 1:
+            return next(iter(self._device_managers.values()))
+        return None
 
     def register_agent(self, agent_instance: Any) -> None:
         """Register an agent instance for method invocation correlation.
@@ -760,7 +842,7 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
         char_path = None
         for svc in getattr(device, "_services", []):
             for char in getattr(svc, "characteristics", []):
-                if getattr(char, "uuid", "").lower() == characteristic_uuid.lower():
+                if getattr(char, "uuid", "").upper() == characteristic_uuid.upper():
                     char_path = getattr(char, "path", None)
                     break
             if char_path:
@@ -2221,29 +2303,18 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
             
         # Capture RSSI updates during discovery and forward to DeviceManager
         if interface == DEVICE_INTERFACE and "RSSI" in changed:
-            rssi_value = changed["RSSI"]
-            if rssi_value is not None and self._device_manager is not None:
-                # Extract MAC address from device path (e.g., /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX)
-                # Device paths follow pattern: /org/bluez/{adapter}/dev_{MAC}
-                if path.startswith("/org/bluez/") and "/dev_" in path:
-                    try:
-                        # Extract MAC from path: /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX
-                        mac_part = path.split("/dev_")[-1]
-                        # Convert XX_XX_XX_XX_XX_XX to XX:XX:XX:XX:XX:XX
-                        mac_address = mac_part.replace("_", ":").upper()
-                        # Forward to DeviceManager if discovery is active
-                        if hasattr(self._device_manager, "is_discovery_active") and self._device_manager.is_discovery_active():
-                            if hasattr(self._device_manager, "_capture_rssi_from_signal"):
-                                try:
-                                    rssi_int = int(rssi_value) if rssi_value is not None else None
-                                    if rssi_int is not None:
-                                        self._device_manager._capture_rssi_from_signal(mac_address, rssi_int)
-                                except (ValueError, TypeError, AttributeError):
-                                    # Ignore errors in RSSI capture (non-critical)
-                                    pass
-                    except (IndexError, AttributeError):
-                        # Ignore path parsing errors (non-critical)
-                        pass
+            self._capture_device_rssi(path, changed["RSSI"])
+
+        # LR-2c: capture advertisement-fingerprint rotations from the per-advert
+        # signal stream (ServiceData / ManufacturerData deltas within a round).
+        if interface == DEVICE_INTERFACE and (
+            "ServiceData" in changed or "ManufacturerData" in changed
+        ):
+            self._capture_device_adv_fingerprint(path, changed)
+
+        # R2: session census (survives StopDiscovery / STOP_CLEARS)
+        if interface == DEVICE_INTERFACE:
+            self._capture_device_session_props(path, changed)
             
         # Route GattService1 property changes to the owning Service object
         if interface == GATT_SERVICE_INTERFACE:
@@ -2297,6 +2368,107 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
                     return
 
     # ------------------------------------------------------------------
+    # RSSI capture (shared by PropertiesChanged and InterfacesAdded)
+    # ------------------------------------------------------------------
+    def _capture_device_rssi(self, path: str, rssi_value: Any) -> None:
+        """Forward a device RSSI observation to the DeviceManager cache.
+
+        Shared by the ``PropertiesChanged`` and ``InterfacesAdded`` handlers.
+        The observation is routed to the DeviceManager that owns the emitting
+        adapter (parsed from the ``/org/bluez/hciN/`` object-path prefix), so a
+        sighting on one adapter never lands in another adapter's cache (D1).
+        Recording is gated on ``is_discovery_active()`` (the cache is cleared at each
+        ``start_discovery``), so a captured value means the device presented a fresh
+        advertisement in the current discovery round. Capturing from
+        ``InterfacesAdded`` closes a passive-scan gap: with ``DuplicateData=True``
+        BlueZ often emits only the first-seen ``InterfacesAdded`` (no subsequent
+        ``PropertiesChanged`` RSSI), so without this a live device would be missed.
+        All failures are non-critical and swallowed.
+        """
+        if rssi_value is None or not self._device_managers:
+            return
+        if not (path.startswith("/org/bluez/") and "/dev_" in path):
+            return
+        dm = self._resolve_manager_for_path(path)
+        if dm is None:
+            return
+        if not (hasattr(dm, "is_discovery_active") and dm.is_discovery_active()):
+            return
+        if not hasattr(dm, "_capture_rssi_from_signal"):
+            return
+        try:
+            # /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX -> XX:XX:XX:XX:XX:XX
+            mac_address = path.split("/dev_")[-1].replace("_", ":").upper()
+            dm._capture_rssi_from_signal(mac_address, int(rssi_value))
+        except (ValueError, TypeError, AttributeError, IndexError):
+            # Non-critical: never let RSSI capture disrupt signal dispatch.
+            pass
+
+    def _capture_device_session_props(self, path: str, props: dict) -> None:
+        """Forward Device1 property bags to the owning manager session census (R2).
+
+        Gated on ``is_session_capturing`` (not merely ``is_discovery_active``) so
+        late updates around StopDiscovery still merge, and InterfacesRemoved can
+        mark-removed without dropping the row.
+        """
+        if not self._device_managers or not isinstance(props, dict):
+            return
+        if not (path.startswith("/org/bluez/") and "/dev_" in path):
+            return
+        dm = self._resolve_manager_for_path(path)
+        if dm is None:
+            return
+        if not (hasattr(dm, "is_session_capturing") and dm.is_session_capturing()):
+            return
+        if not hasattr(dm, "upsert_session_device_properties"):
+            return
+        try:
+            dm.upsert_session_device_properties(path, props)
+        except Exception:  # noqa: BLE001 - never disrupt signal dispatch
+            pass
+
+    def _capture_device_adv_fingerprint(self, path: str, props: dict) -> None:
+        """Forward advertisement-fingerprint payloads to the owning DeviceManager.
+
+        LR-2c: mirrors :py:meth:`_capture_device_rssi` — shared by the
+        ``PropertiesChanged`` and ``InterfacesAdded`` handlers, and routed to the
+        DeviceManager that owns the emitting adapter via
+        :py:meth:`_resolve_manager_for_path` (D1 adapter-aware routing), so a rotation
+        seen on one antenna never lands in another adapter's tracker. Feeds each
+        ``ServiceData`` (UUID -> bytes) and ``ManufacturerData`` (uint16 -> bytes)
+        element to the manager so it can flag same-length payload rotations that occur
+        *within* a survey round (the end-of-round ``GetManagedObjects`` snapshot would
+        miss a rotation that reverts before it). Keys are normalised to match the
+        census merge (``str`` UUID / ``int`` company id). Gated on
+        ``is_discovery_active``; all failures swallowed.
+        """
+        if not self._device_managers or not isinstance(props, dict):
+            return
+        if not (path.startswith("/org/bluez/") and "/dev_" in path):
+            return
+        dm = self._resolve_manager_for_path(path)
+        if dm is None:
+            return
+        if not (hasattr(dm, "is_discovery_active") and dm.is_discovery_active()):
+            return
+        if not hasattr(dm, "_capture_adv_fingerprint"):
+            return
+        try:
+            mac_address = path.split("/dev_")[-1].replace("_", ":").upper()
+        except (AttributeError, IndexError):
+            return
+        for kind, blob in (("svc", props.get("ServiceData")), ("mfr", props.get("ManufacturerData"))):
+            if not isinstance(blob, dict):
+                continue
+            for key, val in blob.items():
+                try:
+                    norm_key = str(key) if kind == "svc" else int(key)
+                    dm._capture_adv_fingerprint(mac_address, kind, norm_key, bytes(val))
+                except (ValueError, TypeError, AttributeError):
+                    # Non-critical: never let fingerprint capture disrupt dispatch.
+                    continue
+
+    # ------------------------------------------------------------------
     # Callbacks – ObjectManager
     # ------------------------------------------------------------------
     def _interfaces_added(self, object_path: str, interfaces: dict):  # noqa: D401
@@ -2316,7 +2488,23 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
             timestamp=time.time()
         )
         self._signal_correlator.add_capture(capture)
-        
+
+        # LR-6: capture RSSI from the first-seen device advertisement. Under passive
+        # scanning this is frequently the only event carrying RSSI for a device.
+        if isinstance(interfaces, dict):
+            dev_props = interfaces.get(DEVICE_INTERFACE)
+            if isinstance(dev_props, dict) and "RSSI" in dev_props:
+                self._capture_device_rssi(object_path, dev_props["RSSI"])
+            # LR-2c: first-seen advertisement may already carry ServiceData /
+            # ManufacturerData; seed the fingerprint tracker from it too.
+            if isinstance(dev_props, dict) and (
+                "ServiceData" in dev_props or "ManufacturerData" in dev_props
+            ):
+                self._capture_device_adv_fingerprint(object_path, dev_props)
+            # R2: seed session census from the full InterfacesAdded Device1 props.
+            if isinstance(dev_props, dict):
+                self._capture_device_session_props(object_path, dev_props)
+
         # Fast-path: check device registry by prefix match
         for dev_path, device in self._devices.items():
             if not object_path.startswith(dev_path):
@@ -2339,6 +2527,17 @@ class system_dbus__bluez_signals:  # noqa: N801 – keep legacy-friendly name
             timestamp=time.time()
         )
         self._signal_correlator.add_capture(capture)
+
+        # R2: keep session census rows across STOP_CLEARS Device1 removal.
+        if DEVICE_INTERFACE in (interfaces or []) or (
+            object_path.startswith("/org/bluez/") and "/dev_" in object_path
+        ):
+            dm = self._resolve_manager_for_path(object_path)
+            if dm is not None and hasattr(dm, "mark_session_device_removed"):
+                try:
+                    dm.mark_session_device_removed(object_path)
+                except Exception:  # noqa: BLE001
+                    pass
         
         for dev_path, device in self._devices.items():
             if not object_path.startswith(dev_path):

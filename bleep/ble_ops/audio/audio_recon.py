@@ -155,6 +155,19 @@ def run_audio_recon(
         _write_result(result, output_json_path)
         print_and_log(f"[+] Wrote recon result to {output_json_path}", LOG__USER)
 
+    # P2-B5: Persist audio recon snapshot to observation DB
+    try:
+        from bleep.core import observations as _obs
+        _obs.store_audio_recon(
+            backend=result.get("backend"),
+            cards=result.get("cards"),
+            pcms=result.get("bluealsa_pcms"),
+            recordings=result.get("recordings"),
+            contention=result.get("endpoint_contention"),
+        )
+    except Exception:
+        pass
+
     return result
 
 

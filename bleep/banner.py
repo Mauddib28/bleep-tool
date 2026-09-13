@@ -41,19 +41,25 @@ _INTERACTIVE_MODES = frozenset({
 })
 
 
-def print_banner(mode: str | None = None) -> None:
+def print_banner(mode: str | None = None, output_mode: str = "terminal") -> None:
     """Print the BLEEP startup banner.
 
-    Only emits output for interactive/REPL modes; single-shot CLI
-    commands (scan, connect, gatt-enum, …) stay quiet so they can be
-    piped or scripted without noise.
+    Only emits output for interactive/REPL modes in terminal output mode;
+    single-shot CLI commands (scan, connect, gatt-enum, …) stay quiet so
+    they can be piped or scripted without noise.
 
     Parameters
     ----------
     mode:
         The ``args.mode`` value from the CLI parser.  Pass ``None`` for
         the default interactive mode.
+    output_mode:
+        The global output mode (``"terminal"``, ``"json"``, or ``"quiet"``).
+        Banner is suppressed for ``"json"`` and ``"quiet"`` regardless of
+        the CLI mode.
     """
+    if output_mode != "terminal":
+        return
     if mode not in _INTERACTIVE_MODES:
         return
 

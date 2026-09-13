@@ -31,11 +31,17 @@ import socket
 
 from bleep.core import errors as _errors
 from bleep.core.log import print_and_log, LOG__DEBUG, LOG__GENERAL
+from bleep.bt_ref.constants import DEVICE_INTERFACE
 from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
 from bleep.dbuslayer.device_classic import (
     system_dbus__bluez_device__classic as _ClassicDevice,
 )
 from bleep.ble_ops.classic.sdp import discover_services_sdp, build_svc_map
+
+__all__ = [
+    "classic_rfccomm_open",
+    "connect_and_enumerate__bluetooth__classic",
+]
 
 # optional observation DB
 try:
@@ -67,13 +73,27 @@ def _load_glib_helpers():
 # ---------------------------------------------------------------------------
 
 
-def classic_rfccomm_open(mac_address: str, channel: int, *, timeout: float = 8.0) -> socket.socket:
+def classic_rfccomm_open(mac_address: str, channel: int, *, timeout: float = 8.0,
+                         enomem_retries: int = 2, enomem_backoff: float = 0.3) -> socket.socket:
     """Open an RFCOMM socket to *mac_address* on *channel*.
 
     Returns a connected ``socket.socket`` instance which the caller is
     responsible for closing.  Raises *OSError* on failure.  This helper keeps
     the rest of BLEEP free from raw socket logic and centralises logging.
+
+    ``ENOMEM`` (errno 12) on ``connect`` is a *transient* resource failure —
+    "Failed to allocate memory in either host stack or controller"
+    (workDir/BlueZDocs/errors.txt:70-74; workDir/bluez/src/error.c:163 maps it to
+    ``ERR_BREDR_CONN_MEMORY_ALLOC``, distinct from the permanent
+    EOPNOTSUPP/EINVAL classes). It commonly appears when several channels are
+    opened in rapid succession. We therefore retry ``ENOMEM`` a bounded number
+    of times with a linear back-off (mirroring the inter-attempt pacing in
+    BlueZ's own ``tools/rctest.c`` reconnect loop), recreating the socket each
+    time. *Every other errno raises immediately, exactly as before.*
     """
+
+    import errno as _errno
+    import time as _time
 
     from bleep.core.log import print_and_log, LOG__DEBUG
 
@@ -82,23 +102,54 @@ def classic_rfccomm_open(mac_address: str, channel: int, *, timeout: float = 8.0
         f"[classic_rfccomm_open] Connecting RFCOMM → {mac_address}:{channel}", LOG__DEBUG
     )
 
-    sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
-    sock.settimeout(timeout)
-    try:
-        sock.connect((mac_address, channel))
-        print_and_log("[classic_rfccomm_open] Connected", LOG__DEBUG)
-        return sock
-    except OSError as exc:
-        print_and_log(
-            f"[classic_rfccomm_open] connect failed: {exc}", LOG__DEBUG
-        )
-        sock.close()
-        raise
+    attempt = 0
+    while True:
+        sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+        sock.settimeout(timeout)
+        try:
+            sock.connect((mac_address, channel))
+            print_and_log("[classic_rfccomm_open] Connected", LOG__DEBUG)
+            return sock
+        except OSError as exc:
+            sock.close()
+            if exc.errno == _errno.ENOMEM and attempt < enomem_retries:
+                attempt += 1
+                _backoff = enomem_backoff * attempt
+                print_and_log(
+                    f"[classic_rfccomm_open] ENOMEM on {mac_address}:{channel} — "
+                    f"host/controller memory alloc failed; back-off {_backoff:.2f}s "
+                    f"then retry ({attempt}/{enomem_retries})",
+                    LOG__DEBUG,
+                )
+                _time.sleep(_backoff)
+                continue
+            print_and_log(
+                f"[classic_rfccomm_open] connect failed: {exc}", LOG__DEBUG
+            )
+            raise
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _target_known(adapter: _Adapter, mac: str) -> bool:
+    """True if BlueZ already has an object for *mac* (paired/connected/cached).
+
+    Such peers need no fresh discovery; requiring one makes ``classic-enum`` fail
+    on connected-but-non-discoverable devices (a bonded headset that has stopped
+    advertising discoverable, for example).
+    """
+    try:
+        objects = adapter.get_managed_objects() or {}
+    except Exception:
+        return False
+    for _path, interfaces in objects.items():
+        dev = interfaces.get(DEVICE_INTERFACE)
+        if dev and str(dev.get("Address", "")).upper() == mac:
+            return True
+    return False
+
 
 def _target_visible(adapter: _Adapter, mac: str, attempts: int = 3) -> bool:
     """Run BR/EDR discovery until *mac* becomes visible or *attempts* exhausted."""
@@ -160,9 +211,15 @@ def connect_and_enumerate__bluetooth__classic(
     if not adapter.is_ready():
         raise _errors.NotReadyError()
 
-    print_and_log(f"[*] Scanning for {target_bt_addr}…", LOG__GENERAL)
-    if not _target_visible(adapter, target_bt_addr, timeout_scan_attempts):
-        raise _errors.DeviceNotFoundError(target_bt_addr)
+    if _target_known(adapter, target_bt_addr):
+        print_and_log(
+            f"[*] {target_bt_addr} already known to BlueZ — skipping discovery",
+            LOG__GENERAL,
+        )
+    else:
+        print_and_log(f"[*] Scanning for {target_bt_addr}…", LOG__GENERAL)
+        if not _target_visible(adapter, target_bt_addr, timeout_scan_attempts):
+            raise _errors.DeviceNotFoundError(target_bt_addr)
 
     device = _ClassicDevice(target_bt_addr)
 

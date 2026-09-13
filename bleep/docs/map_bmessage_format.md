@@ -65,7 +65,7 @@ Not all devices support all types.  Query at runtime:
 BLEEP-DEBUG> cmap types
 ```
 
-**Source**: `bleep/dbuslayer/obex_map.py` line 271 (`get_supported_types`),
+**Source**: `bleep/dbuslayer/obex_map.py` `get_supported_types()` (line ~282),
 BlueZ D-Bus API `org.bluez.obex.MessageAccess1` `SupportedTypes` property
 
 ---
@@ -94,8 +94,9 @@ then calls `ListMessages("")` on the current directory to avoid the
 double-folder bug (where `SetFolder("inbox")` followed by
 `ListMessages("inbox")` resolves to `inbox/inbox`).
 
-**Source**: `bleep/ble_ops/classic/map.py` lines 159–186,
-`bleep/dbuslayer/obex_map.py` lines 116–117
+**Source**: `bleep/ble_ops/classic/map.py` `list_messages()` (lines ~273–302),
+`bleep/dbuslayer/obex_map.py` `set_folder()` (line ~128) and `list_messages()`
+(line ~172)
 
 ---
 
@@ -315,8 +316,8 @@ The `ListMessages` filter supports pagination (`Offset`, `MaxCount`) to avoid
 timeouts on large folders — BlueZ obexd buffers and parses the full XML listing
 synchronously with a default `MaxListCount` of 1024.
 
-**Source**: `bleep/dbuslayer/obex_map.py` lines 160–212 (`list_messages`),
-`bleep/ble_ops/classic/map.py` lines 189–209 (`get_message`),
+**Source**: `bleep/dbuslayer/obex_map.py` `list_messages()` (line ~172),
+`bleep/ble_ops/classic/map.py` `get_message()` (lines ~303–323),
 BlueZ `obexd/client/map.c` line 59 (`#define DEFAULT_COUNT 1024`)
 
 ### Uploading multiple messages (one file per push)
@@ -437,9 +438,11 @@ Type-based filtering:
 
 ## 10  bMessage Examples by Type
 
-Below are representative bMessage examples for each supported type.  All
-`LENGTH` values are correct for the CRLF content in the corresponding test
-files under `workDir/MAP/map_test_messages/`.
+Below are representative bMessage examples for each supported type.  The
+`LENGTH` values shown are computed for the CRLF content of each example as
+printed here.  (These are **inline examples**, not shipped fixture files — the
+repository does not include a `workDir/MAP/map_test_messages/` corpus; copy an
+example into a `.bmsg` file yourself if you want to push it with `cmap push`.)
 
 ### 10.1  SMS_GSM — basic outbox message
 
@@ -692,7 +695,15 @@ See the full inline example in §6 above.
 - D-Bus message interface: `org.bluez.obex.Message1`
 - Default push folder: `telecom/msg/outbox`
 
-**Source**: `bleep/bt_ref/constants.py`, `bleep/dbuslayer/obex_map.py` lines 27–33
+**Source**: MAP service UUIDs are defined in `bleep/bt_ref/constants.py`; the
+OBEX D-Bus interface strings are used throughout `bleep/dbuslayer/obex_map.py`
+
+## See also
+
+- [MAP version compatibility](map_version_compatibility.md) — how BLEEP's `obexd`-backed
+  MAP-1.0 client negotiates against modern MAP 1.2+ servers (`MapSupportedFeatures`),
+  and the Android "feature downgrade" caveat.
+- [Bluetooth Classic mode](bl_classic_mode.md) §2.9 — MAP debug-shell commands (`cmap …`).
 
 ---
 

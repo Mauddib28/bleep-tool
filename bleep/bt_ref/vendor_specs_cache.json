@@ -1,0 +1,1478 @@
+[
+  {
+    "path": "generic/device_type_meta/manifest.json",
+    "manifest": {
+      "name": "Device type from appearance and services",
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "priority": 10,
+          "scan_conditions": {
+            "has_gap_device_type_hints": true
+          }
+        }
+      },
+      "manifest_version": 1,
+      "version": 1
+    }
+  },
+  {
+    "path": "generic/generic_read_device_info/manifest.json",
+    "manifest": {
+      "name": "Generic BLE",
+      "description": "Fallback enrichment actions for connectable devices that do not match a more specific observer manifest yet (typical Android, various headsets, generic BLE modules).",
+      "priority": 20,
+      "roles": {
+        "central": {
+          "scripts": [
+            {
+              "id": "generic_read_device_info",
+              "title": "Read device info",
+              "kind": "quick_action",
+              "priority": 20,
+              "entry": "central/read_device_info.lua",
+              "match": {},
+              "auto_run_on_connect": false
+            }
+          ]
+        }
+      },
+      "manifest_version": 1,
+      "version": 1
+    }
+  },
+  {
+    "path": "products/blesploit_lightbulb/manifest.json",
+    "manifest": {
+      "name": "BLESPlo.it Light",
+      "description": "Example lightbulb: on/off (notify), RGB color, and an optional write-only secret-challenge characteristic for peripheral Lua.",
+      "author": "Slawomir Jasek",
+      "author_url": "https://blesplo.it",
+      "version": 1,
+      "assets": {
+        "icon": "assets/blesploit_logo.svg",
+        "icon_tint": "#4b96cb",
+        "graphics": "assets/graphics.json"
+      },
+      "roles": {
+        "observer": {
+          "scan_conditions": {
+            "service_data_uuid_128": "a700cc65-e486-40ba-5d24-99601dc38fd7"
+          },
+          "entry": "observer/adv_decode.lua",
+          "priority": 50
+        },
+        "peripheral": {
+          "advertisement": "peripheral/adv.json",
+          "entry": "peripheral/dynamic_peripheral.lua",
+          "interface": "peripheral/interface.json"
+        },
+        "central": {
+          "scripts": [
+            {
+              "id": "main",
+              "title": "BLESPlo.it Light",
+              "kind": "full_menu",
+              "entry": "central/dynamic_central.lua",
+              "menu": "central/menu.json",
+              "match": {
+                "services": [
+                  "a701cc65-e486-40ba-5d24-99601dc38fd7",
+                  "a702cc65-e486-40ba-5d24-99601dc38fd7"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "profile": "ble.json",
+      "uuids": "uuids.json",
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "products/elinksmart_lock/manifest.json",
+    "manifest": {
+      "name": "ELinkSmart lock",
+      "author": "Slawomir Jasek",
+      "author_link": "https://blesplo.it",
+      "description": "ElinkSmart-compatible (YL-P10BF, YL-P8BF, YL-P5BF)  BLE smart lock simulator: AES-128-ECB hardcoded key, chunked ATT framing, auth + challenge proofs.",
+      "notes": "Note: the current application checks online the lock's MAC address and it will not work with the simulation - use old version 1.2.0 apk, or create own: https://app.hextree.io/courses/android-bluetooth-reversing/bluetooth-basics. See more: https://labs.reversec.com/posts/2024/02/multiple-vulnerabilities-in-elinksmart-padlocks https://www.youtube.com/watch?v=1JDqhzQCtAA https://www.youtube.com/watch?v=PmokIaUQvXs https://lehack.org/2023/track/vulnerability-analysis-of-a-bluetooth-low-energy-padlock/ ",
+      "version": 1,
+      "profile": "ble.json",
+      "uuids": "uuids.json",
+      "vars": "vars.json",
+      "assets": {
+        "icon": "assets/lock.svg",
+        "icon_tint": "#096eab",
+        "graphics": "assets/graphics.json"
+      },
+      "roles": {
+        "peripheral": {
+          "advertisement": "peripheral/adv.json",
+          "entry": "peripheral/dynamic_peripheral.lua",
+          "interface": "peripheral/interface.json",
+          "show_adv_address": false
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "products/happy_lighting/manifest.json",
+    "manifest": {
+      "name": "Happy Lighting",
+      "description": "Happy Lighting smart light systems. On/off, set color.",
+      "author": "Slawomir Jasek",
+      "author_url": "https://blesplo.it",
+      "model_url": "https://happylightingapp.com/",
+      "version": 1,
+      "notes": "Confirmed working with 'Triones' lightbulb. Other device names extracted from the app (unconfirmed). The device seems to have a PIN authentication, but it is not enforced nor visible anywhere the user interface. The application sends hardcoded '1234', but the device accepts commands without it as well. ",
+      "apps": {
+        "google": {
+          "url": "https://play.google.com/store/apps/details?id=com.xiaoyu.hlight",
+          "version_note": "There are also several unofficial ones available."
+        },
+        "apple": {
+          "url": "https://apps.apple.com/us/app/happylighting-life-with-smart/id1145694075",
+          "version_note": ""
+        },
+        "direct": [
+          {
+            "label": "confirmed APK",
+            "url": "https://apkpure.com/happylighting/com.xiaoyu.hlight/download/1.6.49",
+            "version_note": "v1.6.49"
+          }
+        ]
+      },
+      "assets": {
+        "icon": "assets/happy_lighting.svg",
+        "graphics": "assets/graphics.json"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "scan_conditions": {
+            "device_name_regex": "^(Triones|BRGlight|Color\\+|Dream-|Light-|Color-|QHM|Flash|LD-|Dimmer|Dream\\*|Dream#|Dream~|Dream&|Morimoto|Thaillamp|LXDZ|Archaic|GLOWDRIV|RAMAND|Dream=|QLAMP)"
+          },
+          "priority": 50
+        },
+        "peripheral": {
+          "advertisement": "peripheral/adv.json",
+          "entry": "peripheral/dynamic_peripheral.lua"
+        },
+        "central": {
+          "scripts": [
+            {
+              "id": "main",
+              "title": "Happy Lighting",
+              "kind": "full_menu",
+              "entry": "central/dynamic_central.lua",
+              "menu": "central/menu.json",
+              "match": {
+                "services": [
+                  "ffd5"
+                ]
+              }
+            },
+            {
+              "id": "check_light_status",
+              "title": "Check light status",
+              "kind": "quick_action",
+              "priority": 60,
+              "entry": "central/quick_check_light_status.lua",
+              "match": {
+                "fingerprint": {
+                  "protocol": [
+                    "happy_lighting"
+                  ]
+                },
+                "services": []
+              },
+              "auto_run_on_connect": false
+            },
+            {
+              "id": "flash_rainbow",
+              "title": "Flash rainbow",
+              "kind": "quick_action",
+              "priority": 55,
+              "entry": "central/quick_flash_rainbow.lua",
+              "match": {
+                "fingerprint": {
+                  "protocol": [
+                    "happy_lighting"
+                  ]
+                },
+                "services": []
+              },
+              "auto_run_on_connect": false
+            }
+          ]
+        }
+      },
+      "profile": "ble.json",
+      "uuids": "uuids.json",
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "products/oclean_toothbrush/manifest.json",
+    "manifest": {
+      "name": "Oclean smart toothbrush",
+      "description": "Oclean smart toothbrush BLE protocol (Y3/Y3L and related models). Observer fingerprint, device-info quick action, and Y3L peripheral simulator.",
+      "author": "Slawomir Jasek",
+      "manifest_version": 1,
+      "version": 5,
+      "notes": "Subscribe OCLEAN_READ_NOTIFY (bb86) before writing OCLEAN_WRITE (bb85). Manual writes: use presets on bb85 (0303 battery, 030201 device info, 022201 pause). Manufacturer AD (type 0xFF) carries the 6-byte device address, not a Bluetooth SIG company ID. Peripheral sim sets that field from get_adv_bd_addr().",
+      "profile": "ble.json",
+      "uuids": "uuids.json",
+      "vars": "vars.json",
+      "assets": {
+        "icon": "assets/oclean_logo.svg",
+        "graphics": "assets/graphics.json"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "priority": 50,
+          "scan_conditions": {
+            "one_of": [
+              {
+                "device_name_contains": "Oclean"
+              },
+              {
+                "service_uuid_128": "a6ed0401d344460a8075b9e8ec90d71b"
+              }
+            ]
+          }
+        },
+        "central": {
+          "scripts": [
+            {
+              "id": "get_oclean_info",
+              "title": "Get toothbrush info",
+              "kind": "quick_action",
+              "priority": 60,
+              "entry": "central/quick_get_device_info.lua",
+              "match": {
+                "fingerprint_or_services": true,
+                "fingerprint": {
+                  "protocol": [
+                    "oclean"
+                  ]
+                },
+                "services": [
+                  "8082caa841a6402191c656f9b954cc18"
+                ]
+              },
+              "auto_run_on_connect": false
+            }
+          ]
+        },
+        "peripheral": {
+          "advertisement": "peripheral/adv.json",
+          "entry": "peripheral/dynamic.lua"
+        }
+      }
+    }
+  },
+  {
+    "path": "products/orangecon_2026_badge/manifest.json",
+    "manifest": {
+      "name": "OrangeCon 2026 Badge",
+      "description": "Simple match for advertising",
+      "version": 2,
+      "assets": {
+        "icon": "assets/orangecon.svg"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "priority": 20,
+          "scan_conditions": {
+            "company_id": "BAD0",
+            "device_name_contains": "OCB"
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "products/pixel_buds_2a/manifest.json",
+    "manifest": {
+      "name": "Google Pixel Buds 2a",
+      "description": "Google Headphones",
+      "version": 1,
+      "notes": "Simple observer based on device name, static peripheral.",
+      "profile": "ble.json",
+      "uuids": "uuids.json",
+      "assets": {
+        "icon": "assets/pixel_buds_2a.svg",
+        "graphics": "assets/graphics.json"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "priority": 50,
+          "scan_conditions": {
+            "device_name_contains": "Pixel Buds 2a"
+          }
+        },
+        "peripheral": {
+          "advertisement": "peripheral/adv.json",
+          "entry": "peripheral/peripheral.lua",
+          "interface": "peripheral/interface.json"
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "products/rapidpower_robotic_dog/manifest.json",
+    "manifest": {
+      "name": "Rapidpower robotic dog",
+      "description": "Rapidpower",
+      "author": "Slawomir Jasek",
+      "author_url": "https://blesplo.it",
+      "model_url": "http://www.rapidpowertoys.com",
+      "version": 1,
+      "notes": "",
+      "apps": {
+        "google": {
+          "url": "https://play.google.com/store/apps/details?id=com.zhongrun.robotdog",
+          "version_note": ""
+        },
+        "apple": {
+          "url": "https://apps.apple.com/us/app/rapidpower/id6479237013",
+          "version_note": ""
+        }
+      },
+      "assets": {
+        "icon": "assets/rapidpower_dog.svg",
+        "graphics": "assets/graphics.json"
+      },
+      "roles": {
+        "observer": {
+          "scan_conditions": {
+            "device_name_contains": "Rapidpower-dog"
+          },
+          "priority": 50
+        },
+        "peripheral": {
+          "advertisement": "peripheral/adv.json",
+          "entry": "peripheral/dynamic_peripheral.lua"
+        },
+        "central": {
+          "scripts": [
+            {
+              "id": "main",
+              "title": "Rapidpower dog",
+              "kind": "full_menu",
+              "entry": "central/dynamic_central.lua",
+              "menu": "central/menu.json",
+              "match": {
+                "services": [
+                  "fa879af4-d601-420c-b2b4-07ffb528dde3"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "profile": "ble.json",
+      "uuids": "uuids.json",
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "products/realov_vibe/manifest.json",
+    "manifest": {
+      "name": "Realov vibe",
+      "description": "Realov Lydia I Smart Butterfly",
+      "author": "Slawomir Jasek",
+      "author_url": "https://blesplo.it",
+      "model_url": "https://www.realov.com",
+      "version": 1,
+      "notes": "",
+      "apps": {
+        "google": {
+          "url": "https://play.google.com/store/apps/details?id=cn.ble.realov_new",
+          "version_note": ""
+        },
+        "apple": {
+          "url": "https://apps.apple.com/us/app/realov/id893957103",
+          "version_note": ""
+        }
+      },
+      "assets": {
+        "icon": "assets/realov.svg",
+        "graphics": "assets/graphics.json"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "scan_conditions": {
+            "device_name_contains": "REALOV_VIBE"
+          },
+          "priority": 50
+        },
+        "peripheral": {
+          "advertisement": "peripheral/adv.json",
+          "entry": "peripheral/dynamic_peripheral.lua",
+          "interface": "peripheral/interface.json"
+        },
+        "central": {
+          "scripts": [
+            {
+              "id": "main",
+              "title": "Realov Vibe",
+              "kind": "full_menu",
+              "entry": "central/dynamic_central.lua",
+              "menu": "central/menu.json",
+              "match": {
+                "fingerprint": {
+                  "protocol": [
+                    "realov_vibe"
+                  ]
+                },
+                "services": [
+                  "ffe0"
+                ]
+              }
+            },
+            {
+              "id": "quick_vibrate_30",
+              "title": "Vibrate (speed 30)",
+              "kind": "quick_action",
+              "priority": 55,
+              "entry": "central/quick_vibrate_30.lua",
+              "match": {
+                "fingerprint": {
+                  "protocol": [
+                    "realov_vibe"
+                  ]
+                },
+                "services": []
+              },
+              "auto_run_on_connect": false
+            },
+            {
+              "id": "quick_vibrate_off",
+              "title": "Turn off vibration",
+              "kind": "quick_action",
+              "priority": 54,
+              "entry": "central/quick_vibrate_off.lua",
+              "match": {
+                "fingerprint": {
+                  "protocol": [
+                    "realov_vibe"
+                  ]
+                },
+                "services": []
+              },
+              "auto_run_on_connect": false
+            }
+          ]
+        }
+      },
+      "profile": "ble.json",
+      "uuids": "uuids.json",
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "products/shell_supercars/manifest.json",
+    "manifest": {
+      "name": "Shell SuperCars",
+      "description": "Shell Racing toy car (2020 edition)",
+      "author": "Slawomir Jasek",
+      "author_url": "https://blesplo.it",
+      "version": 1,
+      "notes": "Peripheral sim: AES-ECB control writes on FFF1; battery notify on FFF4 (16-byte blocks).",
+      "apps": {
+        "google": {
+          "url": "",
+          "version_note": "https://play.google.com/store/apps/details?id=nl.brandbase.shellsupercars"
+        },
+        "apple": {
+          "url": "https://apps.apple.com/pl/app/shell-racing/id1458482004",
+          "version_note": ""
+        }
+      },
+      "roles": {
+        "observer": {
+          "scan_conditions": {
+            "device_name_regex": "^QCAR-[0-9A-F]{4}$"
+          },
+          "priority": 50
+        },
+        "peripheral": {
+          "advertisement": "peripheral/adv.json",
+          "entry": "peripheral/dynamic_peripheral.lua"
+        },
+        "central": {
+          "scripts": [
+            {
+              "id": "main",
+              "title": "Shell SuperCars",
+              "kind": "full_menu",
+              "entry": "central/dynamic_central.lua",
+              "menu": "central/menu.json",
+              "match": {
+                "services": [
+                  "fff0"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "assets": {
+        "icon": "assets/bmw_m1.svg",
+        "graphics": "assets/graphics.json"
+      },
+      "profile": "ble.json",
+      "uuids": "uuids.json",
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "products/sony_wh_ch720n/manifest.json",
+    "manifest": {
+      "name": "Sony WH-CH720N",
+      "description": "Sony Headphones, vulnerable to WhisperPair and Airoha",
+      "version": 1,
+      "notes": "Original headset did not return any value in Fast Pair model characteristic, this simulation does.",
+      "profile": "ble.json",
+      "uuids": "uuids.json",
+      "assets": {
+        "icon": "assets/sony_wh_ch720n_black.svg",
+        "graphics": "assets/graphics.json"
+      },
+      "roles": {
+        "observer": {
+          "priority": 50,
+          "scan_conditions": {
+            "device_name_contains": [
+              "WH-CH720N",
+              "LE-WH-CH720N"
+            ]
+          }
+        },
+        "peripheral": {
+          "advertisement": "peripheral/adv.json",
+          "entry": "peripheral/peripheral.lua",
+          "interface": "peripheral/interface.json"
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "protocols/eddystone/manifest.json",
+    "manifest": {
+      "name": "Eddystone",
+      "version": 1,
+      "vars": "vars.json",
+      "assets": {
+        "icon": "assets/eddystone.svg",
+        "graphics": "assets/graphics.json"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "scan_conditions": {
+            "service_data_uuid_16": "feaa"
+          },
+          "_comment": "Service data AD 0x16 for UUID 0xFEAA per https://github.com/google/eddystone/blob/master/protocol-specification.md",
+          "priority": 45
+        },
+        "peripheral": {
+          "entry": "peripheral/eddystone_url_peripheral.lua",
+          "advertisement": "peripheral/adv.json",
+          "interface": "peripheral/interface.json",
+          "show_adv_address": true
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "protocols/fast_pair/manifest.json",
+    "manifest": {
+      "name": "Google Fast Pair",
+      "description": "Google Nearby Fast Pair over BLE — service UUID 0xFE2C (discoverable model ID ads and non-discoverable account key bloom payloads), plus canonical Fast Pair GATT profile.",
+      "author": "Google (spec)",
+      "version": 3,
+      "model_url": "https://developers.google.com/nearby/fast-pair/specifications/service/provider",
+      "source_url": "https://developers.google.com/nearby/fast-pair/specifications/characteristics",
+      "catalog": "fast_pair/fast_pair_models.json",
+      "notes": "Advertising: BR/EDR discoverable providers carry 24‑bit Fast Pair Model ID in Service Data 0xFE2C per provider spec (≤100 ms interval; BLE addr must not rotate in that mode). When not discoverable, providers advertise Fast Pair Account Data in the same service data (≤250 ms) when they have≥1 persisted account key — version byte plus Account Key bloom filter TLV and Salt TLV. Optional Battery Notification extension may follow the salt: length/type nibble plus per‑component octets (left bud, right bud, case), each 0bSVVVVVVV. Interval and rotation rules apply at the UX layer.\nSeeker-visible GATT: Fast Pair service 0xFE2C (Model ID read; Key-based pairing / Passkey write+notify; Account Key write). Optional Device Information Service 0x180A with Firmware Revision 0x2A26. Additional Data characteristic FE2C1237 flows use handshake shared secret plus AES‑CTR+HMAC‑SHA256 as defined in characteristics spec.\nFind Hub Network (FHN) / Find My Device Network (FMDN): providers that support Google’s locator / tracking extension expose characteristic FE2C1238‑8366‑4814‑8EB0‑01DE32100BEA (Beacon actions) on the same 0xFE2C service — read/write/notify for nonce plus HMAC‑authenticated writes (provisioning, ring, unwanted‑tracking protection, Precision Finding / ranging, etc.) and separate FHN LE advertisement payloads. DULT applies to certified accessories. Spec: https://developers.google.com/nearby/fast-pair/specifications/extensions/fmdn\nBundled `fast_pair/fast_pair_models.json` catalogs 24‑bit model IDs (WhisperPair `model_ids.csv` CC BY‑4.0, then DiamondRoPlayz README for missing ids). Regenerate: `python mobile/scripts/build_fast_pair_models_catalog.py`.",
+      "assets": {
+        "icon": "assets/fast_pair_logo.svg"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "priority": 25,
+          "scan_conditions": {
+            "service_data_uuid_16": "fe2c"
+          }
+        },
+        "central": {
+          "scripts": [
+            {
+              "id": "read_fast_pair_model_id",
+              "title": "Check Fast Pair model",
+              "kind": "quick_action",
+              "priority": 60,
+              "entry": "central/read_fast_pair_model_id.lua",
+              "match": {
+                "fingerprint_or_services": true,
+                "fingerprint": {
+                  "device_type": [
+                    "FAST_PAIR"
+                  ]
+                },
+                "services": [
+                  "fe2c"
+                ],
+                "require_discovered_services": true
+              },
+              "auto_run_on_connect": false
+            },
+            {
+              "id": "check_whisperpair_kb_probe",
+              "title": "Check WhisperPair vulnerability",
+              "kind": "quick_action",
+              "priority": 61,
+              "entry": "central/check_whisperpair_kb_probe.lua",
+              "match": {
+                "fingerprint_or_services": true,
+                "fingerprint": {
+                  "device_type": [
+                    "FAST_PAIR"
+                  ]
+                },
+                "services": [
+                  "fe2c"
+                ],
+                "require_discovered_services": true
+              },
+              "auto_run_on_connect": false
+            }
+          ]
+        }
+      },
+      "uuids": "uuids.json",
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "protocols/ibeacon/manifest.json",
+    "manifest": {
+      "name": "iBeacon",
+      "version": 2,
+      "vars": "vars.json",
+      "assets": {
+        "icon": "assets/ibeacon.svg",
+        "graphics": "assets/graphics.json"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "scan_conditions": {
+            "company_id": "004C",
+            "manufacturer_data_prefix_hex": "0215"
+          },
+          "_comment": "Runs after apple_dispatcher (20) and apple_* decoders (30); decodes iBeacon while dispatcher only flags TLV 0x02",
+          "priority": 40
+        },
+        "peripheral": {
+          "entry": "peripheral/ibeacon_peripheral.lua",
+          "advertisement": "peripheral/adv.json",
+          "interface": "peripheral/interface.json",
+          "show_adv_address": true
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/airoha/manifest.json",
+    "manifest": {
+      "name": "Airoha RACE (GATT)",
+      "description": "RACE protocol over BLE as on Airoha-class audio devices (CVE-2025-20700 / CVE-2025-20702 research).",
+      "version": 1,
+      "source_url": "https://github.com/auracast-research/race-toolkit",
+      "model_url": "https://insinuator.net/2025/12/bluetooth-headphone-jacking-full-disclosure-of-airoha-race-vulnerabilities/",
+      "notes": "UUIDs and framing follow race-toolkit librace/constants.py and librace/packets.py. Quick actions exercise vendor debug paths: STORAGE_PAGE_READ (0x0403) for one 0x100-byte page at address 0, and GET_BUILD_INFO-style cmd 0x1E08 (see RACE TX write presets). Responses confirm the tunnel is alive, not only that characteristics exist. Run from Device Services after discovery; Sony WH-CH720N simulator answers 0x1E08 with a fixed NOTIFY blob. Patched firmware may expose GATT but reject commands.",
+      "uuids": "uuids.json",
+      "assets": {
+        "icon": "assets/airoha_logo.svg"
+      },
+      "roles": {
+        "central": {
+          "scripts": [
+            {
+              "id": "race_flash_read_default",
+              "title": "Check Airoha vulnerability: flash read (default GATT)",
+              "kind": "quick_action",
+              "priority": 62,
+              "entry": "central/race_flash.lua",
+              "vars": {
+                "svc": "SVC_RACE_DEFAULT",
+                "tx": "CHR_RACE_TX_DEFAULT",
+                "rx": "CHR_RACE_RX_DEFAULT",
+                "variant": "default"
+              },
+              "match": {
+                "require_discovered_services": true,
+                "services": [
+                  "5052494D-2DAB-0341-6972-6F6861424C45",
+                  "43484152-2DAB-3241-6972-6F6861424C45",
+                  "43484152-2DAB-3141-6972-6F6861424C45"
+                ]
+              },
+              "auto_run_on_connect": false
+            },
+            {
+              "id": "race_flash_read_sony",
+              "title": "Check Airoha vulnerability: flash read (Sony GATT)",
+              "kind": "quick_action",
+              "priority": 62,
+              "entry": "central/race_flash.lua",
+              "vars": {
+                "svc": "SVC_RACE_SONY",
+                "tx": "CHR_RACE_TX_SONY",
+                "rx": "CHR_RACE_RX_SONY",
+                "variant": "sony"
+              },
+              "match": {
+                "require_discovered_services": true,
+                "services": [
+                  "dc405470-a351-4a59-97d8-2e2e3b207fbb",
+                  "bfd869fa-a3f2-4c2f-bcff-3eb1ec80cead",
+                  "2a6b6575-faf6-418c-923f-ccd63a56d955"
+                ]
+              },
+              "auto_run_on_connect": false
+            },
+            {
+              "id": "race_flash_read_trspx",
+              "title": "Check Airoha vulnerability: flash read (TRSPX GATT)",
+              "kind": "quick_action",
+              "priority": 61,
+              "entry": "central/race_flash.lua",
+              "vars": {
+                "svc": "SVC_RACE_TRSPX",
+                "tx": "CHR_RACE_TX_TRSPX",
+                "rx": "CHR_RACE_RX_TRSPX",
+                "variant": "trspx"
+              },
+              "match": {
+                "require_discovered_services": true,
+                "services": [
+                  "49535343-FE7D-4AE5-8FA9-9FAFD205E455",
+                  "49535343-8841-43F4-A8D4-ECBE34729BB3",
+                  "49535343-1E4D-4BD9-BA61-23C647249616"
+                ]
+              },
+              "auto_run_on_connect": false
+            },
+            {
+              "id": "race_build_version_default",
+              "title": "Check Airoha vulnerability: build version (default GATT)",
+              "kind": "quick_action",
+              "priority": 61,
+              "entry": "central/race_build_version.lua",
+              "vars": {
+                "svc": "SVC_RACE_DEFAULT",
+                "tx": "CHR_RACE_TX_DEFAULT",
+                "rx": "CHR_RACE_RX_DEFAULT",
+                "variant": "default"
+              },
+              "match": {
+                "require_discovered_services": true,
+                "services": [
+                  "5052494D-2DAB-0341-6972-6F6861424C45",
+                  "43484152-2DAB-3241-6972-6F6861424C45",
+                  "43484152-2DAB-3141-6972-6F6861424C45"
+                ]
+              },
+              "auto_run_on_connect": false
+            },
+            {
+              "id": "race_build_version_sony",
+              "title": "Check Airoha vulnerability: build version (Sony GATT)",
+              "kind": "quick_action",
+              "priority": 61,
+              "entry": "central/race_build_version.lua",
+              "vars": {
+                "svc": "SVC_RACE_SONY",
+                "tx": "CHR_RACE_TX_SONY",
+                "rx": "CHR_RACE_RX_SONY",
+                "variant": "sony"
+              },
+              "match": {
+                "require_discovered_services": true,
+                "services": [
+                  "dc405470-a351-4a59-97d8-2e2e3b207fbb",
+                  "bfd869fa-a3f2-4c2f-bcff-3eb1ec80cead",
+                  "2a6b6575-faf6-418c-923f-ccd63a56d955"
+                ]
+              },
+              "auto_run_on_connect": false
+            },
+            {
+              "id": "race_build_version_trspx",
+              "title": "Check Airoha vulnerability: build version (TRSPX GATT)",
+              "kind": "quick_action",
+              "priority": 60,
+              "entry": "central/race_build_version.lua",
+              "vars": {
+                "svc": "SVC_RACE_TRSPX",
+                "tx": "CHR_RACE_TX_TRSPX",
+                "rx": "CHR_RACE_RX_TRSPX",
+                "variant": "trspx"
+              },
+              "match": {
+                "require_discovered_services": true,
+                "services": [
+                  "49535343-FE7D-4AE5-8FA9-9FAFD205E455",
+                  "49535343-8841-43F4-A8D4-ECBE34729BB3",
+                  "49535343-1E4D-4BD9-BA61-23C647249616"
+                ]
+              },
+              "auto_run_on_connect": false
+            }
+          ]
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/apple/apple_dispatcher/manifest.json",
+    "manifest": {
+      "name": "Apple Continuity (dispatcher)",
+      "assets": {
+        "icon": "assets/apple_gradient.svg",
+        "icon_tint": "#8E8E93"
+      },
+      "roles": {
+        "observer": {
+          "scan_conditions": {
+            "company_id": "004C"
+          },
+          "entry": "observer/adv_decode.lua",
+          "priority": 20
+        }
+      },
+      "manifest_version": 1,
+      "version": 2
+    }
+  },
+  {
+    "path": "vendors/apple/apple_findmy/manifest.json",
+    "manifest": {
+      "name": "Apple Find My",
+      "assets": {
+        "icon": "assets/apple.svg",
+        "icon_tint": "#30D158"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "scan_conditions": {
+            "fingerprint_has_entry_id": "apple_meta",
+            "fingerprint_entry_attributes": {
+              "continuity_has_findmy": "true"
+            }
+          },
+          "priority": 30
+        }
+      },
+      "manifest_version": 1,
+      "version": 1
+    }
+  },
+  {
+    "path": "vendors/apple/apple_handoff/manifest.json",
+    "manifest": {
+      "name": "Apple Handoff",
+      "assets": {
+        "icon": "assets/apple.svg",
+        "icon_tint": "#5AC8FA"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "scan_conditions": {
+            "fingerprint_has_entry_id": "apple_meta",
+            "fingerprint_entry_attributes": {
+              "continuity_has_handoff": "true"
+            }
+          },
+          "priority": 30
+        }
+      },
+      "manifest_version": 1,
+      "version": 1
+    }
+  },
+  {
+    "path": "vendors/apple/apple_nearby_action/manifest.json",
+    "manifest": {
+      "name": "Apple Nearby Action",
+      "assets": {
+        "icon": "assets/apple.svg",
+        "icon_tint": "#FF9F0A"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "scan_conditions": {
+            "fingerprint_has_entry_id": "apple_meta",
+            "fingerprint_entry_attributes": {
+              "continuity_has_nearbyaction": "true"
+            }
+          },
+          "priority": 30
+        }
+      },
+      "manifest_version": 1,
+      "version": 1
+    }
+  },
+  {
+    "path": "vendors/apple/apple_nearby_info/manifest.json",
+    "manifest": {
+      "name": "Apple Nearby Info",
+      "assets": {
+        "icon": "assets/apple.svg",
+        "icon_tint": "#0A84FF"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "scan_conditions": {
+            "fingerprint_has_entry_id": "apple_meta",
+            "fingerprint_entry_attributes": {
+              "continuity_has_nearbyinfo": "true"
+            }
+          },
+          "priority": 30
+        },
+        "central": {
+          "scripts": [
+            {
+              "id": "apple_check_ios_model",
+              "title": "Check iOS model",
+              "kind": "quick_action",
+              "priority": 30,
+              "entry": "central/check_ios_model.lua",
+              "match": {
+                "fingerprint": {
+                  "continuity_has_nearbyinfo": [
+                    "true"
+                  ]
+                }
+              },
+              "auto_run_on_connect": false
+            }
+          ]
+        }
+      },
+      "manifest_version": 1,
+      "version": 1
+    }
+  },
+  {
+    "path": "vendors/apple/apple_proximity/manifest.json",
+    "manifest": {
+      "name": "Apple Proximity Pairing",
+      "assets": {
+        "icon": "assets/apple.svg",
+        "icon_tint": "#BF5AF2"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "scan_conditions": {
+            "fingerprint_has_entry_id": "apple_meta",
+            "fingerprint_entry_attributes": {
+              "continuity_has_proximity": "true"
+            }
+          },
+          "priority": 30
+        }
+      },
+      "manifest_version": 1,
+      "version": 1
+    }
+  },
+  {
+    "path": "vendors/aruba/manifest.json",
+    "manifest": {
+      "name": "HPE Aruba Access Point",
+      "description": "HPE Aruba AP BLE advertising: BluConsole manufacturer data (company 0x011B) and Aruba iBeacon UUID.",
+      "author": "Slawomir Jasek",
+      "manifest_version": 1,
+      "version": 1,
+      "notes": "BluConsole payload derived from Aruba Utilities app. Manufacturer AD rotates a Wi-Fi channel hint byte every ~1 s.",
+      "source_url": "https://github.com/blesploit/device-library",
+      "assets": {
+        "icon": "assets/aruba_ap.svg"
+      },
+      "apps": {
+        "google": {
+          "url": "https://play.google.com/store/apps/details?id=com.arubanetworks.arubautilities",
+          "version_note": "Aruba Utilities (Android)"
+        }
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "priority": 45,
+          "scan_conditions": {
+            "one_of": [
+              {
+                "company_id": "011B",
+                "manufacturer_data_prefix_hex": "08"
+              },
+              {
+                "fingerprint_has_entry_id": "ibeacon",
+                "fingerprint_entry_attributes": {
+                  "uuid": "4152554e-f99b-4a3b-86d0-947070693a78"
+                }
+              },
+              {
+                "device_name_regex": "^(?i)AP-[0-9a-f]{12}$"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "path": "vendors/flipper_zero/manifest.json",
+    "manifest": {
+      "name": "Flipper Zero",
+      "description": "Detect the specific service uuid",
+      "author": "Slawomir Jasek",
+      "author_url": "https://blesplo.it",
+      "model_url": "https://flipper.net",
+      "version": 1,
+      "assets": {
+        "icon": "assets/flipper.svg"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "priority": 20,
+          "scan_conditions": {
+            "service_uuid_16": [
+              "3081",
+              "3082",
+              "3083"
+            ]
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/garmin/manifest.json",
+    "manifest": {
+      "name": "Garmin",
+      "description": "Just icon",
+      "version": 1,
+      "assets": {
+        "icon": "assets/garmin.svg"
+      },
+      "roles": {
+        "observer": {
+          "_comment": "No lua yet, just icon for matching conditions",
+          "priority": 20,
+          "scan_conditions": {
+            "company_id": "0087"
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/google_nearby/manifest.json",
+    "manifest": {
+      "name": "Google Nearby",
+      "description": "Nearby style advertisements (service data)",
+      "author": "",
+      "version": 1,
+      "assets": {
+        "icon": "assets/google.svg"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "priority": 20,
+          "scan_conditions": {
+            "service_data_uuid_16": [
+              "fcf1",
+              "fe9f",
+              "fef3",
+              "fcc0"
+            ]
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/huawei/manifest.json",
+    "manifest": {
+      "name": "Huawei",
+      "description": "Just icon",
+      "version": 1,
+      "assets": {
+        "icon": "assets/huawei.svg"
+      },
+      "roles": {
+        "observer": {
+          "_comment": "No lua yet, just icon for matching conditions",
+          "priority": 20,
+          "scan_conditions": {
+            "company_id": "027D",
+            "device_name_contains": "HUAWEI"
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/iqos/manifest.json",
+    "manifest": {
+      "name": "IQOS",
+      "description": "Just icon",
+      "author": "",
+      "version": 1,
+      "assets": {
+        "icon": "assets/iqos.svg"
+      },
+      "roles": {
+        "observer": {
+          "_comment": "No lua yet, just icon for matching conditions (company Philip Morris)",
+          "priority": 20,
+          "scan_conditions": {
+            "company_id": "0223"
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/jabra/manifest.json",
+    "manifest": {
+      "name": "Jabra",
+      "description": "Just icon",
+      "version": 1,
+      "assets": {
+        "icon": "assets/jabra.svg"
+      },
+      "roles": {
+        "observer": {
+          "_comment": "No lua yet, just icon for matching conditions",
+          "priority": 20,
+          "scan_conditions": {
+            "device_name_contains": "Jabra"
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/lg/manifest.json",
+    "manifest": {
+      "name": "LG",
+      "description": "Just icon",
+      "version": 1,
+      "assets": {
+        "icon": "assets/lg.svg"
+      },
+      "roles": {
+        "observer": {
+          "_comment": "No lua yet, just icon for matching conditions",
+          "priority": 20,
+          "scan_conditions": {
+            "company_id": "00C4"
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/lime/manifest.json",
+    "manifest": {
+      "name": "Lime Scooters",
+      "description": "Lime shared e-scooter BLE advertising fingerprint",
+      "version": 1,
+      "assets": {
+        "icon": "assets/lime_logo.svg"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "priority": 45,
+          "scan_conditions": {
+            "device_name_regex": "^lime-[0-9]+$"
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/microsoft_nearby/manifest.json",
+    "manifest": {
+      "name": "Microsoft Nearby",
+      "assets": {
+        "icon": "assets/windows_logo_blue.svg"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "scan_conditions": {
+            "company_id": "0006"
+          },
+          "priority": 100
+        }
+      },
+      "manifest_version": 1,
+      "version": 2
+    }
+  },
+  {
+    "path": "vendors/oneplus/manifest.json",
+    "manifest": {
+      "name": "Oneplus",
+      "description": "Just icon",
+      "version": 1,
+      "assets": {
+        "icon": "assets/oneplus.svg"
+      },
+      "roles": {
+        "observer": {
+          "_comment": "No lua yet, just icon for matching conditions",
+          "priority": 20,
+          "scan_conditions": {
+            "company_id": "072F"
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/polar/manifest.json",
+    "manifest": {
+      "name": "Polar",
+      "description": "Just icon",
+      "version": 1,
+      "assets": {
+        "icon": "assets/polar.svg"
+      },
+      "roles": {
+        "observer": {
+          "_comment": "No lua yet, just icon for matching conditions",
+          "priority": 20,
+          "scan_conditions": {
+            "company_id": "006b",
+            "device_name_contains": "Polar"
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/samsung/manifest.json",
+    "manifest": {
+      "name": "Samsung",
+      "description": "Samsung BLE (0x0075): icon for all matches; VD power state tint for TVs, soundbars, and monitors when decodable.",
+      "author": "Slawomir Jasek",
+      "version": 2,
+      "assets": {
+        "icon": "assets/samsung.svg"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "priority": 25,
+          "scan_conditions": {
+            "one_of": [
+              {
+                "company_id": "0075"
+              },
+              {
+                "service_data_uuid_16": "fd69"
+              }
+            ]
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/sonos/manifest.json",
+    "manifest": {
+      "name": "Sonos",
+      "description": "Just icon",
+      "version": 1,
+      "assets": {
+        "icon": "assets/sonos.svg"
+      },
+      "roles": {
+        "observer": {
+          "_comment": "No lua yet, just icon for matching conditions",
+          "priority": 20,
+          "scan_conditions": {
+            "company_id": "05A7"
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/sony/manifest.json",
+    "manifest": {
+      "name": "Sony",
+      "description": "Sony Sound Connect / SongPal proprietary BLE (5b833e**/5b833c**)",
+      "author": "BLESPlo.it",
+      "version": 2,
+      "manifest_version": 1,
+      "notes": "UUID catalog from Sony Sound Connect (SongPal) ServiceUuid / CharacteristicUuid. Manufacturer company id 012D = Sony Corporation.",
+      "uuids": "uuids.json",
+      "assets": {
+        "icon": "assets/sony.svg"
+      },
+      "roles": {
+        "observer": {
+          "priority": 20,
+          "scan_conditions": {
+            "one_of": [
+              {
+                "company_id": "012D"
+              },
+              {
+                "service_uuid_128": "5b833e05-6bc7-4802-8e9a-723ceca4bd8f"
+              },
+              {
+                "service_uuid_128": "5b833e26-6bc7-4802-8e9a-723ceca4bd8f"
+              },
+              {
+                "service_uuid_128": "5b833e28-6bc7-4802-8e9a-723ceca4bd8f"
+              },
+              {
+                "service_uuid_128": "5b833e20-6bc7-4802-8e9a-723ceca4bd8f"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "path": "vendors/swapfiets/manifest.json",
+    "manifest": {
+      "name": "Swapfiets bike",
+      "description": "Swapfiets smart bike lock (BLE advertising fingerprint)",
+      "author": "BLESPloit",
+      "version": 2,
+      "notes": "Observed on adv with local name Swapfiets, company ID 0x020F, and service UUID 0x1580. Manufacturer payload is 8 bytes and varies per bike.",
+      "assets": {
+        "icon": "assets/swapfiets.svg"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "priority": 50,
+          "scan_conditions": {
+            "company_id": "020f",
+            "service_uuid_16": "1580",
+            "device_name_regex": "^Swapfiets$"
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/tesla/manifest.json",
+    "manifest": {
+      "name": "Tesla",
+      "description": "Vehicle proximity token: iBeacon (0xFF) or 18-char name starting with S plus service UUID 0x1122 (AD 0x02 2211 on air; iOS strips manufacturer data).",
+      "version": 2,
+      "profile": "ble.json",
+      "assets": {
+        "icon": "assets/tesla.svg",
+        "graphics": "assets/graphics.json"
+      },
+      "roles": {
+        "observer": {
+          "entry": "observer/adv_decode.lua",
+          "priority": 45,
+          "_comment": "After devices/ibeacon (40). Match iBeacon decode OR iOS-stripped name + 0x1122 incomplete UUID list.",
+          "scan_conditions": {
+            "one_of": [
+              {
+                "fingerprint_has_entry_id": "ibeacon"
+              },
+              {
+                "device_name_regex": "^S.{17}$",
+                "service_uuid_16": "1122"
+              }
+            ]
+          }
+        },
+        "peripheral": {
+          "advertisement": "peripheral/adv.json",
+          "entry": "peripheral/tesla_peripheral.lua",
+          "interface": "peripheral/interface.json"
+        }
+      },
+      "manifest_version": 1
+    }
+  },
+  {
+    "path": "vendors/xiaomi/manifest.json",
+    "manifest": {
+      "name": "Xiaomi",
+      "description": "Just icon",
+      "version": 1,
+      "assets": {
+        "icon": "assets/xiaomi.svg"
+      },
+      "roles": {
+        "observer": {
+          "_comment": "No lua yet, just icon for matching conditions",
+          "priority": 20,
+          "scan_conditions": {
+            "company_id": "038F"
+          }
+        }
+      },
+      "manifest_version": 1
+    }
+  }
+]

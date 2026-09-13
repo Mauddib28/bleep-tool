@@ -28,7 +28,7 @@ This approach is similar to the BT SIG UUID updater, ensuring consistent handlin
 
 ### Modalias Parsing Utilities
 
-The modalias parsing utilities are provided by the `bleep.ble_ops.modalias` module, which:
+The modalias parsing utilities are provided by the `bleep.ble_ops.common.modalias` module, which:
 
 1. Parses modalias strings into their components (vendor ID, product ID, device ID)
 2. Looks up vendor and product names in the USB IDs database
@@ -67,10 +67,10 @@ print(info)
 
 ### Formatting Modalias Information
 
-To format modalias information for display, use the `format_modalias_info` function from the `bleep.ble_ops.modalias` module:
+To format modalias information for display, use the `format_modalias_info` function from the `bleep.ble_ops.common.modalias` module:
 
 ```python
-from bleep.ble_ops.modalias import format_modalias_info
+from bleep.ble_ops.common.modalias import format_modalias_info
 
 modalias = "usb:v05ACp820Ad0210"
 formatted = format_modalias_info(modalias)
@@ -80,10 +80,10 @@ print(formatted)
 
 ### Decoding PnP ID Vendor Information
 
-To decode vendor information from a PnP ID, use the `decode_pnp_id_vendor` function from the `bleep.ble_ops.modalias` module:
+To decode vendor information from a PnP ID, use the `decode_pnp_id_vendor` function from the `bleep.ble_ops.common.modalias` module:
 
 ```python
-from bleep.ble_ops.modalias import decode_pnp_id_vendor
+from bleep.ble_ops.common.modalias import decode_pnp_id_vendor
 
 vendor_id_source = 2  # USB IF
 vendor_id = 0x05ac  # Apple, Inc.

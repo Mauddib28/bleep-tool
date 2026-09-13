@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """USB ID database for BLEEP.
 
-Auto-generated from linux-usb.org/usb.ids on 2025-09-12 20:50:33.
+Auto-generated from linux-usb.org/usb.ids on 2026-08-27 10:22:59.
 Do not edit manually - run update_usb_ids.py to regenerate.
 """
 from __future__ import annotations
@@ -14747,6 +14747,7 @@ USB_PRODUCTS = {
         "4500": "LV-20 Digital Camera",
         "6101": "fx-9750gII",
         "6102": "fx-CP400",
+        "6103": "fx-CG50",
         "6801": "PL-40R",
         "6802": "MIDI Keyboard",
         "6803": "CTK-3500 (MIDI keyboard)",
@@ -16501,6 +16502,7 @@ USB_PRODUCTS = {
         "5804": "BCM5880 Secure Applications Processor with fingerprint swipe sensor",
         "5832": "BCM5880 Secure Applications Processor Smartcard reader",
         "5843": "BCM58200 ControlVault 3 (FingerPrint sensor + Contacted SmartCard)",
+        "5865": "Fingerprint Reader (Dell Control Vault)",
         "6300": "Pirelli Remote NDIS Device",
         "6410": "BCM20703A1 Bluetooth 4.1 + LE",
         "bd11": "BCM4320 802.11bg Wireless Adapter",
@@ -16922,7 +16924,9 @@ USB_PRODUCTS = {
         "0000": "CenturyCD",
     },
     "0b0e": {
+        "0301": "Jabra EVOLVE 20",
         "0305": "Jabra EVOLVE Link MS",
+        "030c": "Jabra EVOLVE 65",
         "0311": "Jabra EVOLVE 65",
         "0312": "enc060:Buttons Volume up/down/mute + phone [Jabra]",
         "0343": "Jabra UC VOICE 150a",
@@ -16941,6 +16945,11 @@ USB_PRODUCTS = {
         "2007": "GN 2000 Stereo Corded Headset",
         "2456": "Jabra SPEAK 810",
         "245e": "Jabra Link 370",
+        "248a": "Jabra Elite 85h",
+        "24b8": "Jabra Evolve2 65",
+        "24bb": "Jabra Evolve2 85",
+        "24c9": "Jabra Link 380",
+        "24ca": "Jabra Link 380",
         "620c": "Jabra BT620s",
         "9330": "Jabra GN9330 Headset",
         "a346": "Jabra Engage 75 Stereo",
@@ -18917,7 +18926,7 @@ USB_PRODUCTS = {
         "1008": "So., Show 301 Digital Camera",
     },
     "0ecd": {
-        "1400": "CD\RW 40X",
+        "1400": "CD\\RW 40X",
         "a100": "LDW-411SX DVD/CD Rewritable Drive",
     },
     "0ed1": {

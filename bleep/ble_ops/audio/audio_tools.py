@@ -1233,11 +1233,58 @@ class AudioToolsHelper:
         """
         block = self._parse_pacmd_card_block(card_index)
         if not block:
-            return {"sources": [], "sinks": []}
+            # ``pacmd`` is unavailable under PipeWire (its PulseAudio shim does
+            # not implement the pacmd native protocol), so the card block is
+            # empty even though the device is connected and ``pactl`` lists its
+            # nodes. Fall back to associating live sinks/sources by MAC.
+            return self._sinks_sources_for_card_via_pactl(card_index)
         return {
             "sources": self._extract_interfaces_from_block(block, "sources"),
             "sinks": self._extract_interfaces_from_block(block, "sinks"),
         }
+
+    def _sinks_sources_for_card_via_pactl(
+        self, card_index: str,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Fallback interface enumeration when ``pacmd`` is unavailable.
+
+        PipeWire's PulseAudio shim does not implement the ``pacmd`` native
+        protocol, so :meth:`_parse_pacmd_card_block` returns nothing even
+        though the device is connected and ``pactl`` enumerates its nodes.
+        This associates the live ``pactl`` sinks/sources to *card_index* by
+        matching the card's MAC, reproducing the card-centric view that the
+        ``pacmd`` path yielded under PulseAudio.
+
+        Monitor sources (``*.monitor``) are excluded: they are sink loopbacks,
+        not device capture interfaces — matching pacmd card-block semantics.
+        """
+        card_mac: Optional[str] = None
+        for card in self.get_bluez_cards():
+            if str(card.get("index", "")) == str(card_index):
+                card_mac = self.extract_mac_from_alsa_device(card.get("name", ""))
+                break
+        if not card_mac:
+            return {"sources": [], "sinks": []}
+
+        norm = card_mac.replace(":", "").replace("-", "").upper()
+
+        def _matches(node: Dict[str, Any]) -> bool:
+            node_mac = self.extract_mac_from_alsa_device(node.get("name", ""))
+            return bool(node_mac) and node_mac.replace(":", "").replace("-", "").upper() == norm
+
+        sinks = [
+            {"name": s.get("name"), "role": "speaker"}
+            for s in self.list_audio_sinks()
+            if s.get("name") and _matches(s)
+        ]
+        sources = [
+            {"name": s.get("name"), "role": "microphone"}
+            for s in self.list_audio_sources()
+            if s.get("name")
+            and not s.get("name", "").endswith(".monitor")
+            and _matches(s)
+        ]
+        return {"sources": sources, "sinks": sinks}
 
     def play_to_sink(
         self,

@@ -18,9 +18,31 @@ from bleep.modes.debug_dbus import print_detailed_dbus_error
 # Scan variants
 # ---------------------------------------------------------------------------
 
+def _parse_scan_timeout(args: List[str], prog: str, default: int):
+    """Parse an optional ``--timeout/-t`` for a debug scan verb.
+
+    Returns the parsed :class:`argparse.Namespace` (with ``.timeout``), or
+    ``None`` if argparse exited on ``--help`` / a bad flag. Keeps the debug
+    scan verbs' timeouts overridable — CLI ``scan --timeout`` parity — while
+    preserving each verb's historical default.
+    """
+    parser = argparse.ArgumentParser(prog=prog, add_help=False)
+    parser.add_argument("--timeout", "-t", type=int, default=default,
+                        help=f"Scan timeout in seconds (default: {default})")
+    parser.add_argument("mac", nargs="?", default=None)
+    try:
+        return parser.parse_args(args)
+    except SystemExit:
+        return None
+
+
 def cmd_scan(args: List[str], state: DebugState) -> None:
     """Scan for nearby BLE devices."""
     from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+
+    opts = _parse_scan_timeout(args, "scan", 10)
+    if opts is None:
+        return
 
     adapter = _Adapter()
     if not adapter.is_ready():
@@ -28,12 +50,16 @@ def cmd_scan(args: List[str], state: DebugState) -> None:
         return
 
     print_and_log("[*] Scanning for devices...", LOG__GENERAL)
-    passive_scan(timeout=10)
+    passive_scan(timeout=opts.timeout)
 
 
 def cmd_scann(args: List[str], state: DebugState) -> None:
     """Naggy scan (DuplicateData off)."""
     from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+
+    opts = _parse_scan_timeout(args, "scann", 10)
+    if opts is None:
+        return
 
     adapter = _Adapter()
     if not adapter.is_ready():
@@ -42,15 +68,18 @@ def cmd_scann(args: List[str], state: DebugState) -> None:
 
     from bleep.ble_ops.le.scan import naggy_scan
     print_and_log("[*] Naggy scan (active) …", LOG__GENERAL)
-    naggy_scan(timeout=10)
+    naggy_scan(timeout=opts.timeout)
 
 
 def cmd_scanp(args: List[str], state: DebugState) -> None:
     """Pokey scan (spam active 1-s scans)."""
     from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
 
-    if not args:
-        print("Usage: scanp <MAC>")
+    opts = _parse_scan_timeout(args, "scanp", 10)
+    if opts is None:
+        return
+    if not opts.mac:
+        print("Usage: scanp <MAC> [--timeout N]")
         return
 
     adapter = _Adapter()
@@ -59,12 +88,16 @@ def cmd_scanp(args: List[str], state: DebugState) -> None:
         return
 
     from bleep.ble_ops.le.scan import pokey_scan
-    pokey_scan(args[0].upper(), timeout=10)
+    pokey_scan(opts.mac.upper(), timeout=opts.timeout)
 
 
 def cmd_scanb(args: List[str], state: DebugState) -> None:
     """Brute scan (BR/EDR + LE)."""
     from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+
+    opts = _parse_scan_timeout(args, "scanb", 20)
+    if opts is None:
+        return
 
     adapter = _Adapter()
     if not adapter.is_ready():
@@ -73,7 +106,7 @@ def cmd_scanb(args: List[str], state: DebugState) -> None:
 
     from bleep.ble_ops.le.scan import brute_scan
     print_and_log("[*] Brute scan …", LOG__GENERAL)
-    brute_scan(timeout=20)
+    brute_scan(timeout=opts.timeout)
 
 
 def cmd_dscan(args: List[str], state: DebugState) -> None:

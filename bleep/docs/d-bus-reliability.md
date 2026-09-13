@@ -211,6 +211,43 @@ See the diagnostic tool's help output for more options:
 python -m bleep.scripts.dbus_diagnostic --help
 ```
 
+## Known unresolved failure: the ~42-minute collector ceiling
+
+A survey process stops collecting after roughly **80 harvest rounds (~2500s)**.
+The adapter's `Adapter1` interface then answers nothing — `Powered` and
+`Discovering` both return `NoReply` — and no D-Bus-level recovery clears it.
+The failure ends when the process exits; a fresh process collects normally from
+t=0. Recorded here because it looks like a D-Bus reliability problem and will
+be encountered by anyone debugging this layer.
+
+Reproduced five consecutive times (`todo_tracker.md` B.19-B.23 records the closure):
+rounds 79, 79, 83, 81, 83. **Round count is the tightest invariant** — elapsed
+time (2490–2670s) and RSS (197–208 MB) vary more.
+
+Ruled out by direct measurement, so do not re-investigate these:
+
+| Hypothesis | Measurement | Verdict |
+|---|---|---|
+| Adapter/controller fault | wedges identically with the collector on `hci1` | not hardware |
+| Concurrent enumeration | wedges with **no enumerator at all** | not the enumerator |
+| Long-lived discovery session | wedges with discovery torn down every round | not session age |
+| GLib main loop | all five runs were `--no-mainloop` | not the loop |
+| `max_match_rules_per_connection` (512) | `matches` pinned at **5** every sample | not match rules |
+| `max_replies_per_connection` (128) / unread inbound | `sock_rx` steady at **~37 kB** for 3200s | not backpressure |
+| Signals-registry retention | `sig_devs` constant at **1** | not the registry |
+| BlueZ device-object accumulation | `bluez_devs` **oscillates 14–145** (pruned on `TemporaryTimeout`); read 15 at the wedge; r=+0.20 vs RSS | not BlueZ objects |
+
+Note that BlueZ object counts **cannot be measured after the fact** — the
+recovery power-cycle flushes BlueZ's device cache. Sample in-flight via
+`--metrics-interval`, which records `manager.LAST_HARVEST` without issuing a
+second `GetManagedObjects` that would block on the wedged connection.
+
+**Mitigation in place, not a fix:** runs longer than one segment are split into
+consecutive processes and merged — see "Segmented long runs" in
+`survey_mode.md`. The stall ladder additionally makes a single over-long run
+degrade honestly rather than silently (`survey_mode.md`, "Collector stall
+detection").
+
 ## Further Reading
 
 - [BlueZ D-Bus API Documentation](https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc)

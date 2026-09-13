@@ -253,6 +253,25 @@ def _print_unified_props(props: dict, detailed: bool = False) -> None:
             print(f"  {label + ':':<20s} {value}")
 
 
+def _print_disconnect_reason(device_path: str) -> None:
+    """Show last disconnect reason if available (BZ-8f)."""
+    try:
+        from bleep.core.device_management import _get_global_signals
+        mgr = _get_global_signals()
+        info = mgr.get_disconnect_reason(device_path)
+        if not info:
+            from bleep.dbuslayer.device_le import _signals_manager
+            if _signals_manager is not None:
+                info = _signals_manager.get_disconnect_reason(device_path)
+        if info:
+            label = info.get("human") or info.get("reason", "Unknown")
+            print(f"  {'Last Disconnect:':<20s} {label}")
+            if info.get("message"):
+                print(f"  {'  Reason Code:':<20s} {info['reason']} — {info['message']}")
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Info command
 # ---------------------------------------------------------------------------
@@ -296,6 +315,7 @@ def _info_ble(state: DebugState) -> None:
     print(f"  {'Address Type:':<20s} {addr_type}")
     print(f"  {'Path:':<20s} {device_path}")
     _print_unified_props(props, state.detailed_view)
+    _print_disconnect_reason(device_path)
 
 
 def _info_classic(state: DebugState) -> None:
@@ -354,6 +374,10 @@ def _info_classic(state: DebugState) -> None:
     if state.current_mapping:
         print(f"  {'SDP Services:':<20s} {len(state.current_mapping)} (use 'cservices' to list)")
 
+    device_path = getattr(state.current_device, '_device_path', None)
+    if device_path:
+        _print_disconnect_reason(device_path)
+
 
 def _info_from_dbus_path(device_path: str, state: DebugState) -> None:
     """Display device properties directly from D-Bus when no device wrapper exists."""
@@ -376,6 +400,7 @@ def _info_from_dbus_path(device_path: str, state: DebugState) -> None:
             print(f"  {'Address Type:':<20s} {addr_type}")
         print(f"  {'Path:':<20s} {device_path}")
         _print_unified_props(props, state.detailed_view)
+        _print_disconnect_reason(device_path)
 
         if not connected:
             print("\n[*] Device is paired but not connected.")

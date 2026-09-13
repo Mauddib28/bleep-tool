@@ -339,10 +339,12 @@ def cmd_audioplay(args: List[str], state: DebugState) -> None:
     parser.add_argument("--direct", action="store_true")
     parser.add_argument("--force-endpoint", action="store_true")
     parser.add_argument("--volume", type=int, default=None)
+    parser.add_argument("--codec", default=None,
+                        help="Preferred codec for the BLEEP-owned playback pipeline")
 
     usage = (
         "Usage: audioplay <file> [--system] [--volume N] [--direct] "
-        "[--force-endpoint]"
+        "[--force-endpoint] [--codec CODEC]"
     )
     try:
         opts = parser.parse_args(args)
@@ -373,7 +375,9 @@ def cmd_audioplay(args: List[str], state: DebugState) -> None:
         mgr = MediaStreamManager(
             mac, direct=use_direct, force_endpoint=force_endpoint,
         )
-        success = mgr.play_audio_file(file_path, volume=volume)
+        success = mgr.play_audio_file(
+            file_path, volume=volume, codec_preference=opts.codec,
+        )
 
     if success:
         print("[+] Playback completed")
@@ -393,10 +397,14 @@ def cmd_audiorec(args: List[str], state: DebugState) -> None:
     parser.add_argument("--direct", action="store_true")
     parser.add_argument("--force-endpoint", action="store_true")
     parser.add_argument("--duration", type=int, default=8)
+    parser.add_argument("--hfp", action="store_true",
+                        help="Record from the HFP/HSP microphone instead of A2DP")
+    parser.add_argument("--keep-profile", action="store_true",
+                        help="With --hfp, do not restore the prior audio profile afterwards")
 
     usage = (
         "Usage: audiorec <output_file> [--system] [--duration N] [--direct] "
-        "[--force-endpoint]"
+        "[--force-endpoint] [--hfp] [--keep-profile]"
     )
     try:
         opts = parser.parse_args(args)
@@ -419,7 +427,13 @@ def cmd_audiorec(args: List[str], state: DebugState) -> None:
         if not _require_device(state):
             return
 
-    if use_system:
+    if opts.hfp:
+        from bleep.ble_ops.audio.audio_system import system_record_hfp
+        success = system_record_hfp(
+            mac, output_file, duration,
+            restore_profile=not opts.keep_profile,
+        )
+    elif use_system:
         from bleep.ble_ops.audio.audio_system import system_record
         success = system_record(mac, output_file, duration)
     else:
@@ -443,8 +457,30 @@ def cmd_audiorec(args: List[str], state: DebugState) -> None:
 # audiocfg – show audio backend configuration and readiness
 # ---------------------------------------------------------------------------
 
+# Write sub-surface verbs delegated to the CLI `audio-config` core (CDU-M5).
+_AUDIOCFG_CONFIG_VERBS = frozenset({"show", "add", "remove", "tunnel", "backup", "restore"})
+
+
 def cmd_audiocfg(args: List[str], state: DebugState) -> None:
-    """Show host audio backend status and Bluetooth audio stack readiness."""
+    """Host audio backend diagnostics; or ALSA/BlueALSA config management.
+
+    * No args / ``--endpoints`` / ``--profile`` → read-only diagnostics
+      (audio backend + Bluetooth audio-stack readiness), as before.
+    * ``audiocfg <show|add|remove|tunnel|backup|restore> [...]`` → delegates to
+      the same ``bleep.modes.audio.run_audio_config`` core the CLI
+      ``audio-config`` subcommand uses (CDU-M5 write-surface parity).
+    """
+    if args and args[0] in _AUDIOCFG_CONFIG_VERBS:
+        from bleep.modes.debug_cli_adapters import parse_as_cli
+
+        ns = parse_as_cli("audio-config", args)
+        if ns is None:
+            return
+        from bleep.modes.audio import run_audio_config
+
+        run_audio_config(ns)
+        return
+
     from bleep.ble_ops.audio.audio_tools import AudioToolsHelper
     from bleep.bt_ref.constants import A2DP_SINK_UUID
 

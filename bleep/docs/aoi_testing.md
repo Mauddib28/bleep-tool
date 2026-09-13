@@ -13,9 +13,10 @@ The AoI test suite is designed to verify all aspects of the AoI functionality:
 5. **Export Functionality**: Tests the export of device data, both for individual devices and for all devices
 6. **Edge Case Handling**: Tests handling of edge cases like empty files, malformed MAC addresses, etc.
 
-## Test Files
+## Input File Formats
 
-The test suite includes three JSON files with different formats, all containing the following MAC addresses:
+AoI mode accepts three JSON input formats.  To exercise them manually, create
+small fixture files (the examples below use these MAC addresses):
 
 1. `CC:50:E3:B6:BC:A6` - BLE CTF device
 2. `14:89:FD:31:8A:7E` - Known Bluetooth Classic phone device
@@ -25,6 +26,12 @@ The test suite includes three JSON files with different formats, all containing 
 6. `A0:85:E3:0D:A1:E6` - Unknown device
 
 ### Test File Formats
+
+> **These fixture files are not shipped with the repository** — the filenames
+> below (`aoi_test_simple.json`, `aoi_test_detailed.json`, `aoi_test_nested.json`)
+> are **illustrative examples you create yourself** to exercise each input
+> format manually. The automated `pytest` suite (see below) generates its own
+> temporary fixtures and does not depend on these files.
 
 1. **Simple List Format** (`aoi_test_simple.json`):
    ```json
@@ -71,43 +78,31 @@ The test suite includes three JSON files with different formats, all containing 
 
 ### Basic Usage
 
-To run all tests:
+AoI functionality is covered by `pytest` modules under `tests/`.  Run the full
+AoI suite from the project root:
 
 ```bash
-./run_aoi_tests.sh
+pytest tests/ -k aoi
 ```
 
-To list available tests:
+Run a single module or test:
 
 ```bash
-./run_aoi_tests.sh --list
+pytest tests/test_aoi_augmentation.py
+pytest tests/test_aoi_database_integration.py::<test_name>
 ```
 
-To run a specific test class:
+### AoI Test Modules
 
-```bash
-./run_aoi_tests.sh --class TestAoIFunctionality
-```
-
-To run a specific test method:
-
-```bash
-./run_aoi_tests.sh --class TestAoIFunctionality --method test_001_scan_with_simple_json
-```
-
-### Test Class Descriptions
-
-1. **TestAoIFunctionality**: Tests the main functionality of the AoI module:
-   - Scanning with different JSON formats
-   - Listing devices
-   - Analyzing devices
-   - Generating reports
-   - Exporting device data
-
-2. **TestAoIEdgeCases**: Tests handling of edge cases:
-   - Empty JSON files
-   - Malformed MAC addresses
-   - Mixed case MAC addresses
+| Module | Coverage |
+|--------|----------|
+| `tests/test_aoi_augmentation.py` | SDP, pairing, `--deep`, and device-classification augmentation of AoI results |
+| `tests/test_aoi_database_integration.py` | Persistence of AoI analysis to the observation database |
+| `tests/test_observations_aoi.py` | `store_aoi_analysis` / history retrieval at the observations layer |
+| `tests/test_aoi_mode_db_commands.py` | `aoi` CLI subcommands backed by the database |
+| `tests/test_aoi_sr_n1_db_hydration.py` | SR-N1 regression: DB hydration of AoI state |
+| `tests/test_aoi_synthetic_filter_sr_n4.py` | SR-N4 regression: synthetic/seeded-MAC filtering |
+| `tests/test_aoi_concern_render_sr_n5.py` | SR-N5 regression: security-concern rendering |
 
 ## Expected Results
 
@@ -141,7 +136,7 @@ The report generation tests should show output like:
 ```
 ==== Testing markdown report generation ====
 [*] Generating markdown report for device: CC:50:E3:B6:BC:A6
-[+] Report saved to /home/user/.bleep/aoi/cc50e3b6bca6_report_20250926_123456.markdown
+[+] Report saved to /home/user/.bleep/aoi/reports/report_cc50e3b6bca6_20250926_123456.md
 ```
 
 ### Export Tests
@@ -156,13 +151,9 @@ The export tests should show output like:
 
 ## Test Implementation Details
 
-The test script (`test_aoi.py`) uses the Python `unittest` framework and runs BLEEP commands via subprocess calls. It sets up a clean environment for each test by:
-
-1. Backing up the existing AoI data directory
-2. Running the test with specific parameters
-3. Restoring the backup after the test completes
-
-This ensures that tests don't interfere with each other or with existing data.
+The AoI test modules use `pytest`.  Filesystem- and database-backed tests use
+pytest's `tmp_path` and temporary observation databases, so each run is isolated
+and never touches real AoI data or the user's live database.
 
 ## Troubleshooting
 
@@ -178,10 +169,12 @@ This ensures that tests don't interfere with each other or with existing data.
 
 ## Future Test Enhancements
 
-1. **Mock Device Tests**: Add tests with mock Bluetooth devices to avoid depending on physical devices
-2. **Performance Tests**: Add tests to measure the performance of the AoI module with large input files
-3. **Integration Tests**: Add tests that verify integration with other BLEEP modules
-4. **API Tests**: Add tests for direct API calls to the AoI module classes
+1. **Mock Device Tests**: Add tests with mock Bluetooth devices to avoid depending on physical devices.
+2. **Performance Tests**: Add tests to measure AoI throughput with large input files.
+
+> Database-integration and direct-API tests — previously listed here as future
+> work — now exist (`tests/test_aoi_database_integration.py`,
+> `tests/test_observations_aoi.py`).
 
 ## References
 

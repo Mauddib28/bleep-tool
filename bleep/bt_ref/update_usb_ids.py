@@ -104,6 +104,16 @@ def parse_usb_ids(content: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str
     
     return vendors, products
 
+def _pystr(value: str) -> str:
+    """Return *value* as a safe double-quoted Python string literal.
+
+    Escapes backslashes first (so names like ``CD\\RW 40X`` do not emit an
+    invalid escape sequence such as ``\\R``) and then double quotes.
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def generate_module_content(vendors: Dict[str, str], products: Dict[str, Dict[str, str]]) -> str:
     """Generate Python module content from parsed USB ID data.
     
@@ -133,9 +143,7 @@ def generate_module_content(vendors: Dict[str, str], products: Dict[str, Dict[st
     
     # Add vendor dictionary entries
     for vendor_id, vendor_name in sorted(vendors.items()):
-        # Escape any quotes in the vendor name
-        vendor_name = vendor_name.replace('"', '\\"')
-        content.append(f'    "{vendor_id}": "{vendor_name}",')
+        content.append(f'    "{vendor_id}": {_pystr(vendor_name)},')
     
     content.append('}')
     content.append('')
@@ -148,9 +156,7 @@ def generate_module_content(vendors: Dict[str, str], products: Dict[str, Dict[st
         if vendor_products:  # Only include vendors with products
             content.append(f'    "{vendor_id}": {{')
             for product_id, product_name in sorted(vendor_products.items()):
-                # Escape any quotes in the product name
-                product_name = product_name.replace('"', '\\"')
-                content.append(f'        "{product_id}": "{product_name}",')
+                content.append(f'        "{product_id}": {_pystr(product_name)},')
             content.append('    },')
     
     content.append('}')
@@ -247,6 +253,20 @@ def update_usb_ids() -> bool:
     except Exception as e:
         print(f"Error updating USB IDs database: {e}")
         return False
+
+def regenerate() -> None:
+    """``refresh-refs`` entry point — regenerate ``usb_ids.py`` or raise on failure.
+
+    Mirrors the ``regenerate()`` convention of the other ``bt_ref`` updaters so
+    the unified ``refresh-refs`` mode can drive it uniformly. Raises
+    ``RuntimeError`` when the USB-IF database cannot be downloaded; the committed
+    ``usb_ids.py`` is left untouched in that case (``update_usb_ids`` never
+    overwrites with empty data), preserving the "a refresh never zeroes a table"
+    invariant.
+    """
+    if not update_usb_ids():
+        raise RuntimeError("USB-IF ID database regeneration failed (download failed)")
+
 
 # ---------------------------------------------------------------------------
 # Main entry point

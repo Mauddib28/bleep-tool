@@ -4,6 +4,16 @@
 
 BLEEP uses an evidence-based classification system to determine whether a Bluetooth device is Classic-only, LE-only, dual-mode, or unknown. This system is **stateless** - classification decisions are based **only** on current device properties and active queries, never on historical database data. This prevents false positives from MAC address collisions.
 
+> **Advertisement service-data / beacon labels.** The `LEServiceDataCollector`'s
+> beacon and service-data UUID labels are sourced from the single authoritative
+> map (`SERVICE_DATA_PROTOCOL_LABELS`) in `bt_ref/constants.py` (the canonical
+> UUID reference layer), shared with the advertisement dissector so the two
+> cannot drift. Several prior labels were
+> misattributed (e.g. `FCF1` is Google LLC, not "find_my_beacon"; `FE05` is GN
+> Hearing, not Microsoft CDP). These corrections are **relabel-only** — evidence
+> type and weight are unchanged, so classification decisions are preserved. See
+> [adv_dissection.md](adv_dissection.md) "Known UUID attribution corrections".
+
 ## Classification System Architecture
 
 ### Core Components
@@ -22,7 +32,7 @@ BLEEP uses an evidence-based classification system to determine whether a Blueto
 3. **Database Integration**:
    - `device_type_evidence` table for audit/debugging (NOT used for classification)
    - Signature caching for performance optimization
-   - Current schema: **v10** (see [observation_db_schema.md](observation_db_schema.md) for migration history)
+   - Current schema: **v20** (see [observation_db_schema.md](observation_db_schema.md) for migration history)
 
 ## Device Types
 
@@ -52,22 +62,31 @@ BLEEP uses an evidence-based classification system to determine whether a Blueto
 
 **Conclusive Evidence:**
 - `AddressType` = "random" (LE random addresses are conclusive)
-- GATT services resolved via `services_resolved()`
 
 **Strong Evidence:**
+- GATT services resolved via `services_resolved()` (weighted `STRONG`, **not** conclusive — see `bleep/analysis/device_type_classifier.py::LEGATTServicesCollector`)
 - LE service UUIDs detected (from `SPEC_UUID_NAMES__SERV`)
 - Advertising data present
 
-**Classification Logic:**
-- Requires at least one conclusive piece of evidence OR multiple strong pieces
+**Classification Logic (`_classify_le`):**
+- Classifies as LE on **any one** of: `LE_ADDRESS_TYPE_RANDOM` (conclusive),
+  `LE_GATT_SERVICES` STRONG, `LE_ADVERTISING_DATA` STRONG, **or** the combination
+  `LE_SERVICE_UUIDS` STRONG **and** `LE_GATT_SERVICES` STRONG. A single sufficient
+  strong signal (e.g. advertising data or resolved GATT services) is enough — it
+  does not require multiple strong pieces.
 - `AddressType` = "public" is **inconclusive** (default for both Classic and LE)
 
 #### Dual Device Detection
 
 **Strict Requirements:**
-- **MUST** have conclusive Classic evidence (device_class OR SDP records)
-- **MUST** have conclusive LE evidence (random address OR GATT services)
+- **MUST** have Classic evidence — conclusive (device_class OR SDP records) or strong (Classic service UUIDs)
+- **MUST** have LE evidence — conclusive (random address) **or** strong (GATT services resolved, which are weighted **STRONG**, not conclusive; or advertising data / strong LE service UUIDs)
 - Both protocols must be confirmed independently
+
+> **Note on GATT weight.** `LE_GATT_SERVICES` is **STRONG**, not CONCLUSIVE (see
+> `LEGATTServicesCollector`). In `_classify_dual`, the LE side is satisfied by a
+> **conclusive** random address *or* **strong** GATT services — so GATT contributes
+> STRONG evidence toward a `dual` verdict, it is not itself conclusive LE evidence.
 
 **Prevents False Positives:**
 - MAC address collisions (same MAC, different devices over time)
@@ -79,10 +98,10 @@ BLEEP uses an evidence-based classification system to determine whether a Blueto
 ### Evidence Weights
 
 1. **CONCLUSIVE**: Definitively indicates device type
-   - Examples: `device_class`, SDP records, random address type, GATT services
+   - Examples: `device_class`, SDP records, random address type
 
 2. **STRONG**: Strong indicator but not definitive alone
-   - Examples: Classic/LE service UUIDs, advertising data
+   - Examples: GATT services (resolved), Classic/LE service UUIDs, advertising data
 
 3. **WEAK**: Weak indicator, requires corroboration
    - Examples: Service UUID patterns, advertising flags
@@ -140,12 +159,61 @@ BLEEP uses an evidence-based classification system to determine whether a Blueto
   - Value: Advertising data dictionary
   - Collector: `LEAdvertisingDataCollector`
 
-#### HID Evidence (v2.8.0)
+- **`LE_ADVERTISING_DATA`** (STRONG — advertisement heuristics):
+  - Collector: `LEServiceDataCollector`
+  - Sources, all treated as advertisement heuristics (`evidence_source="heuristic"`):
+    - Beacon / known service-data UUIDs (labels from the authoritative
+      `SERVICE_DATA_PROTOCOL_LABELS` map in `bt_ref/constants.py`).
+    - `FE05` in advertised UUIDs (CORE Transport Technologies NZ; LE-only indicator).
+    - Vendor UART UUIDs (`FFE0`/`FFE1`/`FFF0`/`FFF1`/Nordic UART).
+    - **`ManufacturerData`/`ServiceData` BLE protocols (G-7.4)** — the collector
+      feeds **both** `ManufacturerData` and `ServiceData` through the shared
+      `dissect_advertisement()` and emits evidence when a **BLE-only** protocol is
+      decoded (`ibeacon`, `apple_continuity`, `eddystone`; set
+      `_LE_INDICATIVE_ADV_PROTOCOLS`). Eddystone lives in `ServiceData` (`0xFEAA`),
+      so it is only reachable once `service_data` is passed to the dissector. This
+      lets beacon-only devices classify as `le` instead of `unknown`. A bare,
+      undecoded company payload is **not** LE evidence, because `ManufacturerData`
+      also appears in Classic EIR. Decode logic lives only in the dissector — see
+      [adv_dissection.md](adv_dissection.md).
+
+- **Observed-UUID catalogue feed** (default WEAK; opt-in STRONG):
+  - Collector: `LEServiceDataCollector` (tagged `evidence_source="observed_catalogue"`)
+  - Source: advertised UUIDs the curated beacon/UART sets don't recognise but that
+    were **observed under a name before** (LE/Classic service or SDP tables).
+  - **Default (promotion off).** Emits WEAK `LE_ADVERTISING_DATA` via
+    `get_observed_uuid_names()`. This is **additive context only**: WEAK evidence
+    contributes to confidence and reasoning but **cannot flip a verdict**
+    (`_classify_le/_classic/_dual` consult only CONCLUSIVE/STRONG), so a mislabelled
+    or self-referential observation can never mis-type a device.
+  - **Opt-in (promotion on).** When `_observed_promotion_enabled(context)` is true —
+    `context["allow_observed_promotion"]` or env `BLEEP_CLASSIFIER_OBSERVED_PROMOTION`
+    — the feed instead consults `get_observed_uuid_evidence(uuid)` and promotes to
+    **STRONG** evidence *source-aware*: an LE-measured UUID (seen in the `services`/
+    `characteristics`/`descriptors` tables) emits STRONG `LE_ADVERTISING_DATA`
+    tagged `source="observed_le_gatt"`; a Classic-measured UUID (seen in
+    `classic_services`/`sdp_records`) emits STRONG `CLASSIC_SERVICE_UUIDS` tagged
+    `source="observed_classic"`. All promoted evidence carries `promoted=True`.
+    Because promotion is measurement-scoped, a UUID only ever promotes toward the
+    transport it was actually measured on. Off by default so the verdict-affecting
+    path is explicit and provenance-tagged.
+  - A catalogue/DB failure is swallowed and never breaks classification either way.
+    See [observation_db.md](observation_db.md) "Classifier feed".
+
+> **Provenance (G-7.4).** Classic evidence derived from the advertised/cached
+> `UUIDs` property (not a live SDP browse) is flagged `ground_truth=False` /
+> `source_kind="advertised"`, and `_determine_evidence_source()` reports such a
+> verdict as `evidence_source="heuristic"` — only measured SDP/GATT promote to
+> `measured_sdp` / `measured_gatt`. The AoI report surfaces the result's
+> `evidence_source` and `cached` flags on a **Device Type** line so an
+> advertised or cached guess is never mistaken for a measured capability.
+
+#### HID Evidence (added in package v2.8.0; current package 3.1.0)
 
 - **`HID_CLASSIFICATION`** (STRONG):
   - Source: Combined analysis of Appearance, Class of Device, HID Service UUID (0x1124), and `Input1.ReconnectMode` D-Bus property
   - Value: `HIDInfo` dataclass with `is_hid`, `hid_type` (keyboard/mouse/gamepad/joystick/generic), `appearance_value`, `reconnect_mode`, and `evidence_sources`
-  - Function: `classify_hid(device_proxy)` in `bleep/analysis/device_type_classifier.py`
+  - Function: `classify_hid(context)` in `bleep/analysis/device_type_classifier.py`
   - CLI: `bleep hid-info <MAC>` or debug mode `chid`
 
 The `classify_hid()` function evaluates four evidence sources:
@@ -168,6 +236,7 @@ The classifier adapts evidence collection based on scan mode aggressiveness:
   - `le_address_type`
   - `le_service_uuids`
   - `le_advertising_data`
+  - `le_service_data`
 - **Disabled**: SDP queries, GATT enumeration (requires connection)
 
 #### Naggy Mode (`naggy`)
@@ -177,12 +246,19 @@ The classifier adapts evidence collection based on scan mode aggressiveness:
 
 #### Pokey Mode (`pokey`)
 - **Use Case**: Slow, thorough enumeration with extended timeouts
-- **Enabled Collectors**: **All collectors** including SDP queries
+- **Enabled Collectors**: Connection/query collectors including SDP queries and
+  `le_gatt_services` (`classic_device_class`, `classic_sdp_records`,
+  `classic_service_uuids`, `le_address_type`, `le_gatt_services`,
+  `le_service_uuids`)
+- **Disabled**: `le_advertising_data` and `le_service_data` — these are
+  scan/advertising-only collectors whose `supported_modes` is `["passive", "naggy"]`
 - **Use**: Full Classic and LE enumeration
 
 #### Bruteforce Mode (`bruteforce`)
 - **Use Case**: Exhaustive characteristic testing
-- **Enabled Collectors**: **All collectors** including SDP queries
+- **Enabled Collectors**: Same set as pokey (SDP + `le_gatt_services` +
+  UUID/class/address collectors)
+- **Disabled**: `le_advertising_data` and `le_service_data` (passive/naggy only)
 - **Use**: Maximum information gathering
 
 ### Integration Points
@@ -194,6 +270,21 @@ Scan functions automatically pass appropriate scan_mode:
 - `pokey_scan_and_connect()` → `scan_mode="pokey"`
 - `bruteforce_scan_and_connect()` → `scan_mode="bruteforce"`
 - `connect_and_enumerate__bluetooth__classic()` → `scan_mode="pokey"`
+
+### AoI scan seeding (2026-07-16)
+
+The classifier remains **stateless** and always authoritative when it produces a
+concrete result. However, `aoi scan` (`bleep/modes/aoi.py` `_scan_target`) layers
+a **seed** on top of it for the `unknown` case only: if the live classification is
+inconclusive, a trustworthy transport supplied by the survey JSON (or, failing
+that, the stored device record) is adopted so a device the survey already typed
+does not regress to `unknown` and does not get probed on an irrelevant transport.
+
+- A **concrete** live result (`le`/`classic`/`dual`) is **never** overridden by a
+  seed — statelessness is preserved for every determinate classification.
+- The seed is applied by the pure helpers `_resolve_seeded_type()` /
+  `_resolve_device_type()`; the outcome is recorded on the AoI record as
+  `device_type_source` (`"live"` vs `"seed"`) for auditability.
 
 ## Usage Examples
 
@@ -477,7 +568,10 @@ cursor = conn.execute("""
 ### False Dual Detection
 
 **Prevention:**
-- Strict dual-detection logic requires conclusive evidence from BOTH protocols
+- Strict dual-detection logic requires **independent** evidence from BOTH
+  protocols — each side satisfied by conclusive **or** strong evidence (see the
+  Dual Device Detection section above and `_classify_dual`); a single protocol's
+  signals alone never yield a `dual` verdict
 - Public address type is not used as LE evidence
 - Database history is not used for classification (stateless)
 
@@ -564,14 +658,38 @@ The `sdp_records` table is automatically created during database initialization.
 
 **Files Modified**:
 - `bleep/dbuslayer/adapter.py` - Deferred classification from `get_discovered_devices()`
-- `bleep/ble_ops/scan.py` - Restructured `_native_scan()` and `_base_enum()` for proper sequencing
-- `bleep/core/observations.py` - Added defensive IntegrityError handling
+- `bleep/ble_ops/le/scan.py` - Restructured `_native_scan()` and `_base_enum()` for proper sequencing
+- `bleep/core/observations/` - Added defensive IntegrityError handling (package with submodules `_connection.py`, `_devices.py`, `_services.py`, …)
 
 **Impact**: All scan operations now complete without foreign key errors while maintaining classification accuracy and backward compatibility.
+
+## HID classification: connectionless vs connected (CDU-M1.6)
+
+`classify_hid(context)` is a pure function over an evidence dict. Both surfaces
+build that dict through the single shared helper `bleep/ble_ops/hid.py`, so they
+cannot drift; they differ only in *which* evidence a given path can obtain.
+
+| Evidence key | Connectionless | Connected | Source |
+|--------------|:--------------:|:---------:|--------|
+| `device_class` (Class-of-Device, peripheral major `0x05`) | ✓ | ✓ | cached `Device1.Class` |
+| `uuids` (HID service `0x1124`) | ✓ | ✓ | `Device1.UUIDs` / SDP profiles |
+| `appearance` (LE, `960+`) | usually ✗ | ✓ (LE) | `Device1.Appearance` |
+| `_Input1.ReconnectMode` | ✗ | ✓ | `org.bluez.Input1` (only instantiated once connected/bonded) |
+
+Both variants are available on both surfaces:
+
+| Variant | CLI | Debug shell |
+|---------|-----|-------------|
+| Connectionless (cached discovery props) | `bleep hid-info <MAC>` (default) | `chid <MAC>` (no live session needed) |
+| Connected (adds `appearance` / `Input1.ReconnectMode`) | `bleep hid-info <MAC> --connect` | `chid` against the live `connect`/`cconnect` session |
+
+Evidence assembly lives in `bleep/ble_ops/hid.py`
+(`context_from_classic` / `context_from_le` / `build_hid_context`); the CLI
+dispatch and the debug `chid` command both delegate to it.
 
 ## References
 
 - **Database Schema**: [observation_db_schema.md](observation_db_schema.md) (device_type_evidence table, schema v6)
-- **Source Code**: `bleep/analysis/device_type_classifier.py`
-- **Changelog**: [changelog.md](changelog.md) (v2.4.4)
+- **Source Code**: `bleep/analysis/device_type_classifier.py`, `bleep/ble_ops/hid.py`
+- **Changelog**: [changelog.md](changelog.md) (device-type classification landed in package v2.4.4; current package 3.0.0)
 

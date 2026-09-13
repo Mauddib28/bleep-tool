@@ -113,8 +113,9 @@ def cmd_cpan(args: List[str], state: DebugState) -> None:
         print("  cpan connect [role]             - Connect to PAN device (nap/panu/gn)")
         print("  cpan disconnect                 - Disconnect PAN")
         print("  cpan status                     - Show Network1 properties")
-        print("  cpan server register [role] [bridge] - Register PAN server")
-        print("  cpan server unregister [role]   - Unregister PAN server")
+        print("  cpan server-reg [role] [bridge] - Register PAN server")
+        print("  cpan server-unreg [role]        - Unregister PAN server")
+        print("  (alias: cpan server register|unregister [role] [bridge])")
         return
 
     subcmd = args[0].lower()
@@ -167,52 +168,80 @@ def cmd_cpan(args: List[str], state: DebugState) -> None:
         except Exception as exc:
             print(f"[-] PAN status failed: {exc}")
 
-    elif subcmd == "server":
-        if len(args) < 2:
-            print("Usage: cpan server register|unregister [role] [bridge]")
-            return
-        action = args[1].lower()
-        if action == "register":
+    elif subcmd in ("server-reg", "server-unreg", "server"):
+        # CDU-M1.5: primary single-token verbs `server-reg` / `server-unreg`
+        # (uniform with CLI `classic-pan server-reg`), plus the one retained
+        # two-token alias `server register` / `server unregister`.
+        from bleep.ble_ops.classic.pan import resolve_pan_server_verb
+
+        canonical = resolve_pan_server_verb(subcmd)
+        if canonical is not None:  # server-reg / server-unreg
+            action = canonical
+            role = args[1].lower() if len(args) > 1 else "nap"
+            bridge = args[2] if len(args) > 2 else "pan0"
+        else:  # legacy `server <action> [role] [bridge]` alias
+            if len(args) < 2:
+                print("Usage: cpan server-reg|server-unreg [role] [bridge]")
+                print("       (alias: cpan server register|unregister [role] [bridge])")
+                return
+            alias_action = args[1].lower()
+            if alias_action not in ("register", "unregister"):
+                print(f"[-] Unknown server action: {alias_action}")
+                print("    Use: server-reg, server-unreg "
+                      "(alias: server register|unregister)")
+                return
+            action = alias_action
             role = args[2].lower() if len(args) > 2 else "nap"
             bridge = args[3] if len(args) > 3 else "pan0"
-            try:
-                from bleep.dbuslayer.network import NetworkServer
-                from bleep.core.log import print_and_log, LOG__GENERAL
 
-                print_and_log(
-                    f"[PAN] Registering server role={role} bridge={bridge}",
-                    LOG__GENERAL,
-                )
-                server = NetworkServer()
-                server.register(role, bridge)
-                state.pan_server = server
-                print_and_log(
-                    f"[PAN] Server registered (role={role}, bridge={bridge})",
-                    LOG__GENERAL,
-                )
-                print(f"[+] PAN server registered (role={role}, bridge={bridge})")
-            except Exception as exc:
-                state.pan_server = None
-                print(f"[-] PAN server register failed: {exc}")
-        elif action == "unregister":
-            role = args[2].lower() if len(args) > 2 else "nap"
-            try:
-                if state.pan_server is not None:
-                    state.pan_server.unregister(role)
-                    state.pan_server = None
-                else:
-                    from bleep.ble_ops.classic.pan import unregister_server
-                    unregister_server(role)
-                print(f"[+] PAN server unregistered (role={role})")
-            except Exception as exc:
-                print(f"[-] PAN server unregister failed: {exc}")
-        else:
-            print(f"[-] Unknown server action: {action}")
-            print("    Use: register, unregister")
+        _cpan_server_action(action, role, bridge, state)
 
     else:
         print(f"[-] Unknown PAN sub-command: {subcmd}")
-        print("    Use: connect, disconnect, status, server")
+        print("    Use: connect, disconnect, status, server-reg, server-unreg")
+
+
+def _cpan_server_action(action: str, role: str, bridge: str, state: DebugState) -> None:
+    """Register/unregister a local PAN ``NetworkServer``.
+
+    Shared by the primary ``server-reg``/``server-unreg`` verbs and the retained
+    ``server register``/``server unregister`` alias so both spellings drive the
+    exact same ``NetworkServer1`` calls. The server object is retained on
+    ``state.pan_server`` to keep the D-Bus name (and thus the registration)
+    alive for the session.
+    """
+    from bleep.core.log import print_and_log, LOG__GENERAL
+
+    if action == "register":
+        try:
+            from bleep.dbuslayer.network import NetworkServer
+
+            print_and_log(
+                f"[PAN] Registering server role={role} bridge={bridge}",
+                LOG__GENERAL,
+            )
+            server = NetworkServer()
+            server.register(role, bridge)
+            state.pan_server = server
+            print_and_log(
+                f"[PAN] Server registered (role={role}, bridge={bridge})",
+                LOG__GENERAL,
+            )
+            print(f"[+] PAN server registered (role={role}, bridge={bridge})")
+        except Exception as exc:
+            state.pan_server = None
+            print(f"[-] PAN server register failed: {exc}")
+    else:  # unregister
+        try:
+            if state.pan_server is not None:
+                state.pan_server.unregister(role)
+                state.pan_server = None
+            else:
+                from bleep.ble_ops.classic.pan import unregister_server
+                unregister_server(role)
+            print(f"[+] PAN server unregistered (role={role})")
+        except Exception as exc:
+            print(f"[-] PAN server unregister failed: {exc}")
 
 
 # ---------------------------------------------------------------------------

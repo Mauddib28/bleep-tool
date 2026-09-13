@@ -40,7 +40,7 @@ class Descriptor:  # noqa: N801
             DBUS_PROPERTIES,
         )
 
-        self.uuid: str = str(self._props_iface.Get(GATT_DESCRIPTOR_INTERFACE, "UUID"))
+        self.uuid: str = str(self._props_iface.Get(GATT_DESCRIPTOR_INTERFACE, "UUID")).strip().upper()
 
         # Optional properties – gracefully degrade when BlueZ omits them.
         try:
@@ -190,3 +190,13 @@ class Descriptor:  # noqa: N801
             The UUID of the descriptor
         """
         return self.uuid
+
+    def release(self) -> None:
+        """Drop this descriptor's D-Bus proxies so the object can be collected.
+
+        Local teardown only — no D-Bus I/O, so it is safe on a device that has
+        already disconnected.  Called from :meth:`Characteristic.release`.
+        """
+        self._desc_iface = None
+        self._props_iface = None
+        self.bus = None

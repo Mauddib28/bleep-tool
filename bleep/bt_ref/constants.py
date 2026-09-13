@@ -27,6 +27,8 @@ GATT_MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".GattManager1"
 GATT_SERVICE_INTERFACE = BLUEZ_SERVICE_NAME + ".GattService1"
 GATT_CHARACTERISTIC_INTERFACE = BLUEZ_SERVICE_NAME + ".GattCharacteristic1"
 GATT_DESCRIPTOR_INTERFACE = BLUEZ_SERVICE_NAME + ".GattDescriptor1"
+GATT_PROFILE_INTERFACE = BLUEZ_SERVICE_NAME + ".GattProfile1"
+GATT_APP_BASE_PATH = "/org/bluez/bleep/gatt"
 
 # Advertisement Interface Constants
 ADVERTISEMENT_INTERFACE = BLUEZ_SERVICE_NAME + ".LEAdvertisement1"
@@ -50,10 +52,29 @@ MEDIA_ITEM_INTERFACE = BLUEZ_SERVICE_NAME + ".MediaItem1"
 # Agent/Mesh Constants
 AGENT_NAMESPACE = "/test/agent"
 MESH_AGENT_NAMESPACE = "/mesh/test/agent"
-# AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".mesh.ProvisioningAgent1"  # WRONG: This is for mesh provisioning, not standard pairing
-AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".Agent1"  # Correct: Standard BlueZ pairing agent interface (org.bluez.Agent1)
-MESH_AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".mesh.ProvisioningAgent1"
+AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".Agent1"
+MESH_AGENT_INTERFACE = BLUEZ_SERVICE_NAME + ".mesh.ProvisionAgent1"
 MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".AgentManager1"
+
+# Admin Policy Interface Constants (BZ-13/14)
+ADMIN_POLICY_SET_INTERFACE = BLUEZ_SERVICE_NAME + ".AdminPolicySet1"
+ADMIN_POLICY_STATUS_INTERFACE = BLUEZ_SERVICE_NAME + ".AdminPolicyStatus1"
+
+# DeviceSet Interface Constants (BZ-15)
+DEVICE_SET_INTERFACE = BLUEZ_SERVICE_NAME + ".DeviceSet1"
+
+# Battery Provider Interface Constants (BZ-9/10)
+BATTERY_INTERFACE = BLUEZ_SERVICE_NAME + ".Battery1"
+BATTERY_PROVIDER_INTERFACE = BLUEZ_SERVICE_NAME + ".BatteryProvider1"
+BATTERY_PROVIDER_MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".BatteryProviderManager1"
+BATTERY_PROVIDER_BASE_PATH = "/org/bluez/bleep/battery"
+
+# Bearer Interface Constants (BZ-16) — experimental, per-transport connect/disconnect
+BEARER_LE_INTERFACE = BLUEZ_SERVICE_NAME + ".Bearer.LE1"
+BEARER_BREDR_INTERFACE = BLUEZ_SERVICE_NAME + ".Bearer.BREDR1"
+
+# MediaAssistant Interface Constants (BZ-19) — LE Audio Broadcast Assistant
+MEDIA_ASSISTANT_INTERFACE = BLUEZ_SERVICE_NAME + ".MediaAssistant1"
 
 # BlueZ Profile Manager / Profile interfaces (system bus, per org.bluez.ProfileManager.rst)
 PROFILE_MANAGER_INTERFACE = BLUEZ_SERVICE_NAME + ".ProfileManager1"
@@ -89,27 +110,27 @@ OBEX_IMAGE_INTERFACE = OBEX_SERVICE + ".Image1"  # [experimental]
 # Full list: bleep.bt_ref.uuids.SPEC_UUID_NAMES__SERV_CLASS
 
 # SPP (Serial Port Profile)
-SPP_UUID = "00001101-0000-1000-8000-00805f9b34fb"
+SPP_UUID = "00001101-0000-1000-8000-00805F9B34FB"
 SPP_UUID_SHORT = "0x1101"
 
 # OPP (Object Push Profile)
-OPP_UUID = "00001105-0000-1000-8000-00805f9b34fb"
+OPP_UUID = "00001105-0000-1000-8000-00805F9B34FB"
 OPP_UUID_SHORT = "0x1105"
 
 # PBAP (Phonebook Access Profile – PSE)
-PBAP_PSE_UUID = "0000112f-0000-1000-8000-00805f9b34fb"
+PBAP_PSE_UUID = "0000112F-0000-1000-8000-00805F9B34FB"
 PBAP_PSE_UUID_SHORT = "0x112f"
 
 # FTP (OBEX File Transfer Profile)
-FTP_UUID = "00001106-0000-1000-8000-00805f9b34fb"
+FTP_UUID = "00001106-0000-1000-8000-00805F9B34FB"
 FTP_UUID_SHORT = "0x1106"
 
 # MAP (Message Access Profile)
-MAP_MSE_UUID = "00001132-0000-1000-8000-00805f9b34fb"
+MAP_MSE_UUID = "00001132-0000-1000-8000-00805F9B34FB"
 MAP_MSE_UUID_SHORT = "0x1132"
-MAP_MNS_UUID = "00001133-0000-1000-8000-00805f9b34fb"
+MAP_MNS_UUID = "00001133-0000-1000-8000-00805F9B34FB"
 MAP_MNS_UUID_SHORT = "0x1133"
-MAP_UUID = "00001134-0000-1000-8000-00805f9b34fb"
+MAP_UUID = "00001134-0000-1000-8000-00805F9B34FB"
 MAP_UUID_SHORT = "0x1134"
 
 # MAP SDP attribute IDs (Bluetooth Assigned Numbers + MAP v1.4.3 spec)
@@ -195,23 +216,23 @@ def decode_map_message_types(bitmask: int) -> list:
     return [name for bit, name in MAP_MSG_TYPE_NAMES.items() if bitmask & bit]
 
 # SYNC (IrMC Synchronization)
-SYNC_UUID = "00001104-0000-1000-8000-00805f9b34fb"
+SYNC_UUID = "00001104-0000-1000-8000-00805F9B34FB"
 SYNC_UUID_SHORT = "0x1104"
-SYNC_CMD_UUID = "00001107-0000-1000-8000-00805f9b34fb"
+SYNC_CMD_UUID = "00001107-0000-1000-8000-00805F9B34FB"
 SYNC_CMD_UUID_SHORT = "0x1107"
 
 # BIP (Basic Imaging Profile) — [experimental] in BlueZ
-BIP_UUID = "0000111a-0000-1000-8000-00805f9b34fb"
+BIP_UUID = "0000111A-0000-1000-8000-00805F9B34FB"
 BIP_UUID_SHORT = "0x111a"
-BIP_RESPONDER_UUID = "0000111b-0000-1000-8000-00805f9b34fb"
+BIP_RESPONDER_UUID = "0000111B-0000-1000-8000-00805F9B34FB"
 BIP_RESPONDER_UUID_SHORT = "0x111b"
 
 # PAN (Personal Area Networking)
-PAN_PANU_UUID = "00001115-0000-1000-8000-00805f9b34fb"
+PAN_PANU_UUID = "00001115-0000-1000-8000-00805F9B34FB"
 PAN_PANU_UUID_SHORT = "0x1115"
-PAN_NAP_UUID = "00001116-0000-1000-8000-00805f9b34fb"
+PAN_NAP_UUID = "00001116-0000-1000-8000-00805F9B34FB"
 PAN_NAP_UUID_SHORT = "0x1116"
-PAN_GN_UUID = "00001117-0000-1000-8000-00805f9b34fb"
+PAN_GN_UUID = "00001117-0000-1000-8000-00805F9B34FB"
 PAN_GN_UUID_SHORT = "0x1117"
 
 # BlueZ PAN D-Bus interfaces (system bus, per org.bluez.Network.rst / NetworkServer.rst)
@@ -272,6 +293,13 @@ RESULT_ERR_PROTOCOL_ERROR = 38            # LMP or link-layer protocol error (EP
 RESULT_ERR_SOCKET_ERROR = 39              # BT IO socket creation/connect failed (EIO)
 RESULT_ERR_NOT_POWERED = 40              # Adapter not powered (EHOSTUNREACH)
 
+# GATT read/write requiring an encrypted (bonded) link. BlueZ collapses ATT
+# 0x05 (Authentication), 0x0c (Enc Key Size) and 0x0f (Insufficient Encryption)
+# into `org.bluez.Error.NotPermitted` with message "Not paired"
+# (workDir/bluez/src/gatt-client.c:create_gatt_dbus_error). Kept distinct from
+# READ_NOT_PERMITTED so analysts can tell "bond required" from "truly denied".
+RESULT_ERR_INSUFFICIENT_ENCRYPTION = 41  # ATT 0x05/0x0c/0x0f — needs bonding/encryption
+
 # ---------------------------------------------------------------------------
 # Legacy PIN codes (pre-BT 2.1, RequestPinCode agent method).
 # Format: string, 1–16 characters, ALPHANUMERIC (BlueZ rejects len<1 or len>16).
@@ -309,8 +337,38 @@ AGENT_CAPABILITIES = [
 
 # Base UUID Constants — the canonical BT SIG base UUID (Core Spec v5.4, Vol 3, Part B §2.5.1).
 # All short-form (16-bit / 32-bit) UUIDs expand into this 128-bit template.
-BT_SIG_BASE_UUID = "00000000-0000-1000-8000-00805f9b34fb"
-BT_SIG_BASE_UUID_NODASH = BT_SIG_BASE_UUID.replace("-", "").lower()
+BT_SIG_BASE_UUID = "00000000-0000-1000-8000-00805F9B34FB"
+BT_SIG_BASE_UUID_NODASH = BT_SIG_BASE_UUID.replace("-", "")
+# The dashed suffix shared by every 16-bit UUID ("-0000-1000-8000-00805F9B34FB").
+# Derived from the base above so short↔long UUID handling has one source of truth.
+BT_SIG_BASE_UUID_SUFFIX = BT_SIG_BASE_UUID[8:]
+
+# Company identifiers referenced by name in decode/classification logic. The
+# full assigned-numbers table lives in bleep.bt_ref.uuids.SPEC_ID_NAMES__COMPANY_IDENTS
+# (auto-generated); these named constants avoid bare magic numbers at call sites.
+COMPANY_ID__APPLE = 0x004C
+COMPANY_ID__MICROSOFT = 0x0006
+
+# Curated service-data / beacon attribution labels, keyed by 16-bit UUID
+# (lower-case, 4 hex). This is the SINGLE authoritative source for these labels;
+# the advertisement dissector (analysis/adv_dissect.py) and the device-type
+# classifier (analysis/device_type_classifier.py) both consume it so they cannot
+# drift. Labels follow the SIG member owner in bleep.bt_ref.uuids; where a
+# community source (device-library) groups a UUID differently, the SIG owner
+# wins here and the community view is retained separately as a vendor hint.
+# G-7.5 triple-pass review corrections are documented in docs/adv_dissection.md.
+SERVICE_DATA_PROTOCOL_LABELS = {
+    "feaa": "eddystone",              # Google LLC (Eddystone protocol)
+    "fe2c": "google_fast_pair",       # Google LLC
+    "fcf1": "google_nearby",          # Google LLC
+    "fe9f": "google_nearby",          # Google LLC
+    "fef3": "google_nearby",          # Google LLC
+    "fcc0": "xiaomi",                 # Xiaomi Inc. (community: grouped as Google Nearby)
+    "fd6f": "exposure_notification",  # Apple/Google Exposure Notification
+    "fe0f": "signify_hue",            # Signify Netherlands B.V. (Philips Hue)
+    "fe05": "core_transport_nz",      # CORE Transport Technologies NZ Limited
+    "fd69": "samsung",                # Samsung Electronics Co., Ltd
+}
 
 # GATT Property Constants
 GATT__SERVICE__PROPERTIES = [
@@ -356,75 +414,88 @@ INTROSPECT_DESCRIPTOR_STRING = "desc"
 
 # UUID Mapping
 UUID_NAMES = {
-    "00001801-0000-1000-8000-00805f9b34fb": "Generic Attribute Service",
-    "0000180a-0000-1000-8000-00805f9b34fb": "Device Information Service",
-    "e95d93b0-251d-470a-a062-fa1922dfa9a8": "DFU Control Service",
-    "e95d93af-251d-470a-a062-fa1922dfa9a8": "Event Service",
-    "e95d9882-251d-470a-a062-fa1922dfa9a8": "Button Service",
-    "e95d6100-251d-470a-a062-fa1922dfa9a8": "Temperature Service",
-    "e95dd91d-251d-470a-a062-fa1922dfa9a8": "LED Service",
-    "00002a05-0000-1000-8000-00805f9b34fb": "Service Changed",
-    "e95d93b1-251d-470a-a062-fa1922dfa9a8": "DFU Control",
-    "00002a24-0000-1000-8000-00805f9b34fb": "Model Number String",
-    "00002a25-0000-1000-8000-00805f9b34fb": "Serial Number String",
-    "00002a26-0000-1000-8000-00805f9b34fb": "Firmware Revision String",
-    "e95d9775-251d-470a-a062-fa1922dfa9a8": "micro:bit Event",
-    "e95d5404-251d-470a-a062-fa1922dfa9a8": "Client Event",
-    "e95d23c4-251d-470a-a062-fa1922dfa9a8": "Client Requirements",
-    "e95db84c-251d-470a-a062-fa1922dfa9a8": "micro:bit Requirements",
-    "e95dda90-251d-470a-a062-fa1922dfa9a8": "Button A State",
-    "e95dda91-251d-470a-a062-fa1922dfa9a8": "Button B State",
-    "e95d9250-251d-470a-a062-fa1922dfa9a8": "Temperature",
-    "e95d93ee-251d-470a-a062-fa1922dfa9a8": "LED Text",
-    "00002902-0000-1000-8000-00805f9b34fb": "Client Characteristic Configuration",
+    "00001801-0000-1000-8000-00805F9B34FB": "Generic Attribute Service",
+    "0000180A-0000-1000-8000-00805F9B34FB": "Device Information Service",
+    "E95D93B0-251D-470A-A062-FA1922DFA9A8": "DFU Control Service",
+    "E95D93AF-251D-470A-A062-FA1922DFA9A8": "Event Service",
+    "E95D9882-251D-470A-A062-FA1922DFA9A8": "Button Service",
+    "E95D6100-251D-470A-A062-FA1922DFA9A8": "Temperature Service",
+    "E95DD91D-251D-470A-A062-FA1922DFA9A8": "LED Service",
+    "00002A05-0000-1000-8000-00805F9B34FB": "Service Changed",
+    "E95D93B1-251D-470A-A062-FA1922DFA9A8": "DFU Control",
+    "00002A24-0000-1000-8000-00805F9B34FB": "Model Number String",
+    "00002A25-0000-1000-8000-00805F9B34FB": "Serial Number String",
+    "00002A26-0000-1000-8000-00805F9B34FB": "Firmware Revision String",
+    "E95D9775-251D-470A-A062-FA1922DFA9A8": "micro:bit Event",
+    "E95D5404-251D-470A-A062-FA1922DFA9A8": "Client Event",
+    "E95D23C4-251D-470A-A062-FA1922DFA9A8": "Client Requirements",
+    "E95DB84C-251D-470A-A062-FA1922DFA9A8": "micro:bit Requirements",
+    "E95DDA90-251D-470A-A062-FA1922DFA9A8": "Button A State",
+    "E95DDA91-251D-470A-A062-FA1922DFA9A8": "Button B State",
+    "E95D9250-251D-470A-A062-FA1922DFA9A8": "Temperature",
+    "E95D93EE-251D-470A-A062-FA1922DFA9A8": "LED Text",
+    "00002902-0000-1000-8000-00805F9B34FB": "Client Characteristic Configuration",
     # BLE CTF UUIDs
-    "000000ff-0000-1000-8000-00805f9b34fb": "BLE CTF Flags Service",
-    "0000ff01-0000-1000-8000-00805f9b34fb": "BLE CTF Score",
-    "0000ff02-0000-1000-8000-00805f9b34fb": "BLE CTF Flag Submission",
-    "0000ff03-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #002",
-    "0000ff04-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #003",
-    "0000ff05-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #005",
-    "0000ff06-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #006",
-    "0000ff07-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #007",
-    "0000ff08-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #008",
-    "0000ff0a-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #009",
-    "0000ff0b-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #010",
-    "0000ff0c-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #011",
-    "0000ff0d-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #012 + #014",
-    "0000ff0f-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #013",
-    "0000ff12-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #015",
-    "0000ff10-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #016",
-    "0000ff14-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #017",
-    "0000ff15-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #018",
-    "0000ff16-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #019",
-    "0000ff17-0000-1000-8000-00805f9b34fb": "BLE CTF Flag #020",
+    "000000FF-0000-1000-8000-00805F9B34FB": "BLE CTF Flags Service",
+    "0000FF01-0000-1000-8000-00805F9B34FB": "BLE CTF Score",
+    "0000FF02-0000-1000-8000-00805F9B34FB": "BLE CTF Flag Submission",
+    "0000FF03-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #002",
+    "0000FF04-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #003",
+    "0000FF05-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #005",
+    "0000FF06-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #006",
+    "0000FF07-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #007",
+    "0000FF08-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #008",
+    "0000FF0A-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #009",
+    "0000FF0B-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #010",
+    "0000FF0C-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #011",
+    "0000FF0D-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #012 + #014",
+    "0000FF0F-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #013",
+    "0000FF12-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #015",
+    "0000FF10-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #016",
+    "0000FF14-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #017",
+    "0000FF15-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #018",
+    "0000FF16-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #019",
+    "0000FF17-0000-1000-8000-00805F9B34FB": "BLE CTF Flag #020",
     # BW-16 UUIDs
-    "0000a7e6-0000-1000-8000-00805f9b34fb": "RealTek BW-16 System Status",
-    "0000a7e7-0000-1000-8000-00805f9b34fb": "RealTek BW-16 Alert Status",
+    "0000A7E6-0000-1000-8000-00805F9B34FB": "RealTek BW-16 System Status",
+    "0000A7E7-0000-1000-8000-00805F9B34FB": "RealTek BW-16 Alert Status",
     # Advanced Audio Distribution Profile (A2DP)
-    "0000110a-0000-1000-8000-00805f9b34fb": "Advanced Audio Distribution Profile (A2DP) - A2DP Source",
-    "0000110b-0000-1000-8000-00805f9b34fb": "Advanced Audio Distribution Profile (A2DP) - A2DP Sink",
+    "0000110A-0000-1000-8000-00805F9B34FB": "Advanced Audio Distribution Profile (A2DP) - A2DP Source",
+    "0000110B-0000-1000-8000-00805F9B34FB": "Advanced Audio Distribution Profile (A2DP) - A2DP Sink",
     # ESP SSP (Custom UUID - not in Bluetooth SIG specifications)
-    "0000abf0-0000-1000-8000-00805f9b34fb": "ESP SSP",
+    "0000ABF0-0000-1000-8000-00805F9B34FB": "ESP SSP",
+    # Espressif custom 128-bit UUIDs observed on ESP32-S3 beacon / gateway
+    "6E5F0001-B5A3-F393-E0A9-E50E24DCCA9E": "Espressif custom (iBeacon UUID)",
+    "6E5F0005-B5A3-F393-E0A9-E50E24DCCA9E": "Espressif custom (gateway service)",
     # Microsoft Nearby Sharing (proprietary CDPX protocol over BLE)
-    "a82efa21-ae5c-3dde-9bbc-f16da7b16c5a": "Microsoft Nearby Sharing",
+    "A82EFA21-AE5C-3DDE-9BBC-F16DA7B16C5A": "Microsoft Nearby Sharing",
     # Samsung IcService_New (proprietary cross-device interconnect over RFCOMM)
-    "a23d00bc-217c-123b-9c00-fc44577136ee": "Samsung IcService_New",
+    "A23D00BC-217C-123B-9C00-FC44577136EE": "Samsung IcService_New",
 }
 
+# Merge user-promoted custom UUID names (observed-catalogue promotions, Item D).
+# Best-effort and defensive: a missing/malformed overlay must never break import.
+# Promoted entries join the authoritative custom tier consulted first by
+# get_name_from_uuid(); see bleep.bt_ref.custom_uuids.
+try:
+    from .custom_uuids import load_overlay as _load_uuid_overlay
+    UUID_NAMES.update(_load_uuid_overlay())
+except Exception:  # noqa: BLE001
+    pass
+
 # Common Service/Characteristic UUIDs
-DEVICE_INF_SVC_UUID = "0000180a-0000-1000-8000-00805f9b34fb"
-MODEL_NUMBER_UUID = "00002a24-0000-1000-8000-00805f9b34fb"
-TEMPERATURE_SVC_UUID = "e95d6100-251d-470a-a062-fa1922dfa9a8"
-TEMPERATURE_CHR_UUID = "e95d9250-251d-470a-a062-fa1922dfa9a8"
-LED_SVC_UUID = "e95dd91d-251d-470a-a062-fa1922dfa9a8"
-LED_TEXT_CHR_UUID = "e95d93ee-251d-470a-a062-fa1922dfa9a8"
+DEVICE_INF_SVC_UUID = "0000180A-0000-1000-8000-00805F9B34FB"
+MODEL_NUMBER_UUID = "00002A24-0000-1000-8000-00805F9B34FB"
+TEMPERATURE_SVC_UUID = "E95D6100-251D-470A-A062-FA1922DFA9A8"
+TEMPERATURE_CHR_UUID = "E95D9250-251D-470A-A062-FA1922DFA9A8"
+LED_SVC_UUID = "E95DD91D-251D-470A-A062-FA1922DFA9A8"
+LED_TEXT_CHR_UUID = "E95D93EE-251D-470A-A062-FA1922DFA9A8"
 
 # Service Discovery Server UUID (16-bit form for Classic device type classification)
 SERVICE_DISCOVERY_SERVER_UUID_16 = "1000"
 
 # Arduino BLE Constants
-ARDUINO_BLE__BLE_UUID__MASK = "XXXXXXXX-0000-1000-8000-00805f9b34fb"
+ARDUINO_BLE__BLE_UUID__MASK = "XXXXXXXX-0000-1000-8000-00805F9B34FB"
 
 # ============================================================================
 # Audio Profile UUIDs (Bluetooth SIG Assigned Numbers)
@@ -434,20 +505,20 @@ ARDUINO_BLE__BLE_UUID__MASK = "XXXXXXXX-0000-1000-8000-00805f9b34fb"
 # Reference: Bluetooth SIG Assigned Numbers - Service Class UUIDs
 
 # A2DP (Advanced Audio Distribution Profile)
-A2DP_SOURCE_UUID = "0000110a-0000-1000-8000-00805f9b34fb"
-A2DP_SINK_UUID = "0000110b-0000-1000-8000-00805f9b34fb"
+A2DP_SOURCE_UUID = "0000110A-0000-1000-8000-00805F9B34FB"
+A2DP_SINK_UUID = "0000110B-0000-1000-8000-00805F9B34FB"
 
 # HFP (Hands-Free Profile)
-HFP_HANDS_FREE_UUID = "0000111e-0000-1000-8000-00805f9b34fb"
-HFP_AUDIO_GATEWAY_UUID = "0000111f-0000-1000-8000-00805f9b34fb"
+HFP_HANDS_FREE_UUID = "0000111E-0000-1000-8000-00805F9B34FB"
+HFP_AUDIO_GATEWAY_UUID = "0000111F-0000-1000-8000-00805F9B34FB"
 
 # HSP (Headset Profile)
-HSP_AUDIO_GATEWAY_UUID = "00001112-0000-1000-8000-00805f9b34fb"
-HSP_HEADSET_UUID = "00001113-0000-1000-8000-00805f9b34fb"
+HSP_AUDIO_GATEWAY_UUID = "00001112-0000-1000-8000-00805F9B34FB"
+HSP_HEADSET_UUID = "00001113-0000-1000-8000-00805F9B34FB"
 
 # AVRCP (Audio/Video Remote Control Profile)
-AVRCP_TARGET_UUID = "0000110c-0000-1000-8000-00805f9b34fb"
-AVRCP_CONTROLLER_UUID = "0000110e-0000-1000-8000-00805f9b34fb"
+AVRCP_TARGET_UUID = "0000110C-0000-1000-8000-00805F9B34FB"
+AVRCP_CONTROLLER_UUID = "0000110E-0000-1000-8000-00805F9B34FB"
 
 # Aggregate set of UUIDs that indicate audio-capable devices.
 # Used by Amusica scan filter to identify targets with audio services.
@@ -577,6 +648,77 @@ def get_codec_name(codec_id: int) -> str:
     return CODEC_NAMES.get(codec_id, "Unknown")
 
 
+# ============================================================================
+# Deprecated GATT Profile UUIDs (BZ-20 through BZ-23)
+# ============================================================================
+# BlueZ removed the D-Bus plugin interfaces for these profiles in BlueZ 5.48+.
+# The underlying GATT services still exist on devices and are already readable
+# via standard GATT enumeration.  These constants enable profile-aware
+# recognition and structured value interpretation at the GATT level.
+
+# --- Health Thermometer Service (0x1809) ---
+HEALTH_THERMOMETER_SVC_UUID = "00001809-0000-1000-8000-00805F9B34FB"
+TEMP_MEASUREMENT_CHR_UUID = "00002A1C-0000-1000-8000-00805F9B34FB"
+TEMP_TYPE_CHR_UUID = "00002A1D-0000-1000-8000-00805F9B34FB"
+INTERMEDIATE_TEMP_CHR_UUID = "00002A1E-0000-1000-8000-00805F9B34FB"
+MEASUREMENT_INTERVAL_CHR_UUID = "00002A21-0000-1000-8000-00805F9B34FB"
+
+# --- Heart Rate Service (0x180D) ---
+HEART_RATE_SVC_UUID = "0000180D-0000-1000-8000-00805F9B34FB"
+HR_MEASUREMENT_CHR_UUID = "00002A37-0000-1000-8000-00805F9B34FB"
+BODY_SENSOR_LOCATION_CHR_UUID = "00002A38-0000-1000-8000-00805F9B34FB"
+HR_CONTROL_POINT_CHR_UUID = "00002A39-0000-1000-8000-00805F9B34FB"
+
+# --- Cycling Speed and Cadence Service (0x1816) ---
+CSC_SVC_UUID = "00001816-0000-1000-8000-00805F9B34FB"
+CSC_MEASUREMENT_CHR_UUID = "00002A5B-0000-1000-8000-00805F9B34FB"
+CSC_FEATURE_CHR_UUID = "00002A5C-0000-1000-8000-00805F9B34FB"
+SC_CONTROL_POINT_CHR_UUID = "00002A55-0000-1000-8000-00805F9B34FB"
+SENSOR_LOCATION_CHR_UUID = "00002A5D-0000-1000-8000-00805F9B34FB"
+
+# --- Proximity Profile Services (0x1802 / 0x1803 / 0x1804) ---
+IMMEDIATE_ALERT_SVC_UUID = "00001802-0000-1000-8000-00805F9B34FB"
+LINK_LOSS_SVC_UUID = "00001803-0000-1000-8000-00805F9B34FB"
+TX_POWER_SVC_UUID = "00001804-0000-1000-8000-00805F9B34FB"
+ALERT_LEVEL_CHR_UUID = "00002A06-0000-1000-8000-00805F9B34FB"
+TX_POWER_LEVEL_CHR_UUID = "00002A07-0000-1000-8000-00805F9B34FB"
+
+DEPRECATED_GATT_PROFILE_SVCS = frozenset({
+    HEALTH_THERMOMETER_SVC_UUID,
+    HEART_RATE_SVC_UUID,
+    CSC_SVC_UUID,
+    IMMEDIATE_ALERT_SVC_UUID,
+    LINK_LOSS_SVC_UUID,
+    TX_POWER_SVC_UUID,
+})
+
+DEPRECATED_GATT_PROFILE_NAMES = {
+    HEALTH_THERMOMETER_SVC_UUID: "Health Thermometer",
+    HEART_RATE_SVC_UUID: "Heart Rate",
+    CSC_SVC_UUID: "Cycling Speed and Cadence",
+    IMMEDIATE_ALERT_SVC_UUID: "Immediate Alert (Proximity)",
+    LINK_LOSS_SVC_UUID: "Link Loss (Proximity)",
+    TX_POWER_SVC_UUID: "Tx Power (Proximity)",
+}
+
+# Characteristic-to-parent-service mapping for profile recognition
+DEPRECATED_GATT_CHR_TO_SVC = {
+    TEMP_MEASUREMENT_CHR_UUID: HEALTH_THERMOMETER_SVC_UUID,
+    TEMP_TYPE_CHR_UUID: HEALTH_THERMOMETER_SVC_UUID,
+    INTERMEDIATE_TEMP_CHR_UUID: HEALTH_THERMOMETER_SVC_UUID,
+    MEASUREMENT_INTERVAL_CHR_UUID: HEALTH_THERMOMETER_SVC_UUID,
+    HR_MEASUREMENT_CHR_UUID: HEART_RATE_SVC_UUID,
+    BODY_SENSOR_LOCATION_CHR_UUID: HEART_RATE_SVC_UUID,
+    HR_CONTROL_POINT_CHR_UUID: HEART_RATE_SVC_UUID,
+    CSC_MEASUREMENT_CHR_UUID: CSC_SVC_UUID,
+    CSC_FEATURE_CHR_UUID: CSC_SVC_UUID,
+    SC_CONTROL_POINT_CHR_UUID: CSC_SVC_UUID,
+    SENSOR_LOCATION_CHR_UUID: CSC_SVC_UUID,
+    ALERT_LEVEL_CHR_UUID: IMMEDIATE_ALERT_SVC_UUID,
+    TX_POWER_LEVEL_CHR_UUID: TX_POWER_SVC_UUID,
+}
+
+
 def get_profile_name(profile_uuid: str) -> str:
     """
     Get human-readable profile name from UUID.
@@ -591,4 +733,4 @@ def get_profile_name(profile_uuid: str) -> str:
     str
         Profile name or "Unknown Profile" if not recognized
     """
-    return AUDIO_PROFILE_NAMES.get(profile_uuid.lower(), "Unknown Profile")
+    return AUDIO_PROFILE_NAMES.get(profile_uuid.strip().upper(), "Unknown Profile")

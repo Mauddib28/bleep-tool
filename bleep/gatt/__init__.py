@@ -1,26 +1,19 @@
+"""bleep.gatt – GATT operation helpers (refactoring target).
+
+This package is the intended destination for GATT-related logic currently
+spread across ``bleep/dbuslayer/`` (service.py, characteristic.py,
+descriptor.py) and ``bleep/ble_ops/le/`` (scan.py, scan_modes.py,
+connect.py).  Breaking those into smaller, focused modules under this
+package is planned for a future refactor to keep individual files under
+~300 LOC.
+
+Current GATT wrappers remain functional in their existing locations:
+- ``bleep.dbuslayer.service`` — GattService1 D-Bus wrapper
+- ``bleep.dbuslayer.characteristic`` — GattCharacteristic1 D-Bus wrapper
+- ``bleep.dbuslayer.descriptor`` — GattDescriptor1 D-Bus wrapper
+
+As modules are migrated here, they will be re-exported from this
+__init__.py for backward compatibility.
 """
-GATT profile handling functionality for BLEEP.
 
-Note: GATT service/characteristic/descriptor wrappers currently live in
-``bleep.dbuslayer`` (``service.py``, ``characteristic.py``, ``descriptor.py``).
-This package is a placeholder for future migration into a dedicated namespace.
-"""
-
-# Planned future modules — guarded so the package loads cleanly before
-# they are migrated here from bleep.dbuslayer.
-try:
-    from . import service  # noqa: F401
-except ImportError:
-    service = None  # type: ignore[assignment,misc]
-
-try:
-    from . import characteristic  # noqa: F401
-except ImportError:
-    characteristic = None  # type: ignore[assignment,misc]
-
-try:
-    from . import descriptor  # noqa: F401
-except ImportError:
-    descriptor = None  # type: ignore[assignment,misc]
-
-__all__ = ["service", "characteristic", "descriptor"]
+__all__: list = []

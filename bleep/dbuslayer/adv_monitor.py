@@ -3,8 +3,12 @@
 Implements the client side of the BlueZ ``AdvertisementMonitor1`` and
 ``AdvertisementMonitorManager1`` experimental interfaces.  This enables
 kernel-offloaded pattern-based passive scanning with RSSI thresholds and
-device found/lost callbacks — without requiring an active ``StartDiscovery``
-session.
+device found/lost callbacks.  BlueZ delivers Found/Lost even while a
+``StartDiscovery`` session is active on the same adapter; survey uses that
+as an overlay, not as a substitute for Device1 harvest.  Empty
+``or_patterns`` is illegal (monitor ``Release``, 0 events) — callers that
+want the widest AdvMonitor match inject the Flags-OR overlay from
+``adv_patterns.catch_all_pattern_groups``.
 
 Architecture
 ~~~~~~~~~~~~
@@ -38,6 +42,7 @@ from bleep.bt_ref.constants import (
     DBUS_PROPERTIES,
 )
 from bleep.core.log import print_and_log, LOG__DEBUG
+from bleep.dbuslayer._dbus_wait import call_async_await
 
 __all__ = [
     "AdvMonitor",
@@ -241,6 +246,20 @@ class AdvMonitorApp(dbus.service.Object):
 
         Returns the monitor id (int).
         """
+        from bleep.dbuslayer.adv_patterns import PatternError, validate_pattern
+
+        pats = list(patterns or [])
+        if not pats:
+            raise ValueError(
+                "or_patterns requires at least one non-empty pattern "
+                "(BlueZ Releases empty monitors; use Flags-OR overlay)"
+            )
+        try:
+            for pat in pats:
+                validate_pattern(pat)
+        except PatternError as exc:
+            raise ValueError(str(exc)) from exc
+
         mid = self._next_id
         self._next_id += 1
 
@@ -250,7 +269,7 @@ class AdvMonitorApp(dbus.service.Object):
             mid,
             monitor_type,
             rssi or RSSIConfig(),
-            patterns or [],
+            pats,
             callbacks,
         )
         self._monitors[mid] = mon
@@ -334,59 +353,17 @@ class AdvMonitorManager:
 
     def register(self, app: AdvMonitorApp) -> bool:
         """Register *app* with bluetoothd.  Returns True on success."""
-        success: Optional[bool] = None
-
-        def _ok():
-            nonlocal success
-            success = True
-
-        def _err(error):
-            nonlocal success
-            print_and_log(
-                f"[-] RegisterMonitor failed: {error}", LOG__DEBUG
-            )
-            success = False
-
-        self._mgr_iface.RegisterMonitor(
+        return call_async_await(
+            self._mgr_iface.RegisterMonitor,
             app.get_app_path(),
-            reply_handler=_ok,
-            error_handler=_err,
+            label="RegisterMonitor",
         )
-        # Spin until reply (runs on GLib main loop)
-        import time
-        deadline = time.monotonic() + 5.0
-        while success is None and time.monotonic() < deadline:
-            time.sleep(0.05)
-        if success is None:
-            print_and_log("[-] RegisterMonitor timed out", LOG__DEBUG)
-            return False
-        return success
 
     def unregister(self, app: AdvMonitorApp) -> bool:
         """Unregister *app*.  Returns True on success."""
-        success: Optional[bool] = None
-
-        def _ok():
-            nonlocal success
-            success = True
-
-        def _err(error):
-            nonlocal success
-            print_and_log(
-                f"[-] UnregisterMonitor failed: {error}", LOG__DEBUG
-            )
-            success = False
-
-        self._mgr_iface.UnregisterMonitor(
+        return call_async_await(
+            self._mgr_iface.UnregisterMonitor,
             app.get_app_path(),
-            reply_handler=_ok,
-            error_handler=_err,
+            label="UnregisterMonitor",
+            error_log_level=LOG__DEBUG,
         )
-        import time
-        deadline = time.monotonic() + 5.0
-        while success is None and time.monotonic() < deadline:
-            time.sleep(0.05)
-        if success is None:
-            print_and_log("[-] UnregisterMonitor timed out", LOG__DEBUG)
-            return False
-        return success

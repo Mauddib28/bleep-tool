@@ -95,11 +95,11 @@ class SignalFilter:
             return False
         
         # Check service UUID
-        if self.service_uuid and service_uuid and self.service_uuid.lower() != service_uuid.lower():
+        if self.service_uuid and service_uuid and self.service_uuid.upper() != service_uuid.upper():
             return False
         
         # Check characteristic UUID
-        if self.char_uuid and char_uuid and self.char_uuid.lower() != char_uuid.lower():
+        if self.char_uuid and char_uuid and self.char_uuid.upper() != char_uuid.upper():
             return False
         
         # Check path pattern

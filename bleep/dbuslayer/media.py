@@ -1165,7 +1165,11 @@ class BleepMediaEndpoint(dbus.service.Object):
             },
             signature="sv",
         )
-        media.RegisterEndpoint(self._OBJECT_PATH, properties)
+        # BlueZ's Media1.RegisterEndpoint signature is ``oa{sv}`` — the path
+        # MUST be marshalled as a D-Bus object path, not a string. Passing a
+        # bare ``str`` sends signature ``sa{sv}`` and BlueZ rejects it with
+        # ``UnknownMethod``. Wrap explicitly in ``dbus.ObjectPath``.
+        media.RegisterEndpoint(dbus.ObjectPath(self._OBJECT_PATH), properties)
         self._registered = True
         print_and_log(
             f"[+] Registered BLEEP endpoint at {self._OBJECT_PATH} "
@@ -1183,7 +1187,7 @@ class BleepMediaEndpoint(dbus.service.Object):
                 self._bus.get_object(BLUEZ_SERVICE_NAME, self._adapter_path),
                 MEDIA_INTERFACE,
             )
-            media.UnregisterEndpoint(self._OBJECT_PATH)
+            media.UnregisterEndpoint(dbus.ObjectPath(self._OBJECT_PATH))
         except dbus.exceptions.DBusException as e:
             print_and_log(
                 f"[-] Failed to unregister endpoint: {e.get_dbus_name()}",

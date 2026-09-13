@@ -19,6 +19,8 @@ import dbus
 from gi.repository import GLib
 
 from bleep.bt_ref.constants import (
+    ADMIN_POLICY_STATUS_INTERFACE,
+    BEARER_LE_INTERFACE,
     BLUEZ_SERVICE_NAME,
     BLUEZ_NAMESPACE,
     ADAPTER_NAME,
@@ -26,13 +28,16 @@ from bleep.bt_ref.constants import (
     DBUS_PROPERTIES,
     GATT_SERVICE_INTERFACE,
     DBUS_OM_IFACE,
+    NETWORK_INTERFACE,
     RESULT_ERR_UNKNOWN_OBJECT,
+    RESULT_ERR_BAD_ARGS,
 )
 from bleep.bt_ref.utils import dbus_to_python, device_address_to_path, handle_int_to_hex, handle_hex_to_int
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__USER
 from bleep.core import errors
 from bleep.core.errors import map_dbus_error, BLEEPError
 from bleep.core.error_handling import BlueZErrorHandler
+from bleep.dbuslayer.bus import get_bus as _get_bus, uses_private_bus as _uses_private_bus
 from bleep.dbuslayer.service import Service
 from bleep.dbuslayer.characteristic import Characteristic
 from bleep.dbuslayer.descriptor import Descriptor
@@ -68,7 +73,13 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         self.mac_address = mac_address.upper()
         self.adapter_name = adapter_name
 
-        self._bus = dbus.SystemBus()
+        # Per-thread connection: worker threads must not issue blocking calls on
+        # the loop-attached shared bus (see bleep.dbuslayer.bus).  Signal
+        # delivery is unaffected — matches stay on the shared bus.
+        self._bus = _get_bus()
+        # When True this device's proxies belong to the building thread, so the
+        # loop thread must not drive GATT through them from a signal handler.
+        self._bus_is_private = _uses_private_bus()
         self._object_manager = dbus.Interface(
             self._bus.get_object(BLUEZ_SERVICE_NAME, "/"), DBUS_OM_IFACE
         )
@@ -256,7 +267,9 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                     with self._connection_state_lock:
                         self._last_connection_check = time.time()
                     print_and_log(
-                        f"[!] Device {self.mac_address} already connected, skipping connect attempt",
+                        f"[!] Device {self.mac_address} already connected, "
+                        f"skipping connect attempt "
+                        f"adapter={self.adapter_name} path={self._device_path}",
                         LOG__GENERAL
                     )
                     return True
@@ -375,7 +388,11 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                     self._dbus_health_issues = False
                     self._dbus_error_count = 0
 
-                print_and_log(f"[+] Connected to {self.mac_address}", LOG__GENERAL)
+                print_and_log(
+                    f"[+] Connected to {self.mac_address} "
+                    f"adapter={self.adapter_name} path={self._device_path}",
+                    LOG__GENERAL,
+                )
                 return True
 
             except dbus.exceptions.DBusException as e:
@@ -394,7 +411,8 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                                 self._connection_start_time = None
                                 self._last_connection_check = time.time()
                             print_and_log(
-                                f"[+] Device {self.mac_address} was already connected",
+                                f"[+] Device {self.mac_address} was already connected "
+                                f"adapter={self.adapter_name} path={self._device_path}",
                                 LOG__GENERAL
                             )
                             return True
@@ -436,6 +454,64 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             self._connection_start_time = None
         return False
 
+    def release(self) -> None:
+        """Unregister from signal routing and drop all D-Bus proxies / GATT data.
+
+        Why this exists
+        ---------------
+        ``__init__`` registers every instance with the global signals manager
+        (``_get_signals_manager().register_device(self)``), but
+        ``signals.unregister_device()`` had **no callers anywhere in the tree**
+        — so every device object ever constructed stayed pinned in
+        ``signals._devices`` for the life of the process, together with its
+        proxies and its whole resolved GATT tree.  That is the retention behind
+        the long-run memory growth recorded in ``docs/d-bus-reliability.md``.
+
+        This performs **local teardown only** (no D-Bus I/O), so it is safe to
+        call on a device that has already disconnected or gone out of range.
+        It does *not* disconnect the ACL — callers that want that should call
+        :meth:`disconnect` first.  Idempotent.
+        """
+        try:
+            _get_signals_manager().unregister_device(self)
+        except Exception:  # pragma: no cover - best-effort teardown
+            pass
+
+        if self._properties_signal is not None:
+            try:
+                self._properties_signal.remove()
+            except Exception:  # pragma: no cover - best-effort teardown
+                pass
+            self._properties_signal = None
+
+        monitor = getattr(self, "_reconnection_monitor", None)
+        if monitor is not None:
+            try:
+                monitor.stop_monitoring()
+            except Exception:  # pragma: no cover - best-effort teardown
+                pass
+            self._reconnection_monitor = None
+
+        for svc in self._services:
+            try:
+                svc.release()
+            except Exception:  # pragma: no cover - best-effort teardown
+                pass
+        self._services = []
+
+        # Resolved-GATT caches are the bulk of the retained bytes.
+        self.ble_device__mapping = {}
+        self.ble_device__handle_uuid_map = {}
+        self.ble_device__mine_mapping = {}
+        self.ble_device__permission_mapping = {}
+        self._landmine_map = {}
+        self._security_map = {}
+
+        self._object_manager = None
+        self._device_object = None
+        self._device_iface = None
+        self._props_iface = None
+
     def disconnect(self):
         """Disconnect from the device."""
         print_and_log(f"[*] Disconnecting from {self.mac_address}", LOG__USER)
@@ -464,6 +540,36 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                 LOG__DEBUG,
             )
             raise map_dbus_error(e)
+
+    # ------------------------------------------------------------------
+    # Bearer-specific connect/disconnect (BZ-16b) — experimental
+    # ------------------------------------------------------------------
+
+    def bearer_le_connect(self) -> bool:
+        """Connect only the LE bearer via ``Bearer.LE1.Connect()``."""
+        try:
+            bearer = dbus.Interface(
+                self._bus.get_object(BLUEZ_SERVICE_NAME, self._device_path),
+                BEARER_LE_INTERFACE,
+            )
+            bearer.Connect()
+            return True
+        except dbus.exceptions.DBusException as exc:
+            print_and_log(f"[-] Bearer.LE1.Connect failed: {exc}", LOG__DEBUG)
+            return False
+
+    def bearer_le_disconnect(self) -> bool:
+        """Disconnect only the LE bearer via ``Bearer.LE1.Disconnect()``."""
+        try:
+            bearer = dbus.Interface(
+                self._bus.get_object(BLUEZ_SERVICE_NAME, self._device_path),
+                BEARER_LE_INTERFACE,
+            )
+            bearer.Disconnect()
+            return True
+        except dbus.exceptions.DBusException as exc:
+            print_and_log(f"[-] Bearer.LE1.Disconnect failed: {exc}", LOG__DEBUG)
+            return False
 
     # ------------------------------------------------------------------
     # Properties & state helpers
@@ -599,25 +705,36 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         except dbus.exceptions.DBusException as e:
             raise map_dbus_error(e)
 
+    def _get_optional_property(self, name: str, interface: str = DEVICE_INTERFACE):
+        """Read an optional Device1 property, returning None when it is absent.
+
+        BlueZ raises ``UnknownObject`` when the device disappears mid-call and
+        ``InvalidArgs`` ("No such property 'X'") when the property is simply not
+        exposed for this peer (e.g. Icon/Appearance/Class on LE-only devices,
+        RSSI/TxPower once connected).  Both are expected for *optional* fields
+        and mapped to ``None`` so callers never crash on a missing value; any
+        other D-Bus error is mapped and re-raised.
+        """
+        try:
+            return self._props_iface.Get(interface, name)
+        except dbus.exceptions.DBusException as e:
+            mapped = map_dbus_error(e)
+            if mapped.code in (RESULT_ERR_UNKNOWN_OBJECT, RESULT_ERR_BAD_ARGS):
+                print_and_log(
+                    f"[DEBUG] Device1.{name} unavailable ({self._device_path}): "
+                    f"{e.get_dbus_name()}",
+                    LOG__DEBUG,
+                )
+                return None
+            raise mapped
+
     def get_alias(self) -> Optional[str]:
-        try:
-            return str(self._props_iface.Get(DEVICE_INTERFACE, "Alias"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the Alias
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
-        
+        val = self._get_optional_property("Alias")
+        return str(val) if val is not None else None
+
     def get_name(self) -> Optional[str]:
-        try:
-            return str(self._props_iface.Get(DEVICE_INTERFACE, "Name"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the Alias
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("Name")
+        return str(val) if val is not None else None
         
     def get_address(self) -> str:
         try:
@@ -642,14 +759,8 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             return None
         
     def get_device_icon(self) -> Optional[str]:
-        try:
-            return str(self._props_iface.Get(DEVICE_INTERFACE, "Icon"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the Icon
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("Icon")
+        return str(val) if val is not None else None
         
     def get_device_class(self) -> Optional[dbus.UInt32]:
         try:
@@ -679,74 +790,32 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             return None
         
     def get_device_appearance(self) -> Optional[dbus.UInt16]:
-        try:
-            return dbus.UInt16(self._props_iface.Get(DEVICE_INTERFACE, "Appearance"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the Appearance
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("Appearance")
+        return dbus.UInt16(val) if val is not None else None
         
     def get_uuids(self) -> Optional[list[str]]:
-        try:
-            return list(self._props_iface.Get(DEVICE_INTERFACE, "UUIDs"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the UUIDs
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("UUIDs")
+        return [str(u).strip().upper() for u in val] if val is not None else None
         
     def get_modalias(self) -> Optional[str]:
-        try:
-            return str(self._props_iface.Get(DEVICE_INTERFACE, "Modalias"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the Modalias
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("Modalias")
+        return str(val) if val is not None else None
         
     def get_rssi(self) -> Optional[int]:
-        try:
-            return int(self._props_iface.Get(DEVICE_INTERFACE, "RSSI"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the RSSI
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("RSSI")
+        return int(val) if val is not None else None
         
     def get_tx_power(self) -> Optional[int]:
-        try:
-            return int(self._props_iface.Get(DEVICE_INTERFACE, "TxPower"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the TxPower
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("TxPower")
+        return int(val) if val is not None else None
         
     def get_manufacturer_data(self) -> Optional[dict[str, bytes]]:
-        try:
-            return dict(self._props_iface.Get(DEVICE_INTERFACE, "ManufacturerData"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the ManufacturerData
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("ManufacturerData")
+        return dict(val) if val is not None else None
         
     def get_service_data(self) -> Optional[dict[str, bytes]]:
-        try:
-            return dict(self._props_iface.Get(DEVICE_INTERFACE, "ServiceData"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the ServiceData
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("ServiceData")
+        return dict(val) if val is not None else None
             
     def get_services(self) -> List[str]:
         """
@@ -775,8 +844,9 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         if not self._services:
             _ = self.services_resolved()
             
+        target = service_uuid.strip().upper() if isinstance(service_uuid, str) else service_uuid
         for service in self._services:
-            if service.uuid == service_uuid:
+            if service.uuid == target:
                 return service
         return None
         
@@ -817,44 +887,20 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                 
         return []
     def get_advertising_flags(self) -> Optional[list[bytes]]:
-        try:
-            return dbus.UInt16(self._props_iface.Get(DEVICE_INTERFACE, "AdvertisingFlags"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the AdvertisingFlags
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("AdvertisingFlags")
+        return dbus.UInt16(val) if val is not None else None
         
     def get_advertising_data(self) -> Optional[dict[str, bytes]]:
-        try:
-            return dict(self._props_iface.Get(DEVICE_INTERFACE, "AdvertisingData"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the AdvertisingData
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("AdvertisingData")
+        return dict(val) if val is not None else None
         
     def get_device_sets(self) -> Optional[list[object, dict]]:
-        try:
-            return list(self._props_iface.Get(DEVICE_INTERFACE, "Sets"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the DeviceSets
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("Sets")
+        return list(val) if val is not None else None
         
     def get_preferred_bearer(self) -> Optional[str]:
-        try:
-            return str(self._props_iface.Get(DEVICE_INTERFACE, "PreferredBearer"))
-        except dbus.exceptions.DBusException as e:
-            # BlueZ sometimes deletes the object before we grab the PreferredBearer
-            mapped = map_dbus_error(e)
-            if mapped.code == RESULT_ERR_UNKNOWN_OBJECT:
-                return None
-            raise mapped
+        val = self._get_optional_property("PreferredBearer")
+        return str(val) if val is not None else None
         
     def get_manufacturer(self) -> Optional[str]:
         # Note: Can only be extracted IF the manufacturer data exists
@@ -913,7 +959,7 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             service_props = dbus.Interface(service_obj, DBUS_PROPERTIES)
             
             # Get service properties
-            uuid = str(service_props.Get(GATT_SERVICE_INTERFACE, "UUID"))
+            uuid = str(service_props.Get(GATT_SERVICE_INTERFACE, "UUID")).strip().upper()
             primary = bool(service_props.Get(GATT_SERVICE_INTERFACE, "Primary"))
             
             # Create Service object
@@ -992,7 +1038,9 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         perm_cat: str | None = None
         mine_cat: str | None = None
 
-        if _C.RESULT_ERR_READ_NOT_PERMITTED in err_list:
+        if _C.RESULT_ERR_INSUFFICIENT_ENCRYPTION in err_list:
+            perm_cat = "requires_encryption"
+        elif _C.RESULT_ERR_READ_NOT_PERMITTED in err_list:
             perm_cat = "read_not_permitted"
         elif _C.RESULT_ERR_NOT_AUTHORIZED in err_list:
             perm_cat = "requires_authentication"
@@ -1062,15 +1110,7 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         """
         from bleep.bt_ref import constants as _C
         from bleep.ble_ops.common.conversion import convert__hex_to_ascii
-
-        _ERR_MAP = {
-            "org.bluez.Error.NotPermitted": _C.RESULT_ERR_READ_NOT_PERMITTED,
-            "org.bluez.Error.NotAuthorized": _C.RESULT_ERR_NOT_AUTHORIZED,
-            "org.bluez.Error.NotSupported": _C.RESULT_ERR_NOT_SUPPORTED,
-            "org.bluez.Error.NotConnected": _C.RESULT_ERR_NOT_CONNECTED,
-            "org.freedesktop.DBus.Error.NoReply": _C.RESULT_ERR_NO_REPLY,
-            "org.bluez.Error.InProgress": _C.RESULT_ERR_ACTION_IN_PROGRESS,
-        }
+        from bleep.core.error_handling import classify_gatt_read_error
 
         self.ble_device__mine_mapping = {"in_review": {"uncategorized": []}}
         self.ble_device__permission_mapping = {"in_review": {"uncategorized": []}}
@@ -1151,10 +1191,7 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                                 char_data["raw"] = list(value)
                         except dbus.exceptions.DBusException as exc:
                             char_data["value"] = None
-                            mapped = _ERR_MAP.get(
-                                exc.get_dbus_name(),
-                                _C.RESULT_ERR_UNKNOWN_CONNECT_FAILURE,
-                            )
+                            mapped = classify_gatt_read_error(exc)
                             agg_errors.setdefault(char.uuid, []).append(mapped)
 
                     # Read descriptors
@@ -1676,7 +1713,21 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             if changed["ServicesResolved"]:
                 print_and_log(f"[+] Services resolved for {self.mac_address}", LOG__DEBUG)
                 if not self._services:
-                    self.services_resolved()
+                    if self._bus_is_private:
+                        # This handler runs on the loop thread.  Driving GATT
+                        # here issues a storm of blocking calls from inside the
+                        # loop's own dispatch, against a connection another
+                        # thread owns.  The worker polls is_services_resolved()
+                        # and enumerates on its own thread instead.  See
+                        # docs/mainloop_architecture.md for why the loop
+                        # thread is the hazard, not the connection.
+                        print_and_log(
+                            f"[DEBUG] Deferring services_resolved for "
+                            f"{self.mac_address} to its owning thread",
+                            LOG__DEBUG,
+                        )
+                    else:
+                        self.services_resolved()
 
     def _detach_property_signal(self):
         if self._properties_signal is not None:
@@ -1737,6 +1788,14 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         self._detach_property_signal()
 
     # Disconnection signalling ---------------------------------------------
+    def on_disconnected(self, reason: str, message: str) -> None:
+        """Called by signals subsystem with disconnect reason (BZ-8f)."""
+        human = f" ({message})" if message else ""
+        print_and_log(
+            f"[*] Disconnected from {self.mac_address}: {reason}{human}",
+            LOG__GENERAL,
+        )
+
     def disconnect_succeeded(self):
         print_and_log(f"[*] Disconnected from {self.mac_address}", LOG__GENERAL)
         self._services.clear()
@@ -1777,18 +1836,18 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         print_and_log(f"[DEBUG] Looking for service with UUID targets: {canonical_targets}", LOG__DEBUG)
         
         # Debug log all available services
-        service_uuids = [svc.uuid.replace("-", "").lower() for svc in self._services]
+        service_uuids = [svc.uuid.replace("-", "").upper() for svc in self._services]
         print_and_log(f"[DEBUG] Available services: {service_uuids}", LOG__DEBUG)
 
         # First try exact matches
         for svc in self._services:
-            su = svc.uuid.replace("-", "").lower()
+            su = svc.uuid.replace("-", "").upper()
             if su in canonical_targets:
                 return svc
         
         # Then try partial matches for short UUIDs
         for svc in self._services:
-            su = svc.uuid.replace("-", "").lower()
+            su = svc.uuid.replace("-", "").upper()
             # Check if any of our short UUID forms match
             for target in canonical_targets:
                 if len(target) == 4:  # This is a short UUID
@@ -1816,14 +1875,14 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         # First try exact matches
         for svc in self._services:
             for char in svc.characteristics:
-                cu = char.uuid.replace("-", "").lower()
+                cu = char.uuid.replace("-", "").upper()
                 if cu in canonical_targets:
                     return char
         
         # Then try partial matches for short UUIDs
         for svc in self._services:
             for char in svc.characteristics:
-                cu = char.uuid.replace("-", "").lower()
+                cu = char.uuid.replace("-", "").upper()
                 # Check if any of our short UUID forms match
                 for target in canonical_targets:
                     if len(target) == 4:  # This is a short UUID
@@ -2249,7 +2308,7 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         uuids = self.get_uuids()
         if not uuids:
             return False
-        return bool(AUDIO_SERVICE_UUIDS.intersection(u.lower() for u in uuids))
+        return bool(AUDIO_SERVICE_UUIDS.intersection(u.upper() for u in uuids))
 
     def get_media_uuid_names(self) -> list:
         """Return human-readable names for advertised audio/media UUIDs."""
@@ -2258,10 +2317,46 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
         if not uuids:
             return []
         return [
-            AUDIO_PROFILE_NAMES.get(u.lower(), u)
+            AUDIO_PROFILE_NAMES.get(u.upper(), u)
             for u in uuids
-            if u.lower() in AUDIO_SERVICE_UUIDS
+            if u.upper() in AUDIO_SERVICE_UUIDS
         ]
+
+    # ---------------------------------------------------------------------
+    # Network (PAN) capability — dual-mode devices may expose Network1
+    # ---------------------------------------------------------------------
+    def get_network_roles(self) -> list:
+        """Return advertised PAN role labels (``PANU``/``NAP``/``GN``).
+
+        Relevant for dual-mode devices that carry PAN over the BR/EDR bearer.
+        Returns an empty list on error.
+        """
+        from bleep.ble_ops.classic.pan import network_roles_from_uuids
+        return network_roles_from_uuids(self.get_uuids())
+
+    def has_network_uuids(self) -> bool:
+        """True if the device advertises a PAN service UUID (PANU/NAP/GN)."""
+        return bool(self.get_network_roles())
+
+    def get_network_status(self):
+        """Return the ``org.bluez.Network1`` property snapshot, or ``None``."""
+        try:
+            raw = dict(self._props_iface.GetAll(NETWORK_INTERFACE))
+        except dbus.exceptions.DBusException:
+            return None
+        return {
+            "connected": bool(raw.get("Connected", False)),
+            "interface": str(raw["Interface"]) if raw.get("Interface") else None,
+            "uuid": str(raw["UUID"]) if raw.get("UUID") else None,
+        }
+
+    def has_network_interface(self) -> bool:
+        """True if the device object exposes the ``Network1`` interface."""
+        return self.get_network_status() is not None
+
+    def is_network_device(self) -> bool:
+        """True if the device has PAN capability (Network1 iface or PAN UUIDs)."""
+        return self.has_network_interface() or self.has_network_uuids()
 
     def play_media(self) -> bool:
         """Start media playback.
@@ -2601,10 +2696,11 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
                     
                 uuids = self._props_iface.Get(DEVICE_INTERFACE, "UUIDs")
                 for uuid in uuids:
-                    if str(uuid).lower() == "00001827-0000-1000-8000-00805f9b34fb":  # Mesh Provisioning
+                    u = str(uuid).strip().upper()
+                    if u == "00001827-0000-1000-8000-00805F9B34FB":  # Mesh Provisioning
                         result["is_mesh_device"] = True
                         break
-                    if str(uuid).lower() == "00001828-0000-1000-8000-00805f9b34fb":  # Mesh Proxy
+                    if u == "00001828-0000-1000-8000-00805F9B34FB":  # Mesh Proxy
                         result["is_mesh_device"] = True
                         break
             except Exception as e:
@@ -2694,12 +2790,52 @@ class system_dbus__bluez_device__low_energy:  # noqa: N802 – preserve legacy n
             info["blocked"] = bool(self._props_iface.Get(DEVICE_INTERFACE, "Blocked"))
         except (dbus.exceptions.DBusException, KeyError):
             info["blocked"] = None
-            
+
+        # BZ-14a: AdminPolicyStatus1.IsAffectedByPolicy (experimental)
+        try:
+            info["is_affected_by_policy"] = bool(
+                self._props_iface.Get(ADMIN_POLICY_STATUS_INTERFACE, "IsAffectedByPolicy")
+            )
+        except (dbus.exceptions.DBusException, KeyError):
+            info["is_affected_by_policy"] = None
+
+        # BZ-16a: Bearer.LE1 per-transport properties (experimental)
+        bearer_le: dict[str, Any] = {}
+        try:
+            bearer_le["paired"] = bool(
+                self._props_iface.Get(BEARER_LE_INTERFACE, "Paired")
+            )
+            bearer_le["bonded"] = bool(
+                self._props_iface.Get(BEARER_LE_INTERFACE, "Bonded")
+            )
+            bearer_le["connected"] = bool(
+                self._props_iface.Get(BEARER_LE_INTERFACE, "Connected")
+            )
+        except (dbus.exceptions.DBusException, KeyError):
+            bearer_le = None
+        info["bearer_le"] = bearer_le
+
         try:
             info["services_count"] = len(self.services_resolved(skip_device_type_check=True))
         except Exception:
             info["services_count"] = 0
-            
+
+        # Network (PAN) capability — additive key; never raises. Relevant for
+        # dual-mode devices carrying PAN over the BR/EDR bearer.
+        try:
+            roles = self.get_network_roles()
+            status = self.get_network_status()
+            if roles or status is not None:
+                info["network"] = {
+                    "roles": roles,
+                    "has_interface": status is not None,
+                    "status": status,
+                }
+            else:
+                info["network"] = None
+        except Exception:  # noqa: BLE001 – capability probe must never break info
+            info["network"] = None
+
         return info
 
 # Legacy device_address property implementation

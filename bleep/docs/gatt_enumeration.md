@@ -1,11 +1,11 @@
 # GATT Enumeration Commands
 
-BLEEP provides two CLI commands for enumerating a BLE device's GATT database after connecting: **`gatt-enum`** and **`enum-scan`**.  They share the same connection and service-discovery pipeline (`connect_and_enumerate__bluetooth__low_energy` in `bleep/ble_ops/connect.py`) but serve different purposes.
+BLEEP provides two CLI commands for enumerating a BLE device's GATT database after connecting: **`gatt-enum`** and **`enum-scan`**.  They share the same connection and service-discovery pipeline (`connect_and_enumerate__bluetooth__low_energy` in `bleep/ble_ops/le/connect.py`) but serve different purposes.
 
 - **`gatt-enum`** — Single-pass GATT read with optional deep-retry mode.
 - **`enum-scan`** — Multi-variant enumeration engine layering increasingly aggressive techniques on top of the base enumeration.
 
-Both commands output a human-readable tree via `format_gatt_tree()` (`bleep/ble_ops/conversion.py`) with UUID name resolution, hex/ASCII values, and permission/landmine map summaries.  When device-level D-Bus properties are available, a **Device Information** block is prepended showing ManufacturerData (key as hex+decimal, value as Hex/ASCII), ServiceData (UUID with resolved name), Class (decoded), Appearance, RSSI, TxPower, Modalias, Bonded, WakeAllowed, Icon, AdvertisingFlags, AdvertisingData, Battery1 (Percentage/Source), Input1 (ReconnectMode), and advertised UUIDs.  Non-printable bytes in ASCII output are rendered as the Unicode replacement character (U+FFFD).
+Both commands output a human-readable tree via `format_gatt_tree()` (`bleep/ble_ops/common/conversion.py`) with UUID name resolution, hex/ASCII values, and permission/landmine map summaries.  When device-level D-Bus properties are available, a **Device Information** block is prepended showing ManufacturerData (key as hex+decimal, value as Hex/ASCII), ServiceData (UUID with resolved name), Class (decoded), Appearance, RSSI, TxPower, Modalias, Bonded, WakeAllowed, Icon, AdvertisingFlags, AdvertisingData, Battery1 (Percentage/Source), Input1 (ReconnectMode), and advertised UUIDs.  Non-printable bytes in ASCII output are rendered as the Unicode replacement character (U+FFFD).
 
 The GATT tree itself now displays additional per-object properties:
 
@@ -22,7 +22,7 @@ See [BlueZ D-Bus Interface Property Reference](bluez_interface_properties.md) fo
 ### Synopsis
 
 ```bash
-bleep gatt-enum <ADDRESS> [--deep] [--report]
+bleep gatt-enum <ADDRESS> [--deep] [--report] [--correlate] [--adapter hciN]
 ```
 
 ### Arguments
@@ -32,6 +32,8 @@ bleep gatt-enum <ADDRESS> [--deep] [--report]
 | `ADDRESS` | Yes | Target Bluetooth MAC address (e.g. `CC:50:E3:B6:BC:A6`) |
 | `--deep` | No | Perform deep enumeration with retry reads and descriptor probing |
 | `--report` | No | Print landmine & security reports as JSON instead of the GATT tree |
+| `--correlate` | No | If the target resolves no GATT (e.g. a dual-mode device whose GATT lives under an LE resolvable-private address), heuristically correlate by Name/Icon/Class to a candidate LE address and retry. Opt-in and non-merging: presented as a hint, never auto-merged (`cli/parsers/gatt.py` ~11-15; handler `modes/gatt_enum.py` ~65-107). |
+| `--adapter` | No | BlueZ controller (default `hci0`). Device1 is constructed on this adapter. |
 
 ### Standard Mode (no flags)
 
@@ -45,7 +47,7 @@ Key behaviours:
 - On read failure, the error is classified into permission/landmine maps but no retry occurs.
 - Results are persisted to the observation database (services and characteristics upserted).
 
-Implementation path: `cli.py` → `connect_and_enumerate__bluetooth__low_energy(deep_enumeration=False)` → `device.services_resolved(deep=False)` → `_enumerate_gatt_values(deep=False)` in `bleep/dbuslayer/device_le.py`.
+Implementation path: `bleep/modes/gatt_enum.py` (`run()`) → `connect_and_enumerate__bluetooth__low_energy(deep_enumeration=False)` → `device.services_resolved(deep=False)` → `_enumerate_gatt_values(deep=False)` in `bleep/dbuslayer/device_le.py`.
 
 ### Deep Mode (`--deep`)
 
@@ -117,7 +119,7 @@ bleep enum-scan <ADDRESS> [--variant passive|naggy|pokey|brute] [options]
 | `--payload-file` | No | — | Path to a binary payload file |
 | `--force` | No | — | Ignore landmine/permission maps for brute writes |
 | `--verify` | No | — | Read back after each brute write to detect changes |
-| `--controlled` | No | — | Use `EnumerationController` for structured multi-attempt enumeration with error annotations |
+| `--adapter` | No | `hci0` | BlueZ controller. Device1 is constructed on this adapter (F5b / Phase A). Logs `adapter=hciN path=/org/bluez/hciN/dev_…` after preflight (including skip-connect). |
 
 ### Variant Details
 
@@ -125,7 +127,7 @@ bleep enum-scan <ADDRESS> [--variant passive|naggy|pokey|brute] [options]
 
 Functionally equivalent to `gatt-enum` without `--deep`.  Connects, enumerates the GATT database with single reads, and returns.
 
-Implementation: `bleep/ble_ops/scan.py::passive_enum()` → `_base_enum()` → `connect_and_enumerate__bluetooth__low_energy(deep_enumeration=False)`.
+Implementation: `bleep/ble_ops/le/scan.py::passive_enum()` → `_base_enum()` → `connect_and_enumerate__bluetooth__low_energy(deep_enumeration=False)`.
 
 ```bash
 bleep enum-scan CC:50:E3:B6:BC:A6
@@ -142,7 +144,7 @@ Returns additional data:
 
 Use case: identify transient or dynamic characteristics (counters, timestamps, sensor data).
 
-Implementation: `bleep/ble_ops/scan.py::naggy_enum()`.
+Implementation: `bleep/ble_ops/le/scan.py::naggy_enum()`.
 
 ```bash
 bleep enum-scan CC:50:E3:B6:BC:A6 --variant naggy
@@ -154,7 +156,7 @@ Performs **N rounds** (default 3, configurable via `--rounds`) of enumeration.  
 
 Use case: observe device reactions to minimal writes; detect state-changing characteristics without heavy fuzzing.
 
-Implementation: `bleep/ble_ops/scan.py::pokey_enum()`.
+Implementation: `bleep/ble_ops/le/scan.py::pokey_enum()`.
 
 ```bash
 bleep enum-scan CC:50:E3:B6:BC:A6 --variant pokey
@@ -167,7 +169,7 @@ bleep enum-scan CC:50:E3:B6:BC:A6 --variant pokey --rounds 5
 
 By default, brute mode **respects landmine and permission maps** — it refuses writes to characteristics flagged as dangerous.  Use `--force` to override this safety check.
 
-Implementation: `bleep/ble_ops/scan.py::brute_enum()` → `brute_write_range()` or `multi_write_all()`.
+Implementation: `bleep/ble_ops/le/scan.py::brute_enum()` → `brute_write_range()` or `multi_write_all()`.
 
 **Payload sources** (combinable):
 
@@ -203,20 +205,32 @@ bleep enum-scan CC:50:E3:B6:BC:A6 --variant brute \
   --verify
 ```
 
-### Controlled Mode (`--controlled`)
+### Enumeration Controller (retry + annotations)
 
-When `--controlled` is passed, `enum-scan` uses the `EnumerationController` (`bleep/ble_ops/enum_controller.py`) instead of the standard dispatch.  This provides:
+All `enum-scan` invocations route through the `EnumerationController` (`bleep/ble_ops/le/enum_controller.py`); it is always active.  (The former `--controlled` flag has been **removed** — there is no longer an opt-in/opt-out for the controller.)
+
+The controller provides:
 
 - Structured multi-attempt enumeration (up to 3 attempts by default)
-- Automatic reconnection handling via `ReconnectionMonitor`
-- Error annotations with typed error classifications
-- JSON-formatted output of the `EnumerationResult` data
+- Error annotations with typed error classifications (`ConnectionAnnotation`)
+- Variant-specific post-connect logic: `naggy` runs multi-read, `pokey` runs write probes, `brute` runs payload fuzzing
+- Tree-formatted output (same as before) plus annotation summaries on stderr when retries occur
 
-The `--controlled` flag works with any `--variant` value — the variant name is passed as the `mode` parameter to `EnumerationController.enumerate()`.
+The public entry point is `EnumerationController.enumerate(mode, *, timeout=None, max_attempts=None)`:
+
+- `timeout` (int, optional) — per-phase timeout in seconds applied to the base-connect path (`timeout_connect` / `timeout_services`).  When omitted, the connect defaults apply.
+- `max_attempts` (int, optional) — overrides the default retry cap (`MAX_ATTEMPTS` = 3) when set to a positive value.
+
+When a connection attempt fails, the controller classifies the error, annotates it, and retries (up to the maximum).  The annotation summary is printed to stderr after the GATT tree output so it does not interfere with pipe-friendly usage.
+
+> **The effective attempt budget depends on the error class** (`todo_tracker.md` todo_tracker.md B.19-B.23).  `_handle_error` gives up at **2** attempts for authorization-class and otherwise-unclassified errors — a third identical auth failure is waste — while connection, timeout and `ServicesNotResolvedError` failures use all **3**.  The cap is therefore an upper bound, not a guarantee.
+
+> **Deep enumeration requires the GLib MainLoop.**  Notifications and indications are signal-delivered, so `StartNotify` delivers nothing in a loop-free process.  `bleep survey --no-mainloop` is safe for *passive* enumeration only; see [survey_mode.md](survey_mode.md#loop-free-operation---no-mainloop) for the trade and the heap-abort root cause it avoids.
 
 ```bash
-bleep enum-scan CC:50:E3:B6:BC:A6 --controlled
-bleep enum-scan CC:50:E3:B6:BC:A6 --variant naggy --controlled
+bleep enum-scan CC:50:E3:B6:BC:A6
+bleep enum-scan CC:50:E3:B6:BC:A6 --variant naggy
+bleep enum-scan CC:50:E3:B6:BC:A6 --variant pokey --rounds 5
 ```
 
 ---
@@ -232,9 +246,9 @@ bleep enum-scan CC:50:E3:B6:BC:A6 --variant naggy --controlled
 | Change detection | No | `naggy` detects value changes across rounds |
 | `--report` flag | Yes (landmine/security reports) | No |
 | `--deep` flag | Yes | No (all variants use `deep=False` internally) |
-| `--controlled` mode | No | Yes (`EnumerationController`) |
+| Retry + annotations | No | Yes (`EnumerationController`, always active) |
 | Brute-force writing | No | Yes (`--write-char`, `--range`, `--patterns`, `--payload-file`) |
-| DB persistence | Inline upsert in CLI handler | Via `_persist_mapping()` helper in `scan.py` |
+| DB persistence | Via `_persist_mapping()` helper in `scan.py` (called from `modes/gatt_enum.py`) | Via `_persist_mapping()` helper in `scan.py` |
 | Output extras | `device_name` in tree header | `changed_chars` highlighting in tree (naggy) |
 
 ### When to Use Which
@@ -274,7 +288,7 @@ module loaded.  Run `bleep --check-env` to verify audio tool availability.
 
 ## Output Format
 
-Both commands produce tree-formatted output via `format_gatt_tree()` (`bleep/ble_ops/conversion.py`).  The tree handles both the lowercase mapping format (standard/non-deep) and the uppercase format (deep).
+Both commands produce tree-formatted output via `format_gatt_tree()` (`bleep/ble_ops/common/conversion.py`).  The tree handles both the lowercase mapping format (standard/non-deep) and the uppercase format (deep).
 
 Example tree structure:
 
@@ -300,13 +314,58 @@ When `naggy` change detection flags characteristics, they are annotated with `�
 
 ## Database Persistence
 
-Both commands persist enumeration results to the BLEEP observation database (`bleep/core/observations.py`):
+Both commands persist enumeration results to the BLEEP observation database (`bleep/core/observations/`):
 
-- **`gatt-enum`**: The CLI handler (`cli.py`) explicitly iterates the mapping, calls `upsert_services()` and `upsert_characteristics()` with FK-defense kwargs (`mac`, `service_uuid`).  Skipped when `--report` is active.
-- **`enum-scan`**: Persistence is handled by `_persist_mapping()` in `bleep/ble_ops/scan.py`, which is called after all variants.
+- **`gatt-enum`**: The handler (`bleep/modes/gatt_enum.py`, `run()`) persists via `_scan_mod._persist_mapping()` (the shared helper from `bleep/ble_ops/le/scan.py`), after upserting the device record and (unless `--report`) storing security maps.  Skipped when `--report` is active.
+- **`enum-scan`**: Persistence is handled by the same `_persist_mapping()` in `bleep/ble_ops/le/scan.py`, which is called after all variants.
 
 UUIDs are normalised to uppercase at the database layer.  See [Observation Database](observation_db.md) for schema details.
 
 ---
 
-*Last updated: 2026-03-19*
+---
+
+## Recognized GATT Profiles (Deprecated BlueZ Plugin APIs)
+
+BlueZ removed D-Bus plugin interfaces for several Bluetooth SIG GATT profiles in version 5.48+ (`Thermometer1`, `HeartRate1`, `CyclingSpeed1`, `ProximityMonitor1`).  The underlying GATT services still exist on devices and are fully readable via BLEEP's standard GATT enumeration.  BLEEP now provides **profile-aware recognition and structured value interpretation** at the GATT level, giving better coverage than the old BlueZ plugins because it works on any BlueZ version.
+
+### Supported Profiles
+
+| Profile | Service UUID | Characteristics | Decoding |
+|---------|-------------|-----------------|----------|
+| **Health Thermometer** | `0x1809` | Temperature Measurement (`0x2A1C`), Temperature Type (`0x2A1D`), Intermediate Temperature (`0x2A1E`), Measurement Interval (`0x2A21`) | IEEE 11073 FLOAT → °C/°F, type enum, interval seconds |
+| **Heart Rate** | `0x180D` | Heart Rate Measurement (`0x2A37`), Body Sensor Location (`0x2A38`) | BPM (uint8/uint16), sensor contact, energy, RR intervals |
+| **Cycling Speed and Cadence** | `0x1816` | CSC Measurement (`0x2A5B`), CSC Feature (`0x2A5C`), Sensor Location (`0x2A5D`) | Wheel/crank revolutions + timestamps, feature bitmask |
+| **Immediate Alert** (Proximity) | `0x1802` | Alert Level (`0x2A06`) | Enum: No Alert / Mild / High |
+| **Link Loss** (Proximity) | `0x1803` | Alert Level (`0x2A06`) | Enum: No Alert / Mild / High |
+| **Tx Power** (Proximity) | `0x1804` | Tx Power Level (`0x2A07`) | Signed int8 in dBm |
+
+### How Decoding Works
+
+When BLEEP reads a characteristic value and the characteristic UUID matches a known profile decoder, a **`Decoded:`** line is appended below the Hex/ASCII output in the GATT tree:
+
+```
+├── Char: 00002a37-0000-1000-8000-00805f9b34fb (Handle: 0x000e)
+│     ↳ Heart Rate Measurement
+│     Properties: notify
+│     Hex: 06 48
+│     ASCII: .H
+│     Decoded: 72 bpm, sensor contact: detected
+```
+
+Decoding is applied in:
+
+- **`format_gatt_tree()`** — `gatt-enum`, `enum-scan`, `connect` output
+- **`bleep debug` interactive reads** — `read <uuid>` command shows `Value (Profile):` line
+- **`bleep explore`** — verbose mode shows `Decoded:` line and stores `decoded` field
+- **AoI analysis** — `_analyse_characteristic()` populates `decoded_value` field when raw bytes are available
+
+### Implementation
+
+- **Constants**: `bleep/bt_ref/constants.py` — `DEPRECATED_GATT_PROFILE_SVCS`, `DEPRECATED_GATT_PROFILE_NAMES`, `DEPRECATED_GATT_CHR_TO_SVC`, and individual UUID constants
+- **Decoders**: `bleep/ble_ops/common/gatt_profile_decode.py` — per-characteristic decoders with `decode_characteristic_value()` facade
+- **Display**: `bleep/ble_ops/common/conversion.py` (`format_gatt_tree`), `bleep/modes/debug_gatt.py`, `bleep/modes/exploration.py`, `bleep/analysis/aoi_analyser.py`
+
+---
+
+*Last updated: 2026-09-13 (Corrected gatt-enum implementation/persistence path to `bleep/modes/gatt_enum.py` via `_scan_mod._persist_mapping()`; documented the `--correlate` flag.)*

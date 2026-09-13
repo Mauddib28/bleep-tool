@@ -1,5 +1,7 @@
 # Agent Mode
 
+_Last updated: 2026-09-13 (v3.0.0) — clarified that `--adapter` is a no-op in agent mode._
+
 The `bleep agent` mode provides a command-line interface for Bluetooth pairing operations. This document covers the usage and options of this mode.
 
 ## Overview
@@ -38,8 +40,10 @@ The `--cap` option sets the agent's capabilities:
 - `--mode=MODE`: Agent type (simple, interactive, enhanced, pairing).
 - `--cap=CAP`: Agent capabilities (none, display, yesno, keyboard, kbdisp).
 - `--default`: Register as the default agent.
-- `--auto-accept`: Auto-accept pairing requests (for enhanced and pairing agents).
+- `--no-auto-accept`: Prompt for pairing confirmation instead of auto-accepting (for enhanced and pairing agents). Auto-accept is the default behaviour.
 - `--timeout=SECONDS`: Timeout for pairing operations (default: 30 seconds).
+- `--status`: Show current agent/pairing status and exit.
+- `--adapter=NAME`: **Currently a no-op in agent mode.** The flag is accepted by the top-level parser (`cli/parsers/pairing.py`), but `bleep/modes/agent.py` never reads it — device lookup for `--pair`/`--trust`/`--untrust` always resolves against the default adapter. Use `bleep pair --adapter hciN` if you need to target a specific controller.
 
 ### Trust Management
 

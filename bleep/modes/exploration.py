@@ -9,8 +9,11 @@ from __future__ import annotations
 import sys
 import argparse
 import json
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, TYPE_CHECKING
 from datetime import datetime
+
+if TYPE_CHECKING:
+    from bleep.core.output import OutputContext
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 
@@ -21,6 +24,8 @@ from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 
 # Scan-mode constants are lightweight (str values) — safe to import eagerly so
 # they can be used in the parse/mode-map helpers at the top of the module.
+__all__ = ["run"]
+
 from bleep.ble_ops.le.scan_modes import (
     PASSIVE_MODE,
     NAGGY_MODE,
@@ -32,6 +37,15 @@ try:
     from bleep.core import observations as _obs
 except Exception:  # noqa: BLE001
     _obs = None
+
+
+def _try_profile_decode(char_uuid: str, value: bytes) -> str | None:
+    """Try profile-specific decode for known GATT characteristics."""
+    try:
+        from bleep.ble_ops.common.gatt_profile_decode import decode_characteristic_value
+        return decode_characteristic_value(char_uuid, value)
+    except Exception:
+        return None
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -165,8 +179,13 @@ def print_service_info(device: LEDevice, verbose: bool = False) -> Dict[str, Any
                     hex_value = value.hex()
                     ascii_value = "".join(chr(b) if 32 <= b <= 126 else "." for b in value)
                     char_info["value"] = {"hex": hex_value, "ascii": ascii_value}
+                    decoded = _try_profile_decode(char.uuid, value)
+                    if decoded:
+                        char_info["decoded"] = decoded
                     if should_print and verbose:
                         print_and_log(f"      Value: {hex_value} (ASCII: {ascii_value})", LOG__GENERAL)
+                        if decoded:
+                            print_and_log(f"      Decoded: {decoded}", LOG__GENERAL)
                 except Exception as e:
                     char_info["read_error"] = str(e)
                     if should_print and verbose:
@@ -361,67 +380,105 @@ def save_to_database(
                         except Exception:
                             pass
 
+        # P2-B6: Persist security maps (landmine + permission)
+        mappings = data.get("mappings", {})
+        landmine_map = mappings.get("landmine_map")
+        if landmine_map or perm_map:
+            try:
+                _obs.store_security_maps(
+                    mac,
+                    landmine_map=landmine_map or None,
+                    permission_map=perm_map or None,
+                    source="exploration",
+                )
+            except Exception:
+                pass
+
         print_and_log(f"[+] Saved exploration data to database for device {mac}", LOG__GENERAL)
     except Exception as e:
         print_and_log(f"[-] Error saving to database: {e}", LOG__GENERAL)
 
 
-def main() -> int:
-    """Main function for exploration mode."""
+def run(args: argparse.Namespace, output: OutputContext | None = None) -> int:
+    """Execute explore mode with parsed args and optional OutputContext.
+
+    Accepts either the cli.py global namespace (``args.mac``,
+    ``args.connection_mode``) or the exploration-native namespace
+    (``args.device``, ``args.mode``).  Eliminates the need for sys.argv
+    mutation in cli.py.
+    """
+    from bleep.core.output import OutputContext
+    from bleep.core.log import set_output_mode
     from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as Adapter
     from bleep.ble_ops.le.scan_modes import scan_and_connect
 
-    args = parse_arguments()
-    
-    # Get the output file if specified
-    output_file = args.out or args.dump_json
-    
-    # Check if adapter is ready
-    adapter = Adapter()
+    if output is None:
+        output = OutputContext()
+
+    set_output_mode(output.mode)
+
+    # Normalize: cli.py uses 'mac'/'connection_mode', own parser uses 'device'/'mode'
+    target_mac = getattr(args, "device", None) or getattr(args, "mac", None)
+    conn_mode = getattr(args, "connection_mode", None) or getattr(args, "mode", "passive")
+    timeout = getattr(args, "timeout", 10)
+    retries = getattr(args, "retries", 3)
+    verbose = getattr(args, "verbose", False)
+    output_file = getattr(args, "out", None) or getattr(args, "dump_json", None)
+
+    if not target_mac:
+        print_and_log("[-] No target MAC address specified", LOG__GENERAL)
+        return 1
+
+    adapter_name = getattr(args, "adapter", None)
+    from bleep.core.preflight import require_adapter
+    if adapter_name and not require_adapter(adapter_name):
+        return 1
+
+    adapter = Adapter(adapter_name) if adapter_name else Adapter()
     if not adapter.is_ready():
         print_and_log("[-] Bluetooth adapter not ready or powered off", LOG__GENERAL)
         print_and_log("    Please turn on Bluetooth and try again", LOG__GENERAL)
         return 1
-    
-    # Convert mode string to constant
-    mode = mode_to_constant(args.mode)
-    
-    # Prepare additional arguments based on the mode
-    kwargs = {}
+
+    mode = mode_to_constant(conn_mode)
+
+    kwargs: dict[str, Any] = {}
     if mode == NAGGY_MODE:
-        kwargs["max_retries"] = args.retries
+        kwargs["max_retries"] = retries
     elif mode == BRUTEFORCE_MODE:
         try:
-            kwargs["start_handle"] = int(args.start_handle, 0)  # Parse hex or decimal
-            kwargs["end_handle"] = int(args.end_handle, 0)
+            kwargs["start_handle"] = int(getattr(args, "start_handle", "0x0001"), 0)
+            kwargs["end_handle"] = int(getattr(args, "end_handle", "0x00FF"), 0)
         except ValueError:
             print_and_log("[-] Invalid handle values. Use format 0x0001 or decimal", LOG__GENERAL)
             return 1
-    
-    # Connect to the device using the selected mode
+
     try:
-        print_and_log(f"[*] Starting exploration with {args.timeout}s timeout in {args.mode} mode", LOG__GENERAL)
+        output.emit_progress(f"[*] Starting exploration with {timeout}s timeout in {conn_mode} mode")
 
         if mode == PASSIVE_MODE:
-            kwargs["timeout"] = args.timeout
+            kwargs["timeout"] = timeout
+        if adapter_name:
+            kwargs["adapter_name"] = adapter_name
 
         device, mapping, landmine_map, perm_map = scan_and_connect(
-            args.device,
+            target_mac,
             mode=mode,
             **kwargs
         )
 
-        # Collect Device1 D-Bus properties for DB enrichment and display
         try:
             from bleep.ble_ops.le.scan import _collect_device_props
             device_props = _collect_device_props(device)
         except Exception:
             device_props = {}
 
-        result = print_service_info(device, args.verbose)
+        result = print_service_info(device, verbose and output.is_terminal)
 
-        # Always save to database with full context
         save_to_database(result, mapping=mapping, device_props=device_props)
+
+        if output.is_json or output.is_quiet:
+            output.emit_result(result)
 
         if output_file:
             save_to_json(result, output_file)
@@ -430,6 +487,12 @@ def main() -> int:
     except Exception as e:
         print_and_log(f"[-] Error: {e}", LOG__GENERAL)
         return 1
+
+
+def main() -> int:
+    """Run exploration mode (backward-compatible wrapper)."""
+    args = parse_arguments()
+    return run(args)
 
 
 if __name__ == "__main__":

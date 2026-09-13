@@ -74,8 +74,21 @@ def device_address_to_path(bdaddr, adapter_path):
     return path
 
 
-def get_name_from_uuid(uuid, uuid_class=None):
-    # Debugging Key Type used for UUID
+def get_name_from_uuid(uuid, uuid_class=None, *, allow_observed=False):
+    """Resolve a UUID to a human-readable name via the authoritative tiers.
+
+    Tiers (in order): custom ``constants.UUID_NAMES`` → SIG GATT tables
+    (service/characteristic/descriptor/member/SDO/service-class) → SIG Mesh model
+    UUIDs. All are authoritative and never changed by observed data.
+
+    ``allow_observed`` (keyword-only, default ``False``) adds a *final,
+    non-authoritative* tier: when every authoritative tier misses, the observed
+    catalogue is consulted and a ``"Unknown (seen as: …)"`` hint is returned if
+    the UUID has been recorded under a name on a real device. It is opt-in so the
+    default resolution output is unchanged (``"Unknown"``); only explicit callers
+    (e.g. ``db uuids``) surface the observed hint. This never pollutes the
+    authoritative tables.
+    """
     if dbg != 0:
         print("[*] bluetooth_utils::UUID passed as type [ {0} ]".format(type(uuid)))
         print(
@@ -84,11 +97,12 @@ def get_name_from_uuid(uuid, uuid_class=None):
             )
         )
 
-    # Search through the Bluetooth Constants file
+    uuid = uuid.strip().upper() if isinstance(uuid, str) else uuid
+
     if uuid in constants.UUID_NAMES:
         return constants.UUID_NAMES[uuid]
-    # Search through the Bluetooth UUIDs file's Services
-    elif uuid in uuids.SPEC_UUID_NAMES__SERV:
+
+    if uuid in uuids.SPEC_UUID_NAMES__SERV:
         if dbg != 0:
             print(
                 "[+] bluetooth_utils::UUID [ {0} ] matches known Service UUID [ {1} ]".format(
@@ -96,24 +110,41 @@ def get_name_from_uuid(uuid, uuid_class=None):
                 )
             )
         return uuids.SPEC_UUID_NAMES__SERV[uuid]
-    # Search through the Bluetooth UUIDs file's Characteristics
     elif uuid in uuids.SPEC_UUID_NAMES__CHAR:
         return uuids.SPEC_UUID_NAMES__CHAR[uuid]
-    # Search through the Bluetooth UUIDs file's Descriptors
     elif uuid in uuids.SPEC_UUID_NAMES__DESC:
         return uuids.SPEC_UUID_NAMES__DESC[uuid]
-    # Search through the Bluetooth UUIDs file's Members
     elif uuid in uuids.SPEC_UUID_NAMES__MEMB:
         return uuids.SPEC_UUID_NAMES__MEMB[uuid]
-    # Search through the Bluetooth UUIDs file's SDOs
     elif uuid in uuids.SPEC_UUID_NAMES__SDO:
         return uuids.SPEC_UUID_NAMES__SDO[uuid]
-    # Search through the Bluetooth UUIDs file's Service Class
     elif uuid in uuids.SPEC_UUID_NAMES__SERV_CLASS:
         return uuids.SPEC_UUID_NAMES__SERV_CLASS[uuid]
-    # No idea what this UUID is
-    else:
-        return "Unknown"
+
+    # Bluetooth Mesh model UUIDs (SIG-assigned, generated into bt_ref/mesh_ids.py).
+    # These 16-bit model IDs (0x0000-0x00xx) live below the GATT ranges, so they
+    # cannot collide with service/characteristic/descriptor UUIDs; consulted last
+    # among the authoritative SIG tables.
+    try:
+        from . import mesh_ids as _mesh
+        if uuid in _mesh.MESH_MODEL_UUIDS:
+            return _mesh.MESH_MODEL_UUIDS[uuid]
+    except Exception:  # noqa: BLE001 - mesh table optional/generated
+        pass
+
+    # Final, opt-in, NON-authoritative tier (todo Item D): the observed-UUID
+    # catalogue. Only consulted when explicitly requested so default output stays
+    # "Unknown". Returns a clearly-marked hint, never a bare authoritative name.
+    if allow_observed and isinstance(uuid, str):
+        try:
+            from bleep.core.observations import get_observed_uuid_names
+            observed = get_observed_uuid_names(uuid)
+            if observed:
+                return "Unknown (seen as: " + ", ".join(observed) + ")"
+        except Exception:  # noqa: BLE001 - DB optional/unavailable
+            pass
+
+    return "Unknown"
 
 
 def text_to_ascii_array(text):

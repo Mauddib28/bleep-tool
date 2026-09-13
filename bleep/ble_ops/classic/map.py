@@ -32,6 +32,7 @@ except Exception:  # noqa: BLE001
     _obs = None
 
 from bleep.dbuslayer.obex_map import MapSession
+from bleep.core.errors import OperationInProgressError
 
 from bleep.bt_ref.constants import (
     MAP_MSE_UUID_SHORT,
@@ -89,7 +90,7 @@ def list_mas_instances(
         for _key, entry in service_map.items():
             if not isinstance(entry, dict):
                 continue
-            uuid_str = (entry.get("uuid") or "").lower()
+            uuid_str = (entry.get("uuid") or "").upper()
             name_str = (entry.get("name") or "").lower()
             is_map = (
                 any(s in uuid_str for s in _MAP_SHORTS)
@@ -121,7 +122,7 @@ def list_mas_instances(
 
     instances = []
     for rec in records:
-        uuid_str = (rec.get("uuid") or "").lower()
+        uuid_str = (rec.get("uuid") or "").upper()
         name_str = (rec.get("name") or "").lower()
         is_map = any(s in uuid_str for s in _MAP_SHORTS) or "message" in name_str
         if is_map and rec.get("channel") is not None:
@@ -616,7 +617,7 @@ def start_message_monitor(
     """
     mac_address = mac_address.strip().upper()
     if mac_address in _active_monitors:
-        raise RuntimeError(f"Monitor already active for {mac_address}")
+        raise OperationInProgressError(f"MAP monitor for {mac_address}")
 
     print_and_log(f"[MAP] Starting MNS monitor for {mac_address}", LOG__GENERAL)
     sess = MapSession(mac_address, timeout=timeout, instance=instance)

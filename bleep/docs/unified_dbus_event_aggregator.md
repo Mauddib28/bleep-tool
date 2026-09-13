@@ -151,17 +151,27 @@ related = signals_instance.correlate_event(call_event, time_window=2.0)
 
 ### Agent Integration
 
-The Unified D-Bus Event Aggregator is automatically enabled when an agent is registered:
+Unified D-Bus monitoring is **not** enabled automatically during agent
+registration.  `BlueZAgent.register()` deliberately skips it because the
+message filter it installs prevents `org.bluez.Agent1` method calls from being
+dispatched to the agent (see the `NOTE` in `bleep/dbuslayer/agent.py::register`).
+Enable it **explicitly**, and only when you need capture-only observation and
+are not relying on live agent dispatch:
 
 ```python
+import dbus
 from bleep.dbuslayer.agent import create_agent
+from bleep.dbuslayer.signals import system_dbus__bluez_signals
 
-# Create and register agent
-agent = create_agent("KeyboardDisplay", auto_accept=True)
-agent.register(capabilities="KeyboardDisplay", default=True)
+# create_agent() both constructs AND registers the agent; the first positional
+# argument is the bus, agent_type is one of simple/interactive/enhanced/pairing.
+bus = dbus.SystemBus()
+agent = create_agent(bus, agent_type="pairing", capabilities="KeyboardDisplay",
+                     default=True, auto_accept=True)
 
-# Unified monitoring is now enabled automatically
-# All agent method calls, returns, and errors are captured
+# Opt in to unified monitoring explicitly (capture-only; see note above)
+signals = system_dbus__bluez_signals()
+signals.enable_unified_dbus_monitoring(True)
 ```
 
 ### Accessing Original D-Bus Messages
@@ -180,17 +190,18 @@ if event.original_message:
 
 ### Debugging Pairing Issues
 
+> **Caution:** enabling unified monitoring installs a message filter that
+> intercepts `org.bluez.Agent1` calls, which blocks live BLEEP agent dispatch.
+> Use this pattern to observe a pairing **driven externally** (e.g. via
+> `bluetoothctl` or a peer), not one handled by BLEEP's own registered agent.
+
 ```python
-# Enable unified monitoring
+# Enable unified monitoring (capture-only)
 signals = system_dbus__bluez_signals()
 signals.enable_unified_dbus_monitoring(True)
 
-# Register agent
-agent = create_agent("KeyboardDisplay", auto_accept=True)
-agent.register(capabilities="KeyboardDisplay", default=True)
-
-# Perform pairing operation
-# ... pairing code ...
+# Perform the pairing operation externally
+# ... e.g. `bluetoothctl pair <MAC>` ...
 
 # Query for pairing-related events
 pairing_events = signals.get_recent_events(
@@ -257,7 +268,7 @@ Special events are highlighted:
 - **Authentication Errors**: Highlighted with `[!] AUTHENTICATION ERROR`
 - **Agent Registration Events**: Logged with full context
 
-Logs are written to `LOG__AGENT` (`/tmp/bti__logging__agent.txt` or `~/.bleep/logs/agent.log`).
+Logs are written to `LOG__AGENT` (primary path `~/.local/share/bleep/logs/agent.log`, with a legacy symlink at `/tmp/bti__logging__agent.txt`).
 
 ## Performance Considerations
 

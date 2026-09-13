@@ -124,17 +124,17 @@ class StandardUUIDHandler(UUIDFormatHandler):
         - 128-bit: "0000180a-0000-1000-8000-00805f9b34fb" (with/without dashes)
         """
         # Remove common prefixes and whitespace
-        cleaned = uuid_input.strip().lower()
+        cleaned = uuid_input.strip().upper()
         
         # Handle hex prefix
-        if cleaned.startswith('0x'):
+        if cleaned.startswith('0X'):
             cleaned = cleaned[2:]
         
         # Remove dashes for processing
         cleaned_no_dash = cleaned.replace("-", "")
         
         # Remove any non-hex characters (for robustness)
-        hex_only = ''.join(c for c in cleaned_no_dash if c in '0123456789abcdef')
+        hex_only = ''.join(c for c in cleaned_no_dash if c in '0123456789ABCDEFabcdef').upper()
         
         if not self.HEX_PATTERN.match(hex_only):
             # Invalid format
@@ -242,56 +242,55 @@ class UUIDDatabase:
             - source: Database source name
         """
         matches: List[Dict[str, Any]] = []
-        uuid_normalized = uuid.replace("-", "").lower()
+        seen: Set[Tuple[str, str]] = set()
+        uuid_normalized = uuid.replace("-", "").upper()
         
-        # Helper to format UUID with dashes (as stored in databases)
         def format_with_dashes(uuid_no_dash: str) -> str:
             """Format UUID with dashes: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"""
             if len(uuid_no_dash) == 32:
                 return f"{uuid_no_dash[0:8]}-{uuid_no_dash[8:12]}-{uuid_no_dash[12:16]}-{uuid_no_dash[16:20]}-{uuid_no_dash[20:32]}"
             return uuid_no_dash
+
+        def _add_match(category, matched_uuid, name):
+            key = (category.value, name)
+            if key not in seen:
+                seen.add(key)
+                matches.append({
+                    "category": category,
+                    "uuid": matched_uuid,
+                    "name": name,
+                    "source": category.value,
+                })
         
-        # Search each database
+        # Search each database (try both upper and lowercase since uuids.py has lowercase keys)
         for category, db_dict in self._databases.items():
-            # Try matching with dashes (as stored in databases)
             uuid_with_dashes = format_with_dashes(uuid_normalized)
+            uuid_with_dashes_lower = uuid_with_dashes.lower()
+            uuid_normalized_lower = uuid_normalized.lower()
+
             if uuid_with_dashes in db_dict:
-                matches.append({
-                    "category": category,
-                    "uuid": uuid_with_dashes,
-                    "name": db_dict[uuid_with_dashes],
-                    "source": category.value,
-                })
-            
-            # Also try without dashes (for robustness)
+                _add_match(category, uuid_with_dashes, db_dict[uuid_with_dashes])
+            elif uuid_with_dashes_lower in db_dict:
+                _add_match(category, uuid_with_dashes_lower, db_dict[uuid_with_dashes_lower])
             elif uuid_normalized in db_dict:
-                matches.append({
-                    "category": category,
-                    "uuid": uuid_normalized,
-                    "name": db_dict[uuid_normalized],
-                    "source": category.value,
-                })
+                _add_match(category, uuid_normalized, db_dict[uuid_normalized])
+            elif uuid_normalized_lower in db_dict:
+                _add_match(category, uuid_normalized_lower, db_dict[uuid_normalized_lower])
             
-            # If we have a short form, search for matches in BT SIG format
             if short_form:
-                # Construct BT SIG format UUID for this short form (with dashes)
                 bt_sig_uuid_no_dash = f"0000{short_form}{BT_SIG_BASE_UUID_NODASH[8:]}"
                 bt_sig_uuid_with_dashes = format_with_dashes(bt_sig_uuid_no_dash)
+                bt_sig_uuid_with_dashes_lower = bt_sig_uuid_with_dashes.lower()
+                bt_sig_uuid_no_dash_lower = bt_sig_uuid_no_dash.lower()
                 
                 if bt_sig_uuid_with_dashes in db_dict:
-                    matches.append({
-                        "category": category,
-                        "uuid": bt_sig_uuid_with_dashes,
-                        "name": db_dict[bt_sig_uuid_with_dashes],
-                        "source": category.value,
-                    })
+                    _add_match(category, bt_sig_uuid_with_dashes, db_dict[bt_sig_uuid_with_dashes])
+                elif bt_sig_uuid_with_dashes_lower in db_dict:
+                    _add_match(category, bt_sig_uuid_with_dashes_lower, db_dict[bt_sig_uuid_with_dashes_lower])
                 elif bt_sig_uuid_no_dash in db_dict:
-                    matches.append({
-                        "category": category,
-                        "uuid": bt_sig_uuid_no_dash,
-                        "name": db_dict[bt_sig_uuid_no_dash],
-                        "source": category.value,
-                    })
+                    _add_match(category, bt_sig_uuid_no_dash, db_dict[bt_sig_uuid_no_dash])
+                elif bt_sig_uuid_no_dash_lower in db_dict:
+                    _add_match(category, bt_sig_uuid_no_dash_lower, db_dict[bt_sig_uuid_no_dash_lower])
         
         return matches
     
@@ -368,7 +367,7 @@ class UUIDTranslator:
                     continue
         
         # If no handler succeeded, return unknown format
-        cleaned = uuid_input.replace("-", "").lower()
+        cleaned = uuid_input.replace("-", "").upper()
         return (cleaned, UUIDFormat.UNKNOWN, None)
     
     def translate(self, uuid_input: str, include_unknown: bool = False) -> Dict[str, Any]:
@@ -467,4 +466,26 @@ def translate_uuid(uuid_input: str, include_unknown: bool = False) -> Dict[str, 
     """
     translator = get_translator()
     return translator.translate(uuid_input, include_unknown)
+
+
+def get_uuid_name(uuid_input: str, default: str = "") -> str:
+    """Return the best human-readable name for a UUID in any form.
+
+    Thin convenience wrapper over :func:`translate_uuid` for display-only call
+    sites (16/32/128-bit input, dashed or not, any case). Returns *default*
+    when no match is found so callers can branch on a falsy result.
+
+    Example:
+        >>> get_uuid_name("0x110E")
+        'A/V Remote Control'
+        >>> get_uuid_name("ffffffff")  # unknown
+        ''
+    """
+    if not uuid_input:
+        return default
+    try:
+        matches = translate_uuid(uuid_input).get("matches") or []
+    except Exception:
+        return default
+    return matches[0]["name"] if matches else default
 

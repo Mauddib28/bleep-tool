@@ -29,7 +29,12 @@ from bleep.bt_ref.constants import (
     OBEX_OPP_INTERFACE as _OBEX_OPP_IFACE,
 )
 
-from bleep.dbuslayer._obex_common import poll_obex_transfer as _poll_transfer
+from bleep.dbuslayer._obex_common import (
+    poll_obex_transfer as _poll_transfer,
+    obex_session_error as _obex_session_error,
+)
+from bleep.core.errors import BLEEPError, NotSupportedError, map_dbus_error
+from bleep.bt_ref.constants import RESULT_ERR, RESULT_ERR_WRONG_STATE
 
 # dbus-python timeout for synchronous method calls (seconds).  Prevents
 # indefinite blocking when obexd stalls on a dead RFCOMM channel.
@@ -43,9 +48,10 @@ def _get_client() -> dbus.Interface:
         obj = bus.get_object(_OBEX_SERVICE, OBEX_ROOT_PATH)
         return dbus.Interface(obj, _OBEX_CLIENT_IFACE)
     except dbus.exceptions.DBusException as exc:
-        raise RuntimeError(
+        raise BLEEPError(
             f"BlueZ obexd not running or D-Bus error: "
-            f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
+            f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}",
+            RESULT_ERR_WRONG_STATE,
         ) from exc
 
 
@@ -74,7 +80,7 @@ def opp_send_file(
         redundant SDP query during an active keep-alive causes a timeout.
 
     Returns a dict with transfer metadata on success.
-    Raises ``RuntimeError`` on failure.
+    Raises :class:`~bleep.core.errors.BLEEPError` on failure.
     """
     mac_address = mac_address.strip().upper()
     filepath = os.path.abspath(filepath)
@@ -89,9 +95,8 @@ def opp_send_file(
     try:
         session_path = client.CreateSession(mac_address, opts)
     except dbus.exceptions.DBusException as exc:
-        raise RuntimeError(
-            f"OPP CreateSession failed: {exc.get_dbus_name()}: "
-            f"{exc.get_dbus_message() or ''}"
+        raise _obex_session_error(
+            exc, mac_address, profile="OPP", service_hint="OPP (0x1105)",
         ) from exc
 
     try:
@@ -102,10 +107,7 @@ def opp_send_file(
             client.RemoveSession(session_path)
         except Exception:
             pass
-        raise RuntimeError(
-            f"OPP session object unavailable: {exc.get_dbus_name()}: "
-            f"{exc.get_dbus_message() or ''}"
-        ) from exc
+        raise map_dbus_error(exc) from exc
 
     print_and_log(f"[OPP] SendFile: {filepath}", LOG__DEBUG)
     try:
@@ -113,10 +115,7 @@ def opp_send_file(
             filepath, timeout=_DBUS_CALL_TIMEOUT_S,
         )
     except dbus.exceptions.DBusException as exc:
-        raise RuntimeError(
-            f"OPP SendFile failed: {exc.get_dbus_name()}: "
-            f"{exc.get_dbus_message() or ''}"
-        ) from exc
+        raise map_dbus_error(exc) from exc
 
     try:
         result = _poll_transfer(bus, transfer_path, timeout, label="OPP")
@@ -159,7 +158,7 @@ def opp_pull_business_card(
         redundant SDP query during an active keep-alive causes a timeout.
 
     Returns the local ``Path`` to the downloaded file.
-    Raises ``RuntimeError`` on failure.
+    Raises :class:`~bleep.core.errors.BLEEPError` on failure.
     """
     mac_address = mac_address.strip().upper()
     dest = os.path.abspath(dest)
@@ -172,9 +171,8 @@ def opp_pull_business_card(
     try:
         session_path = client.CreateSession(mac_address, opts)
     except dbus.exceptions.DBusException as exc:
-        raise RuntimeError(
-            f"OPP CreateSession failed: {exc.get_dbus_name()}: "
-            f"{exc.get_dbus_message() or ''}"
+        raise _obex_session_error(
+            exc, mac_address, profile="OPP", service_hint="OPP (0x1105)",
         ) from exc
 
     try:
@@ -185,10 +183,7 @@ def opp_pull_business_card(
             client.RemoveSession(session_path)
         except Exception:
             pass
-        raise RuntimeError(
-            f"OPP session object unavailable: {exc.get_dbus_name()}: "
-            f"{exc.get_dbus_message() or ''}"
-        ) from exc
+        raise map_dbus_error(exc) from exc
 
     print_and_log(f"[OPP] PullBusinessCard → {dest}", LOG__DEBUG)
     try:
@@ -200,10 +195,7 @@ def opp_pull_business_card(
             client.RemoveSession(session_path)
         except Exception:
             pass
-        raise RuntimeError(
-            f"OPP PullBusinessCard failed: {exc.get_dbus_name()}: "
-            f"{exc.get_dbus_message() or ''}"
-        ) from exc
+        raise map_dbus_error(exc) from exc
 
     try:
         result = _poll_transfer(bus, transfer_path, timeout, label="OPP")
@@ -237,11 +229,12 @@ def opp_pull_business_card(
         )
         return result_path
 
-    raise RuntimeError(
+    raise BLEEPError(
         "OPP PullBusinessCard: remote device accepted the OBEX "
         "connection but no vCard was received — the device may "
         "not support OPP pull (OBEX GET), or obexd could not write "
-        f"to {dest}"
+        f"to {dest}",
+        RESULT_ERR,
     )
 
 
@@ -268,7 +261,7 @@ def opp_exchange_business_cards(
         RFCOMM channel for OPP on the target (from prior SDP).
 
     Returns the local ``Path`` to the downloaded remote card.
-    Raises ``RuntimeError`` on failure.
+    Raises :class:`~bleep.core.errors.BLEEPError` on failure.
     """
     mac_address = mac_address.strip().upper()
     client_vcf = os.path.abspath(client_vcf)
@@ -286,9 +279,8 @@ def opp_exchange_business_cards(
     try:
         session_path = client.CreateSession(mac_address, opts)
     except dbus.exceptions.DBusException as exc:
-        raise RuntimeError(
-            f"OPP CreateSession failed: {exc.get_dbus_name()}: "
-            f"{exc.get_dbus_message() or ''}"
+        raise _obex_session_error(
+            exc, mac_address, profile="OPP", service_hint="OPP (0x1105)",
         ) from exc
 
     try:
@@ -299,10 +291,7 @@ def opp_exchange_business_cards(
             client.RemoveSession(session_path)
         except Exception:
             pass
-        raise RuntimeError(
-            f"OPP session object unavailable: {exc.get_dbus_name()}: "
-            f"{exc.get_dbus_message() or ''}"
-        ) from exc
+        raise map_dbus_error(exc) from exc
 
     print_and_log(
         f"[OPP] ExchangeBusinessCards: push={client_vcf} pull→{dest}", LOG__DEBUG,
@@ -318,15 +307,11 @@ def opp_exchange_business_cards(
             pass
         dbus_msg = (exc.get_dbus_message() or "").lower()
         if "not implemented" in dbus_msg:
-            raise RuntimeError(
-                "OPP ExchangeBusinessCards is not supported by this version "
-                "of obexd. In Debug Mode: 'copp send' and 'copp pull' as "
-                "separate steps."
+            raise NotSupportedError(
+                "OPP ExchangeBusinessCards (unsupported by this obexd build; "
+                "in Debug Mode use 'copp send' and 'copp pull' as separate steps)"
             ) from exc
-        raise RuntimeError(
-            f"OPP ExchangeBusinessCards failed: {exc.get_dbus_name()}: "
-            f"{exc.get_dbus_message() or ''}"
-        ) from exc
+        raise map_dbus_error(exc) from exc
 
     try:
         result = _poll_transfer(bus, transfer_path, timeout, label="OPP")
@@ -350,10 +335,11 @@ def opp_exchange_business_cards(
                 LOG__DEBUG,
             )
         else:
-            raise RuntimeError(
+            raise BLEEPError(
                 "OPP ExchangeBusinessCards: transfer object removed before "
                 "status could be read and no file was written — the device "
-                "may not fully support business card exchange"
+                "may not fully support business card exchange",
+                RESULT_ERR,
             )
 
     return result_path

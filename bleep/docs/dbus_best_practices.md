@@ -370,9 +370,19 @@ log_metrics_summary()
 
 ### 1. Enable Verbose Logging
 
+BLEEP always writes debug-level messages to the debug log file at the XDG
+primary path `~/.local/share/bleep/logs/debug.log` (mapped internally in
+`bleep.core.log` via `_INTERNAL_PATHS[LOG__DEBUG]`; a legacy
+`/tmp/bti__logging__debug.txt` symlink points at it for backward
+compatibility).  There is no runtime "level" toggle.  Emit your own diagnostics and control the terminal-output routing like so:
+
 ```python
-from bleep.core.log import set_debug_level, LOG__DEBUG
-set_debug_level(LOG__DEBUG)
+from bleep.core.log import logging__debug_log, set_output_mode
+
+logging__debug_log("verbose diagnostic message")   # always captured in the debug log
+
+# Control the print() half of print_and_log() for the current thread:
+set_output_mode("terminal")   # or "json" / "quiet"
 ```
 
 ### 2. Monitor D-Bus Traffic
@@ -416,7 +426,9 @@ log_metrics_summary()
 ```python
 from bleep.dbuslayer.signals import system_dbus__bluez_signals
 signals_instance = system_dbus__bluez_signals()
-signals_instance.set_debug(True)
+signals_instance.ensure_listening()   # confirm the receiver is attached to the system bus
+# Observe characteristic notifications as they arrive:
+signals_instance.register_notification_callback(char_path, lambda path, value: print(path, value))
 ```
 
 ### 8. Test Connection Health

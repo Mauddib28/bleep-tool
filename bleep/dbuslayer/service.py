@@ -122,6 +122,27 @@ class Service:  # noqa: N801 – keep simple name
             finally:
                 self._signal = None
 
+    def release(self) -> None:
+        """Tear this service down locally so it can be garbage collected.
+
+        Reuses :meth:`_disconnect_signals` and cascades into the
+        characteristics.  No D-Bus I/O — safe after disconnect.  Called from
+        ``system_dbus__bluez_device__low_energy.release``.
+        """
+        try:
+            self._disconnect_signals()
+        except Exception:  # pragma: no cover - best-effort teardown
+            pass
+        for char in self.characteristics:
+            try:
+                char.release()
+            except Exception:  # pragma: no cover - best-effort teardown
+                pass
+        self.characteristics = []
+        self._props_iface = None
+        self.bus = None
+        self.device = None
+
     # ------------------------------------------------------------------
     # Callback registration
     # ------------------------------------------------------------------

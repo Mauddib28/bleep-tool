@@ -82,12 +82,14 @@ def _retry_with_delay(delay_ms: int = 1000) -> None:
 
 def _reconnect_device(device) -> None:
     """Attempt to reconnect a disconnected device."""
+    from bleep.core.errors import ConnectionError as _ConnErr
+    _addr = getattr(device, "mac_address", None) or getattr(device, "address", None) or "device"
     try:
         res = device.Connect()
         # Some legacy interfaces return (code, success) instead of raising.
         if isinstance(res, tuple) and len(res) >= 2:
             if not bool(res[1]):
-                raise RuntimeError(f"Reconnect failed (code={res[0]})")
+                raise _ConnErr(_addr, f"reconnect failed (code={res[0]})")
     except dbus.exceptions.DBusException as e:
         debug_log(f"Reconnection attempt failed: {e}")
         raise
@@ -98,14 +100,16 @@ def _reconnect_device(device) -> None:
 
 def _resolve_services(device) -> None:
     """Wait for services to be resolved."""
+    from bleep.core.errors import ServicesNotResolvedError as _SvcErr
+    _addr = getattr(device, "mac_address", None) or getattr(device, "address", None) or "device"
     try:
         res = device.check_and_wait__services_resolved()
         # Some legacy interfaces return bool/tuple; treat False as failure.
         if isinstance(res, tuple) and len(res) >= 2:
             if not bool(res[1]):
-                raise RuntimeError(f"Service resolution failed (code={res[0]})")
+                raise _SvcErr(_addr)
         elif res is False:
-            raise RuntimeError("Service resolution failed (returned False)")
+            raise _SvcErr(_addr)
     except dbus.exceptions.DBusException as e:
         debug_log(f"Service resolution failed: {e}")
         raise

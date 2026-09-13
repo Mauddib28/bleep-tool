@@ -18,6 +18,8 @@ from bleep.analysis.device_type_classifier import (
     EvidenceSet,
     ClassificationResult,
     EvidenceCollector,
+    HIDInfo,
+    classify_hid,
 )
 
 __all__ = [
@@ -33,4 +35,6 @@ __all__ = [
     'EvidenceSet',
     'ClassificationResult',
     'EvidenceCollector',
+    'HIDInfo',
+    'classify_hid',
 ]

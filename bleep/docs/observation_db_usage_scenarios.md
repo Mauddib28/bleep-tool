@@ -2,6 +2,19 @@
 
 This document provides practical, real-world examples of how to use the BLEEP observation database for various use cases, from long-term monitoring to enterprise device tracking and security assessments.
 
+> **Note:** Several date-windowed presence/inventory patterns below (raw SQL against
+> `first_seen`/`last_seen`) are now available as first-class CLI without custom SQL:
+> `bleep db list --since <D> --until <D> [--seen-basis first|last|any] [--tz <zone>]`,
+> target-list export via `--export-targets`, heuristic identity collapse via
+> `--group-identity`, windowed aggregate reports via `bleep db report`, device-name
+> classification via `--name-audit` (real vs MAC-alias vs empty vs foreign-MAC
+> anomaly), and reconnaissance analytics via `db report --recon` (unique-SDP
+> inventory, OUI/address-type breakdown with IEEE vendor decode, and
+> manufacturer/service/AD hex pattern-detection + decode; `--recon-detail` adds
+> characteristic-value hex). See [cli_usage.md](cli_usage.md) and
+> [observation_db.md](observation_db.md). The SQL recipes remain valid and are
+> useful when you need custom aggregations.
+
 ## Table of Contents
 
 1. [Long-Term Device Monitoring Workflows](#long-term-device-monitoring-workflows)
@@ -244,6 +257,11 @@ if __name__ == "__main__":
 ### Scenario 3: Automated Daily Device Inventory
 
 **Use Case**: Generate daily reports of all devices seen, with statistics and trends.
+
+> **Tip:** The manufacturer/OUI tally built by hand below is now available directly
+> via `bleep db report --recon` (OUI/address-type breakdown with IEEE vendor decode
+> + advertisement hex patterns). Use the custom recipe when you need bespoke
+> aggregation beyond the built-in section.
 
 ```python
 #!/usr/bin/env python3

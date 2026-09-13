@@ -56,6 +56,26 @@ from bleep.core import preflight as _preflight
 
 __all__ = ["MediaStreamManager"]
 
+# When a Linux-initiated ``Device1.Connect()`` is refused during the endpoint
+# cycle, the peer is almost certainly an A2DP *source* (e.g. a Windows/desktop
+# host) that must originate the ACL link itself.  In that case we fall back to
+# waiting for the remote to re-initiate the connection.  This is the wall-clock
+# budget for that wait — long enough for a streaming host to auto-reconnect to
+# its selected output, short enough to fail fast on a genuinely-absent device.
+_REMOTE_RECONNECT_TIMEOUT = 30.0
+
+# DBus error fragments that indicate the link failed to establish because the
+# peer would not accept a locally-initiated connection (as opposed to a real
+# adapter/pairing fault).  Matched case-insensitively against the DBus message.
+_REMOTE_INITIATE_ERROR_HINTS = (
+    "br-connection-create-socket",
+    "br-connection-unknown",
+    "br-connection-canceled",
+    "br-connection-aborted-by-remote",
+    "br-connection-refused",
+    "page timeout",
+)
+
 
 def _format_contention_message(report: "_preflight.EndpointContentionReport") -> str:
     """Render an EndpointContentionReport as a user-facing multiline string."""
@@ -116,6 +136,33 @@ def _format_contention_message(report: "_preflight.EndpointContentionReport") ->
     return "\n".join(lines)
 
 
+def _device_base_from_path(path_str: str) -> str:
+    """Return the owning ``.../dev_<MAC>`` object path for a media child path.
+
+    BlueZ nests endpoints/transports under the device object
+    (``…/dev_XX/sepN`` and ``…/dev_XX/sepN/fdM``).  Stripping the ``/sep`` and
+    ``/fd`` suffixes yields the owning ``Device1`` path; a bare device path is
+    returned unchanged.
+    """
+    return path_str.split("/sep")[0].split("/fd")[0]
+
+
+def _first_adapter_name() -> Optional[str]:
+    """Return the first enumerated adapter name (e.g. ``"hci0"``), or ``None``.
+
+    Last-resort fallback for :meth:`MediaStreamManager._device_path` when the
+    target device is absent from ``GetManagedObjects()`` — preferable to a
+    hardcoded ``hci0`` on multi-adapter hosts.  Imported lazily to avoid an
+    import cycle with ``bleep.dbuslayer.adapter``.
+    """
+    try:
+        from bleep.dbuslayer.adapter import system_dbus__bluez_adapter
+        adapters = system_dbus__bluez_adapter.list_adapters()
+    except Exception:
+        return None
+    return adapters[0]["name"] if adapters else None
+
+
 class MediaStreamManager:
     """High-level manager for Bluetooth audio streaming.
 
@@ -128,9 +175,15 @@ class MediaStreamManager:
 
     * **Default (endpoint registration)** — BLEEP registers its own
       ``MediaEndpoint`` with BlueZ via ``RegisterEndpoint()``, then
-      cycles the A2DP profile (``DisconnectProfile`` →
-      ``ConnectProfile``) so BlueZ includes the new endpoint in AVDTP
-      negotiation and creates a BLEEP-owned transport.
+      cycles the full device connection (``Device1.Disconnect()`` →
+      ``Device1.Connect()``) so BlueZ re-runs ``a2dp_discover`` and
+      includes the new endpoint in AVDTP negotiation, creating a
+      BLEEP-owned transport.  (Profile-level ``DisconnectProfile`` /
+      ``ConnectProfile`` is insufficient — the AVDTP session persists
+      and ``source_connect()`` returns ``-EALREADY``.)  For a remote
+      A2DP **source** that refuses a Linux-initiated ``Connect()``, the
+      cycle falls back to waiting for the peer to re-initiate the link
+      itself — see ``_cycle_device_connection()``.
     * **Direct mode** (``direct=True``) — find an existing transport on
       D-Bus and call ``Acquire()`` directly.  Requires the audio daemon
       to be stopped so the transport is unowned.
@@ -209,7 +262,7 @@ class MediaStreamManager:
             if "/dev_" not in path_str:
                 continue
 
-            base = path_str.split("/sep")[0].split("/fd")[0]
+            base = _device_base_from_path(path_str)
             path_mac = base.rsplit("dev_", 1)[-1]
             if path_mac.upper() != mac_fragment:
                 continue
@@ -319,7 +372,7 @@ class MediaStreamManager:
         proxy construction needed for the UUID comparison.
         """
         for ep_path, ep_uuid in endpoints:
-            if not ep_uuid or ep_uuid.lower() != self.profile_uuid.lower():
+            if not ep_uuid or ep_uuid.upper() != self.profile_uuid.upper():
                 continue
 
             ep_profile = get_profile_name(ep_uuid)
@@ -355,7 +408,7 @@ class MediaStreamManager:
     ) -> Optional[MediaTransport]:
         """Phase 2: find transport matching a specific UUID."""
         for tp_path, tp_uuid in transports:
-            if tp_uuid and tp_uuid.lower() == target_uuid.lower():
+            if tp_uuid and tp_uuid.upper() == target_uuid.upper():
                 try:
                     return MediaTransport(tp_path)
                 except Exception as e:
@@ -427,10 +480,42 @@ class MediaStreamManager:
     # Endpoint-based transport acquisition
     # ------------------------------------------------------------------
 
+    def _resolve_device_path(self) -> Optional[str]:
+        """Resolve this device's live BlueZ object path from managed objects.
+
+        Reads the actual ``.../dev_<MAC>`` path — adapter-correct for any
+        controller — instead of assuming a fixed adapter.  Returns ``None`` when
+        the device is not currently present in ``GetManagedObjects()``.
+        """
+        mac_fragment = self.device_mac.upper().replace(":", "_")
+        try:
+            managed_objects = get_managed_objects()
+        except Exception:
+            return None
+        for path in managed_objects:
+            path_str = str(path)
+            if "/dev_" not in path_str:
+                continue
+            base = _device_base_from_path(path_str)
+            if base.rsplit("dev_", 1)[-1].upper() == mac_fragment:
+                return base
+        return None
+
     def _device_path(self) -> str:
-        """Return the BlueZ D-Bus object path for ``self.device_mac``."""
+        """Return the BlueZ D-Bus object path for ``self.device_mac``.
+
+        Resolves the live, adapter-correct path from ``GetManagedObjects()``.
+        Only when the device is not currently present does it fall back to
+        constructing the path under the first enumerated adapter (never a
+        hardcoded ``hci0``), so A2DP/AVRCP transport cycling works on
+        multi-adapter hosts and non-``hci0`` controllers.
+        """
+        resolved = self._resolve_device_path()
+        if resolved:
+            return resolved
+        adapter = _first_adapter_name() or "hci0"
         mac_underscored = self.device_mac.replace(":", "_")
-        return f"/org/bluez/hci0/dev_{mac_underscored}"
+        return f"/org/bluez/{adapter}/dev_{mac_underscored}"
 
     def _cycle_device_connection(self) -> None:
         """Full device disconnect → reconnect to trigger AVDTP re-negotiation.
@@ -476,9 +561,40 @@ class MediaStreamManager:
         time.sleep(0.5)
 
         print_and_log("[*] Reconnecting device…", LOG__DEBUG)
-        device_iface.Connect()
 
-        deadline = time.monotonic() + 10.0
+        # A2DP *source* peers (e.g. a Windows/desktop host streaming to us)
+        # must originate the ACL link themselves — a Linux-initiated
+        # ``Device1.Connect()`` is refused with ``br-connection-create-socket``
+        # / ``br-connection-unknown``.  For sinks the Connect() succeeds and the
+        # behaviour below is unchanged.  For sources we swallow the connection
+        # error and wait for the peer to re-initiate the link on its own (it
+        # does so automatically when it has audio to stream and this host is its
+        # selected output).  Any non-connection DBus error is a genuine fault
+        # and is re-raised.
+        remote_initiated = False
+        try:
+            device_iface.Connect()
+        except dbus.exceptions.DBusException as exc:
+            detail = (
+                f"{exc.get_dbus_message() or ''} {exc.get_dbus_name() or ''}"
+            ).lower()
+            if any(hint in detail for hint in _REMOTE_INITIATE_ERROR_HINTS):
+                remote_initiated = True
+                print_and_log(
+                    "[*] Linux-initiated reconnect refused "
+                    f"({exc.get_dbus_message() or exc.get_dbus_name()}); the "
+                    "peer is an A2DP source that must initiate the link. "
+                    "Waiting for it to reconnect — make sure it is streaming "
+                    "audio to this host now…",
+                    LOG__USER,
+                )
+            else:
+                raise
+
+        reconnect_timeout = (
+            _REMOTE_RECONNECT_TIMEOUT if remote_initiated else 10.0
+        )
+        deadline = time.monotonic() + reconnect_timeout
         while time.monotonic() < deadline:
             connected = bool(
                 props_iface.Get(DEVICE_INTERFACE, "Connected"),
@@ -487,8 +603,14 @@ class MediaStreamManager:
                 break
             time.sleep(0.3)
         else:
+            hint = (
+                " — the A2DP source never re-initiated the connection; "
+                "ensure it is actively streaming audio to this host"
+                if remote_initiated
+                else ""
+            )
             raise BLEEPError(
-                "Device did not reconnect within timeout"
+                f"Device did not reconnect within timeout{hint}"
             )
 
     def _acquire_via_endpoint(
@@ -509,7 +631,10 @@ class MediaStreamManager:
            disconnect destroys the ACL link and all AVDTP sessions.  On
            reconnect, BlueZ runs ``a2dp_discover`` →
            ``a2dp_select_eps`` which includes our newly registered
-           endpoint.
+           endpoint.  For a remote A2DP **source** (e.g. a Windows PC)
+           the Linux-initiated ``Connect()`` is refused; the cycle then
+           waits for the peer to re-initiate the link on its own (see
+           ``_cycle_device_connection()``).
         3. ``Acquire()`` the transport.
 
         The system audio daemon's existing stream is briefly interrupted
@@ -929,8 +1054,8 @@ class MediaStreamManager:
         output_file : str
             Path to output audio file
         duration : Optional[int]
-            Recording duration in seconds. If None, records until stopped.
-            (Note: Duration control not yet implemented)
+            Recording duration in seconds. If None, records until the transport
+            FD closes (device stops streaming) or an error/EOS occurs.
         
         Returns
         -------
@@ -957,7 +1082,10 @@ class MediaStreamManager:
                 f"[*] Recording audio to {output_file} using {codec_info.get('codec_name', 'Unknown')} codec",
                 LOG__USER,
             )
-            success = decoder.decode_audio_stream(fd, output_file, codec_id, read_mtu)
+            success = decoder.decode_audio_stream(
+                fd, output_file, codec_id, read_mtu, duration=duration,
+                configuration=codec_info.get("configuration"),
+            )
             
             # Release transport
             self.release_transport()

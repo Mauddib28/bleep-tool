@@ -14,7 +14,8 @@ Returned structure::
         "cmd": str,               # executed command or diagnostic
     }
 
-Raises *RuntimeError* on unrecoverable errors (missing obexftp, no PBAP svc,…).
+Raises :class:`~bleep.core.errors.BLEEPError` on unrecoverable errors (missing
+obexftp, no PBAP svc,…).
 
 **Known Issue - "Too short header in packet" Error:**
 This OBEX error occurs when the device has stale OBEX state (e.g., from a previous
@@ -39,6 +40,7 @@ except Exception:  # noqa: BLE001
     _obs = None
 # First-choice helper (BlueZ obexd)
 from bleep.dbuslayer.obex_pbap import pull_phonebook_vcf as _pbap_dbus
+from bleep.core.errors import BLEEPError
 
 # Fallback code removed – we focus on BlueZ obexd only.
 
@@ -61,6 +63,7 @@ from bleep.bt_ref.constants import (
     OBEX_SESSION_INTERFACE,
     OBEX_PBAP_INTERFACE,
     OBEX_TRANSFER_INTERFACE,
+    RESULT_ERR,
 )
 
 
@@ -131,7 +134,7 @@ def dump_phonebook_pbap(
         print_and_log("[*] obexd PBAP path failed – will try RFCOMM fallback", LOG__DEBUG)
 
     # If we reach here the D-Bus path failed earlier.
-    raise RuntimeError("BlueZ obexd PBAP transfer failed; see logs for details") 
+    raise BLEEPError("BlueZ obexd PBAP transfer failed; see logs for details", RESULT_ERR)
 
 
 # ---------------------------------------------------------------------------
@@ -330,66 +333,17 @@ def pbap_dump_async(
         except Exception:
             agent = None  # Ignore agent errors; continue without auth helper
 
-    # Create PBAP session with error handling
-    # Note: "Too short header in packet" error indicates stale OBEX state on the device.
-    # Manual testing confirmed: RESTARTING THE TARGET DEVICE resolves this issue.
-    # This clears the device's OBEX buffers and allows a fresh session to be established.
+    # Create PBAP session. All obexd CreateSession failure modes (stale-state
+    # "Too short header", transport disconnect, NoReply/Timed out, transient
+    # "Unable to find service record") are mapped to Convention-aligned,
+    # actionable BLEEPErrors by the shared OBEX session-error mapper.
     try:
         session_path = client.CreateSession(mac_address, {"Target": "PBAP"})
     except dbus.exceptions.DBusException as exc:
-        name = exc.get_dbus_name()
-        msg = exc.get_dbus_message() or str(exc)
-
-        # Handle "Too short header" error - indicates stale OBEX state on device
-        # SOLUTION CONFIRMED: Restarting the target device clears OBEX buffers and resolves this.
-        if "Too short header" in msg or "too short header" in msg.lower():
-            print_and_log(
-                f"[-] OBEX CreateSession failed: 'Too short header in packet'\n"
-                f"    This indicates stale OBEX state on the device.\n"
-                f"    SOLUTION: Restart the target device to clear OBEX buffers.\n"
-                f"    Alternative: Disconnect and reconnect via 'bluetoothctl disconnect {mac_address}'",
-                LOG__GENERAL
-            )
-            raise RuntimeError(
-                f"OBEX CreateSession failed: Too short header in packet. "
-                f"This indicates stale OBEX state on device {mac_address}. "
-                f"SOLUTION: Restart the target device to clear OBEX buffers and retry. "
-                f"Full D-Bus error: {name}: {msg}"
-            ) from exc
-        
-        if "Transport got disconnected" in msg or "transport" in msg.lower() and "disconnect" in msg.lower():
-            print_and_log(
-                f"[-] OBEX transport disconnected during session creation.\n"
-                f"    The target device may not have 'Contact Sharing' enabled.\n"
-                f"    Solutions:\n"
-                f"    1. On the target device, check Bluetooth settings → enable Contact Sharing / PBAP\n"
-                f"    2. Accept the PBAP access prompt on the target device if one appeared\n"
-                f"    3. Restart the target device and retry",
-                LOG__GENERAL,
-            )
-            raise RuntimeError(
-                f"OBEX transport disconnected — the target device may not have "
-                f"'Contact Sharing' enabled (check Bluetooth settings on {mac_address}). "
-                f"Full D-Bus error: {name}: {msg}"
-            ) from exc
-
-        if "NoReply" in msg or "Timed out" in msg:
-            print_and_log(
-                f"[-] OBEX CreateSession failed: Device not responding\n"
-                f"    Solutions:\n"
-                f"    1. Ensure device is in range and Bluetooth is enabled\n"
-                f"    2. Disconnect and reconnect: bluetoothctl disconnect {mac_address}\n"
-                f"    3. Restart the target device",
-                LOG__GENERAL
-            )
-            raise RuntimeError(
-                f"OBEX CreateSession failed: Device not responding. "
-                f"Ensure {mac_address} is in range and Bluetooth is enabled. "
-                f"Full D-Bus error: {name}: {msg}"
-            ) from exc
-        
-        # Re-raise other errors
-        raise
+        from bleep.dbuslayer._obex_common import obex_session_error
+        raise obex_session_error(
+            exc, mac_address, profile="PBAP", service_hint="PBAP (0x112F)",
+        ) from exc
     pbap = _PbapClientAsync(session_path)
     loop = GLib.MainLoop()
     last_activity = _time.time()

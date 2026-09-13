@@ -337,9 +337,12 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
         # Service Discovery Server 16-bit UUID is 0x1000
         sds_short = SERVICE_DISCOVERY_SERVER_UUID_16
         
-        # Normalize input: remove common prefixes and whitespace
-        cleaned = uuid.strip().lower()
-        if cleaned.startswith('0x'):
+        # Normalize input: remove common prefixes and whitespace.
+        # NB: ``cleaned`` is already upper-cased, so the prefix check must be
+        # upper-case too — checking lowercase '0x' here never matched and
+        # left the "0x1000" string form unstripped (silent classification miss).
+        cleaned = uuid.strip().upper()
+        if cleaned.startswith('0X'):
             cleaned = cleaned[2:]
         cleaned = cleaned.replace("-", "")
         
@@ -351,8 +354,8 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
         uuid_forms = identify_uuid(uuid)
         
         for uuid_form in uuid_forms:
-            # Normalize for comparison (remove dashes, lowercase, strip whitespace)
-            normalized_form = uuid_form.replace("-", "").lower().strip()
+            # Normalize for comparison (remove dashes, uppercase, strip whitespace)
+            normalized_form = uuid_form.replace("-", "").upper().strip()
             
             # Check if short form matches
             if len(normalized_form) == 4:
@@ -399,7 +402,7 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
         classic_uuid_set = set()
         classic_short_uuids = set()
         for classic_uuid_key in classic_profile_uuids.keys():
-            classic_normalized = classic_uuid_key.replace("-", "").lower()
+            classic_normalized = classic_uuid_key.replace("-", "").upper()
             classic_uuid_set.add(classic_normalized)
             # Extract short form (positions 4-8, which is the 16-bit UUID part)
             if len(classic_normalized) >= 8:
@@ -420,8 +423,8 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
             # Check if any normalized form matches a Classic profile UUID
             matched = False
             for uuid_form in uuid_forms:
-                # Normalize for comparison (remove dashes, lowercase, strip whitespace)
-                normalized_form = uuid_form.replace("-", "").lower().strip()
+                # Normalize for comparison (remove dashes, uppercase, strip whitespace)
+                normalized_form = uuid_form.replace("-", "").upper().strip()
                 
                 # Check full UUID match
                 if normalized_form in classic_uuid_set:
@@ -453,7 +456,15 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
                         classic_uuids.append(uuid_str)
                         break
         
-        # Add evidence with appropriate weight based on Service Discovery Server presence
+        # Add evidence with appropriate weight based on Service Discovery Server presence.
+        #
+        # G-7.4 blind-spot fix: these UUIDs come from the *advertised* / cached
+        # ``UUIDs`` property, NOT from a live SDP browse, so they are not
+        # ground-truth confirmation of a working BR/EDR stack. The verdict is
+        # flagged (``ground_truth=False``, ``source_kind="advertised"``) so
+        # downstream consumers can distinguish it from an SDP-confirmed result.
+        # ``_determine_evidence_source`` already reports such a classification as
+        # "heuristic" (only measured SDP/GATT promote to "measured_*").
         if classic_uuids:
             if has_service_discovery_server:
                 # Service Discovery Server is most indicative of Classic - use CONCLUSIVE weight
@@ -465,7 +476,9 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
                     {
                         "uuid_count": len(classic_uuids),
                         "source": "SPEC_UUID_NAMES__SERV_CLASS",
-                        "is_service_discovery_server": True
+                        "is_service_discovery_server": True,
+                        "ground_truth": False,
+                        "source_kind": "advertised",
                     }
                 )
             else:
@@ -475,7 +488,12 @@ class ClassicServiceUUIDsCollector(EvidenceCollector):
                     EvidenceWeight.STRONG,
                     "dbus_property",
                     classic_uuids,
-                    {"uuid_count": len(classic_uuids), "source": "SPEC_UUID_NAMES__SERV_CLASS"}
+                    {
+                        "uuid_count": len(classic_uuids),
+                        "source": "SPEC_UUID_NAMES__SERV_CLASS",
+                        "ground_truth": False,
+                        "source_kind": "advertised",
+                    }
                 )
 
 
@@ -622,7 +640,7 @@ class LEServiceUUIDsCollector(EvidenceCollector):
         gatt_uuid_set = set()
         gatt_short_uuids = set()
         for gatt_uuid_key in gatt_service_uuids.keys():
-            gatt_normalized = gatt_uuid_key.replace("-", "").lower()
+            gatt_normalized = gatt_uuid_key.replace("-", "").upper()
             gatt_uuid_set.add(gatt_normalized)
             # Extract short form (positions 4-8, which is the 16-bit UUID part)
             if len(gatt_normalized) >= 8:
@@ -637,8 +655,8 @@ class LEServiceUUIDsCollector(EvidenceCollector):
             # Check if any normalized form matches a GATT service UUID
             matched = False
             for uuid_form in uuid_forms:
-                # Normalize for comparison (remove dashes, lowercase, strip whitespace)
-                normalized_form = uuid_form.replace("-", "").lower().strip()
+                # Normalize for comparison (remove dashes, uppercase, strip whitespace)
+                normalized_form = uuid_form.replace("-", "").upper().strip()
                 
                 # Check full UUID match
                 if normalized_form in gatt_uuid_set:
@@ -713,23 +731,66 @@ class LEAdvertisingDataCollector(EvidenceCollector):
             )
 
 
-# Known beacon / service-data UUIDs → heuristic labels
-_BEACON_SERVICE_DATA_UUIDS = {
-    "0000fcf1-0000-1000-8000-00805f9b34fb": "find_my_beacon",
-    "0000fe0f-0000-1000-8000-00805f9b34fb": "exposure_notification_v1",
-    "0000fd6f-0000-1000-8000-00805f9b34fb": "exposure_notification_v2",
-    "0000fe05-0000-1000-8000-00805f9b34fb": "microsoft_cdp",
-    "a82efa21-ae5c-3dde-9bbc-f16da7b16c5a": "nearby_sharing",
-}
+# Known beacon / service-data UUIDs → protocol labels.
+#
+# G-7.5 triple-pass review: the prior labels here were misattributed (e.g.
+# FCF1 was tagged "find_my_beacon" but is registered to Google LLC; FE05 was
+# tagged "microsoft_cdp" but true CDP is company-id 0x0006, not a service-data
+# UUID). Labels are now sourced from the single authoritative map in
+# ``bt_ref.constants.SERVICE_DATA_PROTOCOL_LABELS`` (the canonical UUID
+# reference layer, also consumed by the dissector) so the two cannot drift.
+# See docs/adv_dissection.md ("Known UUID attribution corrections").
+def _build_beacon_service_data_uuids() -> Dict[str, str]:
+    from bleep.bt_ref.constants import BT_SIG_BASE_UUID_SUFFIX, SERVICE_DATA_PROTOCOL_LABELS
+
+    table: Dict[str, str] = {}
+    for u16, label in SERVICE_DATA_PROTOCOL_LABELS.items():
+        table[f"0000{u16.upper()}{BT_SIG_BASE_UUID_SUFFIX}"] = label
+    # Non-SIG (vendor-base) UUID retained from prior heuristic.
+    table["A82EFA21-AE5C-3DDE-9BBC-F16DA7B16C5A"] = "nearby_sharing"
+    return table
+
+
+_BEACON_SERVICE_DATA_UUIDS = _build_beacon_service_data_uuids()
 
 # Common vendor UART service UUIDs (LE peripheral UART tunnels)
 _VENDOR_UART_UUIDS = {
-    "0000ffe0-0000-1000-8000-00805f9b34fb",
-    "0000ffe1-0000-1000-8000-00805f9b34fb",
-    "0000fff0-0000-1000-8000-00805f9b34fb",
-    "0000fff1-0000-1000-8000-00805f9b34fb",
-    "6e400001-b5a3-f393-e0a9-e50e24dcca9e",  # Nordic UART
+    "0000FFE0-0000-1000-8000-00805F9B34FB",
+    "0000FFE1-0000-1000-8000-00805F9B34FB",
+    "0000FFF0-0000-1000-8000-00805F9B34FB",
+    "0000FFF1-0000-1000-8000-00805F9B34FB",
+    "6E400001-B5A3-F393-E0A9-E50E24DCCA9E",  # Nordic UART
 }
+
+# BLE-advertisement protocols that, when decoded from ManufacturerData, are a
+# strong indicator the device is LE-capable. ManufacturerData also appears in
+# Classic EIR, so only these *BLE-specific* decoded protocols count as LE
+# evidence — a bare, unrecognised company payload does not. Recognition is
+# delegated to the shared dissector (analysis/adv_dissect.py), so protocol
+# decoding lives in one place. See docs/adv_dissection.md.
+#
+# ``eddystone`` is decoded from ServiceData (UUID 0xFEAA), an LE-only beacon
+# protocol that never appears on Classic/BR-EDR — a decoded Eddystone frame is
+# therefore legitimate STRONG LE evidence, on the same footing as iBeacon /
+# Apple Continuity.
+_LE_INDICATIVE_ADV_PROTOCOLS = {"ibeacon", "ibeacon_compact", "apple_continuity", "eddystone"}
+
+
+def _observed_promotion_enabled(context: Dict[str, Any]) -> bool:
+    """Whether observed-catalogue evidence may be *promoted* to a verdict-affecting weight.
+
+    Off by default (stateless guarantee): an advertised UUID that merely resembles
+    something seen on another device must not silently flip *this* device's type.
+    Opt in per-call with ``context["allow_observed_promotion"]`` or globally with
+    the ``BLEEP_CLASSIFIER_OBSERVED_PROMOTION`` env var (``1``/``true``/``yes``/``on``).
+    """
+    if context.get("allow_observed_promotion"):
+        return True
+    import os
+
+    return os.environ.get("BLEEP_CLASSIFIER_OBSERVED_PROMOTION", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 class LEServiceDataCollector(EvidenceCollector):
@@ -749,11 +810,11 @@ class LEServiceDataCollector(EvidenceCollector):
 
     def collect(self, mac: str, context: Dict[str, Any], evidence: EvidenceSet) -> None:
         service_data = context.get("service_data") or {}
-        uuids = [str(u).lower() for u in context.get("uuids", [])]
+        uuids = [str(u).upper() for u in context.get("uuids", [])]
 
         # Beacon / known service-data signatures
         for sd_uuid_raw in service_data:
-            sd_uuid = str(sd_uuid_raw).lower()
+            sd_uuid = str(sd_uuid_raw).upper()
             for known_uuid, label in _BEACON_SERVICE_DATA_UUIDS.items():
                 if sd_uuid == known_uuid or sd_uuid.startswith(known_uuid[:8]):
                     evidence.add(
@@ -764,15 +825,19 @@ class LEServiceDataCollector(EvidenceCollector):
                         {"uuid": sd_uuid, "evidence_source": "heuristic"},
                     )
 
-        # Microsoft CDP in advertised UUIDs
-        cdp_uuid = "0000fe05-0000-1000-8000-00805f9b34fb"
-        if cdp_uuid in uuids:
+        # G-7.5 correction: FE05 is registered to CORE Transport Technologies
+        # NZ Limited, NOT Microsoft CDP. True Microsoft CDP is company-id
+        # 0x0006 in ManufacturerData. FE05 in advertised UUIDs is still a valid
+        # LE-only service indicator, so the STRONG LE evidence is preserved with
+        # a corrected label. See docs/adv_dissection.md.
+        fe05_uuid = "0000FE05-0000-1000-8000-00805F9B34FB"
+        if fe05_uuid in uuids:
             evidence.add(
                 EvidenceType.LE_ADVERTISING_DATA,
                 EvidenceWeight.STRONG,
                 "uuid_heuristic",
-                "microsoft_cdp",
-                {"uuid": cdp_uuid, "evidence_source": "heuristic"},
+                "core_transport_nz",
+                {"uuid": fe05_uuid, "evidence_source": "heuristic"},
             )
 
         # Vendor UART heuristics — these UUIDs are LE-only peripheral services
@@ -786,6 +851,97 @@ class LEServiceDataCollector(EvidenceCollector):
                     {"uuid": u, "evidence_source": "heuristic"},
                 )
                 break  # one hit is enough
+
+        # "Seen in the wild" feed: advertised UUIDs the curated beacon/UART sets
+        # don't recognise but that we have *observed under a name* before (LE/Classic
+        # service or SDP tables). See docs/observation_db.md (observed-UUID tier).
+        #
+        # Default (promotion off): WEAK LE evidence only — it enriches the
+        # reasoning/confidence but cannot flip a verdict (``_classify_le/_classic/
+        # _dual`` consult only CONCLUSIVE/STRONG), so a mislabelled observation can
+        # never mis-type a device (the stateless guarantee).
+        #
+        # Opt-in (promotion on, see ``_observed_promotion_enabled``): a UUID that was
+        # *measured* as an LE GATT service elsewhere adds STRONG LE_ADVERTISING_DATA;
+        # measured as a Classic/SDP service adds STRONG CLASSIC_SERVICE_UUIDS. These
+        # are verdict-affecting, so promotion is deliberately opt-in and provenance
+        # tagged (``evidence_source="observed_catalogue"``, ``promoted=True``).
+        already_matched = set(_VENDOR_UART_UUIDS) | {fe05_uuid}
+        promote = _observed_promotion_enabled(context)
+        try:
+            if promote:
+                from bleep.core.observations import get_observed_uuid_evidence
+
+                for u in uuids:
+                    if u in already_matched:
+                        continue
+                    ev = get_observed_uuid_evidence(u)
+                    if ev["le_measured"]:
+                        evidence.add(
+                            EvidenceType.LE_ADVERTISING_DATA,
+                            EvidenceWeight.STRONG,
+                            "observed_le_gatt",
+                            ev["le_names"] or [u],
+                            {"uuid": u, "evidence_source": "observed_catalogue", "promoted": True},
+                        )
+                    if ev["classic_measured"]:
+                        evidence.add(
+                            EvidenceType.CLASSIC_SERVICE_UUIDS,
+                            EvidenceWeight.STRONG,
+                            "observed_classic",
+                            ev["classic_names"] or [u],
+                            {"uuid": u, "evidence_source": "observed_catalogue", "promoted": True},
+                        )
+            else:
+                from bleep.core.observations import get_observed_uuid_names
+
+                for u in uuids:
+                    if u in already_matched:
+                        continue
+                    observed_names = get_observed_uuid_names(u)
+                    if observed_names:
+                        evidence.add(
+                            EvidenceType.LE_ADVERTISING_DATA,
+                            EvidenceWeight.WEAK,
+                            "observed_catalogue",
+                            observed_names,
+                            {"uuid": u, "evidence_source": "observed_catalogue"},
+                        )
+        except Exception:  # noqa: BLE001 - enrichment must not break classification
+            pass
+
+        # G-7.4/G-7.5: consume the shared advertisement dissector for
+        # ManufacturerData *and* ServiceData. iBeacon / Apple Continuity
+        # (ManufacturerData) and Eddystone (ServiceData 0xFEAA) are BLE-only
+        # protocols, so decoding one is strong LE evidence — this closes the gap
+        # where a beacon-only device (no advertised GATT/service-data UUID)
+        # classified as ``unknown``. Delegating to the dissector keeps protocol
+        # decoding in one place instead of re-implementing it in the classifier;
+        # only protocols in ``_LE_INDICATIVE_ADV_PROTOCOLS`` are treated as LE
+        # (a bare company payload / generic service-data label is not).
+        manufacturer_data = context.get("manufacturer_data")
+        if manufacturer_data or service_data:
+            try:
+                from bleep.analysis.adv_dissect import dissect_advertisement
+
+                dissection = dissect_advertisement(
+                    manufacturer_data=manufacturer_data or None,
+                    service_data=service_data or None,
+                )
+                le_protocols = [
+                    p for p in dissection["summary"]["protocols"]
+                    if p in _LE_INDICATIVE_ADV_PROTOCOLS
+                ]
+                if le_protocols:
+                    evidence.add(
+                        EvidenceType.LE_ADVERTISING_DATA,
+                        EvidenceWeight.STRONG,
+                        "adv_dissection",
+                        le_protocols,
+                        {"evidence_source": "heuristic", "source_kind": "advertisement"},
+                    )
+            except Exception:  # noqa: BLE001 - enrichment must not break classification
+                pass
 
 
 # ============================================================================
@@ -1196,7 +1352,7 @@ class DeviceTypeClassifier:
         classic_uuid_set = set()
         classic_short_uuids = set()
         for classic_uuid_key in classic_profile_uuids.keys():
-            classic_normalized = classic_uuid_key.replace("-", "").lower()
+            classic_normalized = classic_uuid_key.replace("-", "").upper()
             classic_uuid_set.add(classic_normalized)
             if len(classic_normalized) >= 8:
                 classic_short_uuids.add(classic_normalized[4:8])
@@ -1206,7 +1362,7 @@ class DeviceTypeClassifier:
             uuid_forms = identify_uuid(uuid_str)
             
             for uuid_form in uuid_forms:
-                normalized_form = uuid_form.replace("-", "").lower().strip()
+                normalized_form = uuid_form.replace("-", "").upper().strip()
                 
                 # Check full UUID match
                 if normalized_form in classic_uuid_set:
@@ -1235,7 +1391,7 @@ class DeviceTypeClassifier:
         gatt_uuid_set = set()
         gatt_short_uuids = set()
         for gatt_uuid_key in gatt_service_uuids.keys():
-            gatt_normalized = gatt_uuid_key.replace("-", "").lower()
+            gatt_normalized = gatt_uuid_key.replace("-", "").upper()
             gatt_uuid_set.add(gatt_normalized)
             if len(gatt_normalized) >= 8:
                 gatt_short_uuids.add(gatt_normalized[4:8])
@@ -1245,7 +1401,7 @@ class DeviceTypeClassifier:
             uuid_forms = identify_uuid(uuid_str)
             
             for uuid_form in uuid_forms:
-                normalized_form = uuid_form.replace("-", "").lower().strip()
+                normalized_form = uuid_form.replace("-", "").upper().strip()
                 
                 # Check full UUID match
                 if normalized_form in gatt_uuid_set:
@@ -1400,8 +1556,8 @@ def classify_hid(context: Dict[str, Any]) -> Optional[HIDInfo]:
 
     uuids = context.get("uuids") or []
     for u in uuids:
-        short = str(u).replace("-", "").lower()
-        if short.startswith(_HID_SERVICE_UUID.lower()) or short == _HID_SERVICE_UUID.lower():
+        short = str(u).replace("-", "").upper()
+        if short.startswith(_HID_SERVICE_UUID.upper()) or short == _HID_SERVICE_UUID.upper():
             if hid_type is None:
                 hid_type = "generic"
                 subclass_label = "HID Service (UUID 0x1124)"

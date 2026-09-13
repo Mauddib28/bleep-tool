@@ -35,8 +35,11 @@ __all__ = [
     "discover_services_sdp_connectionless",
     "connect_and_enumerate__bluetooth__classic",
     "query_hci_version",
+    "query_remote_version",
     "map_lmp_version_to_spec",
     "map_profile_version_to_spec",
+    "resolve_manufacturer_name",
+    "infer_min_bt_version_from_le_features",
 ]
 
 _LAZY_IMPORTS = {
@@ -61,8 +64,11 @@ _LAZY_IMPORTS = {
     "connect_and_enumerate__bluetooth__classic":   (".classic.connect", "connect_and_enumerate__bluetooth__classic"),
     # Classic – version
     "query_hci_version":                           (".classic.version", "query_hci_version"),
+    "query_remote_version":                        (".classic.version", "query_remote_version"),
     "map_lmp_version_to_spec":                     (".classic.version", "map_lmp_version_to_spec"),
     "map_profile_version_to_spec":                 (".classic.version", "map_profile_version_to_spec"),
+    "resolve_manufacturer_name":                   (".classic.version", "resolve_manufacturer_name"),
+    "infer_min_bt_version_from_le_features":       (".classic.version", "infer_min_bt_version_from_le_features"),
 }
 
 

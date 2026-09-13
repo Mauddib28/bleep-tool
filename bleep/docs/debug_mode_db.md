@@ -181,12 +181,38 @@ bleep db list
 # Show details for a specific device
 bleep db show <MAC>
 
-# Export all data for a device
+# Export all data for a device (pass --max-history 0 / --max-adv 0 for the unbounded set)
 bleep db export <MAC>
 
 # View characteristic value history
 bleep db timeline <MAC>
+
+# List devices collected within a date window, optionally writing a target list
+bleep db list --since 2026-08-06 --until 2026-08-09 --export-targets targets.json
+
+# Contrast raw vs heuristically-collapsed identity counts (RPA rotation signal)
+bleep db list --since 2026-08-06 --until 2026-08-09 --group-identity payload
+
+# Generate an aggregate security report over a window (reuses the AoI engine)
+bleep db report --since 2026-08-06 --until 2026-08-09 --status ble --out report.md
+
+# Audit device names: real vs MAC-alias vs empty vs foreign-MAC anomaly
+bleep db list --since 2026-08-06 --until 2026-08-09 --name-audit
+
+# Reconnaissance analytics: SDP inventory + OUI vendor decode + hex pattern analysis
+bleep db report --since 2026-08-06 --until 2026-08-09 --all-in-window --recon
+# ...same, but render SDP/OUI inventories as bullet lists instead of tables
+bleep db report --since 2026-08-06 --until 2026-08-09 --all-in-window --recon --report-bullets
 ```
+
+The `db list`/`db report` window flags (`--since`/`--until`/`--seen-basis`/`--tz`),
+target-list export (`--export-targets`), identity collapse (`--group-identity`,
+`--identity-contrast`), full-window reports (`--all-in-window`), export
+uncapping (`--max-history`/`--max-adv`), the name audit (`--name-audit`,
+`--name-sample`, `--name-detail-limit`), reconnaissance analytics
+(`--recon`, `--recon-detail`), and the bullet-vs-table toggle
+(`--report-bullets`) are documented in
+[cli_usage.md](cli_usage.md) and [observation_db.md](observation_db.md).
 
 ## Troubleshooting
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Explore mode in BLEEP is designed to scan and produce JSON mappings of Bluetooth Low Energy (BLE) devices for later offline analysis. This mode connects to a specified BLE device, enumerates its GATT database, and saves the results to a JSON file.
+The Explore mode in BLEEP scans and produces JSON mappings of Bluetooth Low Energy (BLE) devices for later offline analysis. It connects to a specified BLE device, enumerates its GATT database, and saves the results to a JSON file.
 
 ## Command Syntax
 
@@ -19,10 +19,11 @@ python -m bleep.cli explore <MAC_ADDRESS> [options]
 - `--out FILE`, `--dump-json FILE`: Output JSON file path (default: stdout)
 - `--verbose`, `-v`: Include verbose characteristic list with handles
 - `--connection-mode MODE`, `--conn-mode MODE`: Connection mode to use:
-  - `passive`: Single connection attempt (default)
+  - `passive`: Single discovery pass with one bounded connect+resolve retry (default)
   - `naggy`: Multiple connection attempts with retries
 - `--timeout SECONDS`: Scan timeout in seconds (default: 10)
 - `--retries NUMBER`: Number of connection retries in naggy mode (default: 3)
+- `--adapter hciN`: BlueZ controller (default `hci0`). Device1 is constructed on this adapter.
 
 ## Examples
 
@@ -68,7 +69,7 @@ The explore command produces a JSON file with the following structure:
             "descriptors": [
               {
                 "uuid": "00002902-0000-1000-8000-00805f9b34fb",
-                "path": "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service000a/char002b/desc002d"
+                "path": "/org/bluez/hci0/dev_AA_BB_CC_DD_EE:FF/service000a/char002b/desc002d"
               }
             ]
           }
@@ -81,18 +82,37 @@ The explore command produces a JSON file with the following structure:
 
 ## Connection Modes
 
+### Architecture
+
+Explore mode delegates connection to `scan_and_connect()` in
+`bleep.ble_ops.le.scan_modes`, which dispatches to mode-specific wrapper
+functions. Each wrapper calls the parameterised
+`connect_and_enumerate__bluetooth__low_energy()` primitive in
+`bleep.ble_ops.le.connect` with mode-appropriate settings — scan attempts,
+connect retries, timeouts, and (for naggy) exponential backoff. See
+[BLE Scan Modes](ble_scan_modes.md) for the full parameter table.
+
 ### Passive Mode (Default)
 
-The passive mode performs a single scan and connection attempt with reasonable timeouts. It's suitable for most devices in good signal conditions. The connection process is divided into three phases:
+Passive mode performs a single discovery pass and then a bounded connect+resolve cycle (one retry). It is suitable for most devices in good signal conditions. Timeouts are derived from `--timeout` (`T`):
 
-1. **Scanning**: Finding the device (50% of the timeout)
-2. **Connection**: Establishing connection (25% of the timeout)
-3. **Service Resolution**: Resolving GATT services (25% of the timeout)
+1. **Scanning**: Finding the device — `T // 2` (floor 5s)
+2. **Connection**: Establishing connection — `T // 4` (floor 5s)
+3. **Service Resolution**: Resolving GATT services — `max(T, 15)` (floor 15s)
+
+Service resolution uses a fixed 15s floor (independent of the scan budget) because it is the slowest phase on rich GATT servers (robotics/audio/wearables); a smaller window previously caused spurious `ServicesNotResolved` failures on devices that merely resolve slowly. A single bounded connect+resolve retry absorbs transient first-attempt misses.
+
+Internally this maps to `_connect_enum(scan_attempts=3, scan_timeout=max(T//2,5), connect_retries=1, connect_wait_timeout=max(T//4,5), timeout_services=max(T,15), max_attempts=2, backoff_base=0.5, backoff_max=5.0, backoff_jitter=0.5)`.
 
 ### Naggy Mode
 
-The naggy mode is designed for unreliable connections or challenging environments. It uses multiple connection attempts with exponential backoff between retries. This mode is more aggressive and persistent, making it suitable for:
+Naggy mode is designed for unreliable connections or challenging environments. It uses multiple connection attempts with exponential backoff between retries. The `--retries` flag controls the outer retry count (default 10 when invoked via `scan_modes.py`, 3 when invoked via `explore`).
 
+Internally this maps to `_connect_enum(max_attempts=retries, scan_attempts=5, scan_timeout=8, connect_retries=2, connect_wait_timeout=5.0, timeout_services=20, backoff_base=0.5, backoff_max=30.0, backoff_jitter=0.5)`.
+
+Transient D-Bus `InProgress`/`Failed` errors are forgiven (they don't count toward the retry limit), making naggy mode robust against BlueZ state-machine glitches.
+
+Use naggy mode for:
 - Devices with intermittent connectivity
 - Environments with interference
 - Devices that require multiple connection attempts
@@ -123,3 +143,5 @@ If services fail to resolve:
 - Increase the `--timeout` value
 - Try using `--connection-mode naggy`
 - Some devices may have incomplete or non-standard GATT implementations
+
+*Last updated: 2026-07-27*

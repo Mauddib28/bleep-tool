@@ -21,15 +21,20 @@ import importlib.abc  # ensure .abc submodule is loaded for Loader/MetaPathFinde
 import importlib.machinery  # ensure ModuleSpec is available
 from typing import Dict
 
-# Mapping logical names ↔ markdown filenames (extend if new guides are added)
+# Mapping logical names ↔ markdown filenames (extend if new guides are added).
+# Keep this in sync with the files in this directory; archived/historical
+# documents live under ``archive/`` and are referenced with that path prefix.
 _DOCS: Dict[str, str] = {
     'README': 'README.md',
+    # --- CLI & modes ---
     'cli_usage': 'cli_usage.md',
     'debug_mode': 'debug_mode.md',
     'debug_mode_db': 'debug_mode_db.md',
     'ble_scan_modes': 'ble_scan_modes.md',
     'ble_ctf_mode': 'ble_ctf_mode.md',
     'bl_classic_mode': 'bl_classic_mode.md',
+    'map_bmessage_format': 'map_bmessage_format.md',
+    'map_version_compatibility': 'map_version_compatibility.md',
     'gatt_enumeration': 'gatt_enumeration.md',
     'media_mode': 'media_mode.md',
     'audio_recon': 'audio_recon.md',
@@ -39,7 +44,12 @@ _DOCS: Dict[str, str] = {
     'agent_mode': 'agent_mode.md',
     'pairing_agent': 'pairing_agent.md',
     'signal_capture': 'signal_capture.md',
+    'adv_monitor': 'adv_monitor.md',
+    'le_advertising': 'le_advertising.md',
+    'survey_mode': 'survey_mode.md',
+    'beacon_identification': 'beacon_identification.md',
     'adapter_config': 'adapter_config.md',
+    # --- Data & security ---
     'observation_db': 'observation_db.md',
     'observation_db_usage_scenarios': 'observation_db_usage_scenarios.md',
     'observation_db_schema': 'observation_db_schema.md',
@@ -48,23 +58,44 @@ _DOCS: Dict[str, str] = {
     'aoi_security_algorithms': 'aoi_security_algorithms.md',
     'aoi_customization_guide': 'aoi_customization_guide.md',
     'aoi_testing': 'aoi_testing.md',
-    'aoi_changes_summary': 'aoi_changes_summary.md',
+    # --- Architecture & reference ---
+    'api_specification': 'api_specification.md',
     'bluez_interface_properties': 'bluez_interface_properties.md',
     'device_type_classification': 'device_type_classification.md',
+    'adv_dissection': 'adv_dissection.md',
     'uuid_translation': 'uuid_translation.md',
     'modalias_handling': 'modalias_handling.md',
     'network_capability_summary': 'network_capability_summary.md',
-    'network_capability_plan': 'network_capability_plan.md',
+    'pan_connection_analysis': 'pan_connection_analysis.md',
     'unified_dbus_event_aggregator': 'unified_dbus_event_aggregator.md',
     'd_bus_reliability': 'd-bus-reliability.md',
     'dbus_documentation_index': 'dbus_documentation_index.md',
     'dbus_best_practices': 'dbus_best_practices.md',
     'dbus_debugging_methods': 'dbus_debugging_methods.md',
     'mainloop_architecture': 'mainloop_architecture.md',
-    'mainloop_requirement_analysis': 'mainloop_requirement_analysis.md',
     'agent_documentation_index': 'agent_documentation_index.md',
+    'agent_pairing_flow_analysis': 'agent_pairing_flow_analysis.md',
+    # --- Project tracking ---
     'changelog': 'changelog.md',
     'todo_tracker': 'todo_tracker.md',
+    # --- Archived: historical investigations & completed plans (docs/archive/) ---
+    'archive_index': 'archive/README.md',
+    'mainloop_requirement_analysis': 'archive/mainloop_requirement_analysis.md',
+    'real_issue_investigation': 'archive/real_issue_investigation.md',
+    'method_invocation_investigation': 'archive/method_invocation_investigation.md',
+    'accessdenied_error_analysis': 'archive/accessdenied_error_analysis.md',
+    'introspection_test_analysis': 'archive/introspection_test_analysis.md',
+    'terminal_error_analysis': 'archive/terminal_error_analysis.md',
+    'agent_dbus_communication_issue': 'archive/agent_dbus_communication_issue.md',
+    'agent_method_registration_investigation': 'archive/agent_method_registration_investigation.md',
+    'agent_registration_diagnosis': 'archive/agent_registration_diagnosis.md',
+    'bluez_reference_analysis_refined': 'archive/bluez_reference_analysis_refined.md',
+    'bluez_tools_comparison_analysis': 'archive/bluez_tools_comparison_analysis.md',
+    'pincode_tracking_verification': 'archive/pincode_tracking_verification.md',
+    'uuid_translation_plan': 'archive/uuid_translation_plan.md',
+    'network_capability_plan': 'archive/network_capability_plan.md',
+    'datetime_utc_migration_plan': 'archive/datetime_utc_migration_plan.md',
+    'aoi_changes_summary': 'archive/aoi_changes_summary.md',
 }
 
 

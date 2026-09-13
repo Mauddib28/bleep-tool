@@ -1,6 +1,6 @@
 # Signal Capture System
 
-The Signal Capture System is a powerful feature introduced in BLEEP v2.2.0 that allows comprehensive tracking and processing of Bluetooth events, particularly characteristic operations (reads, writes, notifications). This major update enables full timeline tracking of all characteristic interactions. This document explains how the system works and how it integrates with the observation database.
+The Signal Capture System is a powerful feature of BLEEP (v3.0.0) that allows comprehensive tracking and processing of Bluetooth events, particularly characteristic operations (reads, writes, notifications). It enables full timeline tracking of all characteristic interactions. This document explains how the system works and how it integrates with the observation database.
 
 ## Overview
 
@@ -23,10 +23,10 @@ Defined in `bleep/signals/capture_config.py`:
 - `PROPERTY_CHANGE` - D-Bus property changes
 - `READ` - Characteristic read operations
 - `WRITE` - Characteristic write operations
-- `DEVICE_CONNECT` - Device connection events (v2.8.0)
-- `DEVICE_DISCONNECT` - Device disconnection events (v2.8.0)
-- `PAIR_START` - Pairing initiated events (v2.8.0)
-- `PAIR_COMPLETE` - Pairing completed events (v2.8.0)
+- `DEVICE_CONNECT` - Device connection events (v3.0.0)
+- `DEVICE_DISCONNECT` - Device disconnection events (v3.0.0)
+- `PAIR_START` - Pairing initiated events (v3.0.0)
+- `PAIR_COMPLETE` - Pairing completed events (v3.0.0)
 - `ANY` - Matches any signal type
 
 ### 2. Signal Filters
@@ -67,12 +67,19 @@ The router manages the signal flow:
 
 ## Integration with BlueZ
 
-The Signal Capture System integrates with BlueZ signals through:
+The Signal Capture System integrates with BlueZ signals through two functions,
+with **different lifecycles**:
 
-1. `integrate_with_bluez_signals()` - Hooks into BlueZ signal handling
-2. `patch_signal_capture_class()` - Ensures all signal captures are processed
-
-These functions are called during application startup in `bleep/__init__.py`.
+1. `patch_signal_capture_class()` - Patches the `SignalCapture` dataclass so all
+   signal captures are processed. Runs **eagerly** on package import
+   (`bleep/__init__.py` ~34); it is safe to run early because it does not touch
+   D-Bus.
+2. `integrate_with_bluez_signals()` - Hooks into live BlueZ D-Bus signal
+   handling. This does **not** run at startup. It is deferred (lazy) and invoked
+   exactly once on first actual D-Bus device use via `_ensure_bluez_signals()`
+   (`bleep/__init__.py` ~39-45, called from `bleep/dbuslayer/device_le.py` ~60).
+   The deferral avoids a circular-import problem caused by `dbus.SystemBus()`
+   running while `device_le.py` is still being imported.
 
 ## Database Integration
 
@@ -81,7 +88,7 @@ When a characteristic operation occurs:
 1. The operation is captured as a signal
 2. The signal is processed through the router
 3. If a route with a `DB_STORE` action matches, the signal is stored in the database
-4. The `store_signal_capture()` function in `bleep/core/observations.py` handles the database insertion
+4. The `store_signal_capture()` function in `bleep/core/observations/_signals.py` handles the database insertion
 5. For characteristic operations, values are stored in the `char_history` table
 
 ## Default Configuration
@@ -133,14 +140,22 @@ If characteristic operations are not showing up in the timeline:
 4. Check if the device MAC address is correctly normalized (uppercase)
 5. Ensure the service and characteristic UUIDs are correctly formatted
 
-## User Callbacks (v2.8.0)
+## User Callbacks (v3.0.0)
 
-The `BleepCallback` system allows users to create custom callbacks that are automatically loaded and registered with the signal router.
+The `BleepCallback` system lets users create custom callbacks that can be
+registered with the signal router.
+
+> **Callbacks are NOT auto-loaded.** `load_callbacks()` is defined and exported
+> in `bleep/callbacks/__init__.py`, but it is **never called anywhere** in the
+> package — nothing invokes it on import or startup. To register your callbacks
+> you must call `load_callbacks()` yourself (e.g. from a script or an
+> interactive session). Only then are the callbacks discovered and wired to the
+> router.
 
 ### Architecture
 
 - **Base class**: `bleep/callbacks/base.py` — `BleepCallback` ABC with `name`, `trigger` (a `SignalType`), `execute(context)`, `on_load()`, `on_unload()`.
-- **Auto-loader**: `bleep/callbacks/__init__.py` — `load_callbacks(directory)` scans `~/.config/bleep/callbacks/` (default) for `.py` files containing `BleepCallback` subclasses. Each subclass is instantiated and registered with the signal router. If `trigger` is not `ANY`, only matching `signal_type` events are dispatched.
+- **Loader (opt-in, manual)**: `bleep/callbacks/__init__.py` — `load_callbacks(directory)` scans `~/.config/bleep/callbacks/` (`DEFAULT_CALLBACK_DIR`, default) for `.py` files containing `BleepCallback` subclasses, instantiates each, and registers a handler with the signal router via `register_callback()` (`_register_all`). If `trigger` is not `ANY`, only matching `signal_type` events are dispatched. This function must be **called explicitly** — it does not run on its own.
 - **Example callbacks**: `bleep/callbacks/examples/log_all_notifications.py` (logs all BLE notifications), `pair_event_logger.py` (logs `PAIR_START`/`PAIR_COMPLETE` events).
 
 ### Creating a Callback
@@ -159,12 +174,24 @@ class MyCallback(BleepCallback):
         print(f"Got: {context}")
 ```
 
+Then load and register it explicitly (it is not picked up automatically):
+
+```python
+from bleep.callbacks import load_callbacks
+
+load_callbacks()                       # scans DEFAULT_CALLBACK_DIR
+# or: load_callbacks("/path/to/callbacks")
+```
+
 ## Future Enhancements
+
+Custom signal-filter/route creation via the CLI is **already implemented** —
+see `bleep signal-config add-route` (filters for `--signal-type`, `--device-mac`,
+`--service-uuid`, `--char-uuid`, `--path-pattern`, value length, etc.).
 
 Planned improvements to the Signal Capture System:
 
-1. Custom signal filter creation via CLI
-2. Real-time signal visualization
-3. Enhanced signal transformation capabilities
-4. Integration with external analysis tools
-5. Improved performance for high-volume signals
+1. Real-time signal visualization
+2. Enhanced signal transformation capabilities (the `TRANSFORM` router action is currently a stub)
+3. Integration with external analysis tools (the `FORWARD` router action is currently a stub)
+4. Improved performance for high-volume signals

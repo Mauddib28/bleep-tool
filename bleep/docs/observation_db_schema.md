@@ -21,6 +21,16 @@ The observation database is a SQLite database located at `~/.bleep/observations.
 | 8 | MAC address normalisation to uppercase | One-time migration converts all MAC columns (`devices.mac`, `adv_reports.mac`, `services.mac`, `classic_services.mac`, `char_history.mac`, `media_players.mac`, `media_transports.mac`, `pbap_metadata.mac`, `aoi_analysis.mac`, `device_type_evidence.mac`, `sdp_records.mac`) to `UPPER()`.  `_normalize_mac()` enforces uppercase on all write paths. |
 | 9 | UUID normalisation to uppercase | One-time migration converts UUID columns in `services.uuid`, `characteristics.uuid`, `classic_services.uuid`, `sdp_records.uuid`, and `char_history.service_uuid`/`char_uuid` to `UPPER()`.  `_normalize_uuid()` enforces uppercase on all write paths. |
 | 10 | Data fidelity enrichment | Added `descriptors` table. `devices`: added `tx_power`, `modalias`, `icon`, `service_data`, `advertising_data`.  `services`: added `is_primary`, `includes`.  `characteristics`: added `mtu`.  New APIs: `get_characteristic_id()`, `upsert_descriptors()`.  `upsert_services` ON CONFLICT now updates `handle_start`/`handle_end`/`name` via COALESCE. |
+| 11 | AoI augmentation (added in package v2.8.4; current package 3.1.0) | `aoi_analysis`: added `pairing_profile` (JSON), `sdp_summary` (JSON), `post_pair_delta` (JSON) columns.  Stores JustWorks pairing probe results, Classic SDP analysis summary, and post-pair service delta per device.  Non-destructive `ALTER TABLE ADD COLUMN` migration; NULL columns ignored by older code.  `store_aoi_analysis()` updated with 9-column INSERT and full ON CONFLICT update. |
+| 12 | Phase 2 persistence gap closure (v3.0) | **New tables:** `pairing_events` (full pairing workflow per attempt), `security_maps` (per-enumeration landmine/permission maps), `media_enumerations` (full media-enum snapshots), `audio_recon` (host-level audio recon).  **New device columns:** `uuids` (JSON), `paired` (BOOLEAN), `trusted` (BOOLEAN), `bonded` (BOOLEAN), `sighting_count` (INT), `fingerprint_changed` (BOOLEAN).  **New sdp_records columns:** `mas_instance_id` (INT), `supported_message_types` (TEXT), `supported_features` (TEXT).  All 7 data domains now persist to DB: scan ads, signal notifications, pairing events, media enumerations, audio recon, security maps, survey metadata. |
+| 13 | AoI analysis details (v3.0) | `aoi_analysis`: added `analysis_details` (JSON) column for storing full analysis output alongside summary fields. Non-destructive `ALTER TABLE ADD COLUMN` migration. |
+| 14 | Remote Bluetooth version detection (v3.0) | `devices`: added 6 columns for remote BT version info — `lmp_version` (INT), `lmp_subversion` (INT), `bt_manufacturer` (INT), `bt_spec_version` (TEXT, full SIG name e.g. "Bluetooth® Core Specification 5.0"), `lmp_features` (TEXT, JSON feature page hex strings), `version_queried_at` (DATETIME). Populated by `query_remote_version()` and stored via `query_and_store_remote_version()`. |
+| 15 | DIS version columns (v3.0) | `devices`: added 8 columns for Device Information Service data — `firmware_revision` (TEXT, 0x2A26), `software_revision` (TEXT, 0x2A28), `model_number` (TEXT, 0x2A24), `dis_manufacturer_name` (TEXT, 0x2A29), `pnp_vendor_source` (INT, 1=BT SIG / 2=USB-IF), `pnp_vendor_id` (INT), `pnp_product_id` (INT), `pnp_product_version` (INT). Extracted from DIS characteristics during LE scanning. |
+| 16 | `sdp_records` append-only / versioned (2026-07-10) | Dropped the `UNIQUE(mac, service_record_handle)` constraint (table rebuilt via rename→create→copy→drop, preserving all rows) and added a **non-unique** index `idx_sdp_records_mac_handle` on `(mac, service_record_handle)`. `upsert_sdp_record()` no longer overwrites in place (`ON CONFLICT … DO UPDATE`); it appends a new timestamped snapshot **only when service content changes** vs the latest snapshot for the same logical service (`mac + uuid + channel`; comparison excludes the volatile `service_record_handle`, `ts`, `raw_record`). Fixes unbounded row growth from NULL/rotating handles while preserving change-over-time history (non-destructive). |
+| 17 | AoI analysis history (2026-07-16) | Added append-only `aoi_analysis_history` table (+ `idx_aoi_analysis_history_mac`, `idx_aoi_analysis_history_ts` indexes). `store_aoi_analysis()` now writes the latest-only row to `aoi_analysis` (unchanged semantics) **and** appends a timestamped row to `aoi_analysis_history`, so re-scans can be compared over time. New API `get_aoi_analysis_history(mac, limit=None)` returns the history newest-first; `get_aoi_analysis()` still returns the latest. Non-destructive — the v16→v17 migration creates the table (`IF NOT EXISTS`) and backfills the existing latest row as the first history entry. |
+| 18 | `sdp_records.source` provenance (2026-07-24) | Added a `source` TEXT column recording which SDP discovery source produced each record: `"dbus"`, `"browse"`, `"xml"`, `"records"`, or a merged `"a+b"` label (from `discover_services_sdp(source="merge"/"all")`). Additive migration (`ALTER TABLE … ADD COLUMN`); existing rows get NULL (unknown provenance). `upsert_sdp_record()` stores `source` but **excludes it from change-detection**, so re-observing identical content from a different source never creates a spurious history row. Powers `SDPAnalyzer`'s `source_discrepancy` anomaly. |
+| 19 | Multi-antenna provenance | Added `devices.seen_by` (JSON list of adapters `hciN` that observed the device, union-merged on upsert), `devices.enumerated_by` (TEXT, adapter that last GATT-enumerated), and `adv_reports.adapter` (TEXT, collecting antenna; included in the consecutive-identical dedup key). Additive `ALTER TABLE … ADD COLUMN` migration; existing rows get NULL. |
+| 20 | Enumerator recency (2026-09-04) | Added `devices.enumerated_at` (DATETIME, last **successful** GATT). Survey / `enum-scan` / AoI stamp it with `enumerated_by`. Additive `ALTER TABLE`. Used with `--enum-cooldown` so collector re-sights do not immediately re-enumerate. |
 
 ## Database Relationship Diagram
 
@@ -46,6 +56,29 @@ erDiagram
         string icon
         json service_data
         json advertising_data
+        json uuids
+        boolean paired
+        boolean trusted
+        boolean bonded
+        int sighting_count
+        boolean fingerprint_changed
+        int lmp_version
+        int lmp_subversion
+        int bt_manufacturer
+        string bt_spec_version
+        string lmp_features
+        datetime version_queried_at
+        string firmware_revision
+        string software_revision
+        string model_number
+        string dis_manufacturer_name
+        int pnp_vendor_source
+        int pnp_vendor_id
+        int pnp_product_id
+        int pnp_product_version
+        json seen_by
+        string enumerated_by
+        datetime enumerated_at
     }
     
     adv_reports {
@@ -55,6 +88,7 @@ erDiagram
         int rssi
         blob data
         json decoded
+        string adapter
     }
     
     services {
@@ -114,6 +148,10 @@ erDiagram
         json protocol_descriptors
         string raw_record
         datetime ts
+        int mas_instance_id
+        string supported_message_types
+        string supported_features
+        string source
     }
     
     pbap_metadata {
@@ -162,6 +200,10 @@ erDiagram
         json unusual_characteristics
         json notable_services
         json recommendations
+        json pairing_profile
+        json sdp_summary
+        json post_pair_delta
+        json analysis_details
     }
     
     device_type_evidence {
@@ -175,6 +217,67 @@ erDiagram
         datetime ts
     }
     
+    aoi_analysis_history {
+        int id PK
+        string mac FK
+        datetime analysis_timestamp
+        json security_concerns
+        json unusual_characteristics
+        json notable_services
+        json recommendations
+        json pairing_profile
+        json sdp_summary
+        json post_pair_delta
+        json analysis_details
+    }
+    
+    pairing_events {
+        int id PK
+        string mac FK
+        datetime ts
+        string method
+        string pin
+        string result
+        string capabilities
+        json auth_matrix
+        int brute_attempts
+        real brute_duration
+        json pre_pair_state
+        json post_pair_state
+    }
+    
+    security_maps {
+        int id PK
+        string mac FK
+        datetime ts
+        json landmine_map
+        json permission_map
+        json enumeration_annotations
+        string source
+    }
+    
+    media_enumerations {
+        int id PK
+        string mac FK
+        datetime ts
+        json players
+        json transports
+        json endpoints
+        json browse_tree
+        json capabilities
+    }
+    
+    audio_recon {
+        int id PK
+        datetime ts
+        string backend
+        json cards
+        json pcms
+        json recordings
+        json sox_analysis
+        json contention
+    }
+    
     devices ||--o{ adv_reports : "captures"
     devices ||--o{ services : "provides"
     devices ||--o{ classic_services : "offers"
@@ -182,10 +285,19 @@ erDiagram
     devices ||--o{ pbap_metadata : "stores"
     devices ||--o{ char_history : "tracks"
     devices ||--o{ aoi_analysis : "analyzes"
+    devices ||--o{ aoi_analysis_history : "analysis history"
     devices ||--o{ device_type_evidence : "classifies"
+    devices ||--o{ pairing_events : "pairing attempts"
+    devices ||--o{ security_maps : "security maps"
+    devices ||--o{ media_enumerations : "media snapshots"
     services ||--o{ characteristics : "contains"
     characteristics ||--o{ descriptors : "has"
 ```
+
+> **Note:** `audio_recon` is **host-level** (its `mac` is intentionally `NULL`)
+> so it has no foreign-key relationship to `devices`. Like `media_players` /
+> `media_transports`, it is included in the schema but sits outside the device
+> FK graph.
 
 The diagram shows the primary relationships between tables in the observation database:
 
@@ -196,7 +308,7 @@ The diagram shows the primary relationships between tables in the observation da
    - Multiple SDP record snapshots (`sdp_records`)
    - Multiple phonebook repositories (`pbap_metadata`)
    - Multiple characteristic value changes tracked over time (`char_history`)
-   - One security analysis result (`aoi_analysis`)
+   - One latest security analysis result (`aoi_analysis`) plus its full history over time (`aoi_analysis_history`)
 
 2. Each **service** can contain multiple characteristics.
 
@@ -215,6 +327,7 @@ The database uses SQLite's type system with the following conventions:
 - **BLOB**: Binary large object. Used for raw advertising data, manufacturer data, and characteristic values. When exported via API, BLOBs are converted to hex strings for JSON serialization.
 - **JSON**: Stored as TEXT but validated as JSON. Used for structured data like decoded advertising reports, profile descriptors, and analysis results. SQLite 3.38+ provides JSON functions for querying.
 - **DATETIME**: Stored as TEXT in ISO 8601 format (e.g., `'2025-01-15T10:30:45.123456'`). Uses UTC timezone. SQLite's date/time functions can be used for queries.
+  - **Convention (enforced):** timestamps are **naive UTC** — no `+00:00`/`Z` offset suffix. **Always produce them with `bleep.core.time_utils.utc_now_iso()`** (the canonical writer since DT-1, 2026-07-28; byte-shape identical to the legacy `datetime.utcnow().isoformat()` it replaced). This format sorts lexicographically and compares correctly against SQLite's naive `datetime('now')` used in queries such as `last_seen > datetime('now', '-1 day')` (`bleep/core/observations/_devices.py`). **Never** write `datetime.now()` (local time), `datetime.utcnow()` (deprecated in Python 3.12+), or a tz-aware ISO string (e.g. `datetime.now(timezone.utc).isoformat()`, which appends `+00:00`) to a DATETIME column: local time corrupts ordering/recency filters (regression LT-2, 2026-07-27), and an offset suffix breaks lexicographic comparison against the naive `datetime('now')`. All writers — including code outside the observations layer (`aoi_analyser`, `scan`, `classic_enum`, `device_classic`) — must use `utc_now_iso()`.
 
 ### Foreign Key Constraints
 
@@ -241,7 +354,7 @@ Primary table for storing discovered Bluetooth devices. This is the central tabl
 
 **Foreign Key Relationships:**
 - Referenced by: `adv_reports`, `services`, `characteristics` (via services), `classic_services`, `sdp_records`, `pbap_metadata`, `char_history`, `aoi_analysis`, `device_type_evidence`
-- All child tables use `ON DELETE CASCADE` to maintain referential integrity
+- Device-scoped child tables use `ON DELETE CASCADE` to maintain referential integrity. The lone exception is `audio_recon`, which is host-level (no `mac` column, no foreign key) and therefore not cascade-deleted with a device.
 
 | Column | Type | Constraints | Description |
 |--------|------|------------|-------------|
@@ -254,7 +367,7 @@ Primary table for storing discovered Bluetooth devices. This is the central tabl
 | manufacturer_data | BLOB | NULL | Raw manufacturer-specific advertising data. Stored as binary for offline analysis. When exported via API, converted to hex string. |
 | rssi_last | INT | NULL | Most recent RSSI (Received Signal Strength Indicator) value in dBm. Typically ranges from -100 (weak) to 0 (strong). |
 | rssi_min | INT | NULL | Minimum RSSI value recorded for this device. Useful for tracking signal quality over time. |
-| rssi_max | INT | NULL | Maximum RSSI value recorded for this device. Useful for tracking signal quality over time. |
+| rssi_max | INT | NULL | Maximum RSSI value recorded for this device. Useful for tracking signal quality over time. **NULL (rendered as `-` by `bleep db list`) means no RSSI was ever observed for this device** — typically a bonded/cached device known to the adapter but never actively seen during a scan/survey round. This is expected, not an error (SR-C4). |
 | first_seen | DATETIME | NULL | First discovery timestamp in ISO 8601 format (UTC). **Preserved on updates** - this value never changes once set. |
 | last_seen | DATETIME | NULL | Most recent discovery timestamp in ISO 8601 format (UTC). **Updated on every device interaction** (scan, connect, etc.). |
 | notes | TEXT | NULL | User-provided notes or annotations. Free-form text for custom device labeling or analysis notes. |
@@ -264,6 +377,39 @@ Primary table for storing discovered Bluetooth devices. This is the central tabl
 | icon | TEXT | NULL | Icon hint from BlueZ (e.g., `'phone'`, `'audio-card'`) derived from device class. Added in schema v10. |
 | service_data | JSON | NULL | Service-specific advertising data keyed by service UUID. Added in schema v10. |
 | advertising_data | JSON | NULL | Raw advertising data structures from `org.bluez.Device1.AdvertisingData`. Added in schema v10. |
+| uuids | JSON | NULL | JSON array of advertised service UUIDs. Added in schema v12. |
+| paired | BOOLEAN | NULL | Whether the device is currently paired. Added in schema v12. |
+| trusted | BOOLEAN | NULL | Whether the device is trusted. Added in schema v12. |
+| bonded | BOOLEAN | NULL | Whether the device has a stored long-term key (bonded). Added in schema v12. |
+| sighting_count | INT | NULL | Number of times the device was sighted **within the most recent survey run** (per-run census). The upsert replaces this value each run (`sighting_count=excluded.sighting_count`); it is **not** cumulative across runs. Added in schema v12. |
+| fingerprint_changed | BOOLEAN | NULL | Whether the device's fingerprint changed between sightings. Added in schema v12. |
+| lmp_version | INT | NULL | Remote LMP version byte from `Read_Remote_Version_Information`. Added in schema v14. |
+| lmp_subversion | INT | NULL | Remote LMP subversion from `Read_Remote_Version_Information`. Added in schema v14. |
+| bt_manufacturer | INT | NULL | Remote Bluetooth controller manufacturer company ID. Added in schema v14. |
+| bt_spec_version | TEXT | NULL | Human-readable Bluetooth spec version (e.g. `"Bluetooth 5.0"`). Added in schema v14. |
+| lmp_features | TEXT | NULL | JSON array of LMP feature page hex strings. Added in schema v14. |
+| version_queried_at | DATETIME | NULL | Timestamp of last successful remote version query. Added in schema v14. |
+| firmware_revision | TEXT | NULL | DIS Firmware Revision String (0x2A26). Added in schema v15. |
+| software_revision | TEXT | NULL | DIS Software Revision String (0x2A28). Added in schema v15. |
+| model_number | TEXT | NULL | DIS Model Number String (0x2A24). Added in schema v15. |
+| dis_manufacturer_name | TEXT | NULL | DIS Manufacturer Name String (0x2A29). Added in schema v15. |
+| pnp_vendor_source | INT | NULL | PnP ID vendor source: 1 = BT SIG, 2 = USB-IF. Added in schema v15. |
+| pnp_vendor_id | INT | NULL | PnP ID vendor identifier. Added in schema v15. |
+| pnp_product_id | INT | NULL | PnP ID product identifier. Added in schema v15. |
+| pnp_product_version | INT | NULL | PnP ID product version (BCD-encoded). Added in schema v15. |
+| seen_by | JSON | NULL | JSON array of adapter names (`hciN`) that observed this device. Union-merged on upsert so a second antenna adds to the set. Added in schema v19. |
+| enumerated_by | TEXT | NULL | Adapter that last successfully **GATT (LE)**-enumerated this device. Last-writer-wins. Written only on `EnumerationResult.success`. Survey JSON emits the field when set. AoI reports / `db show` also read it. Added in schema v19. |
+| enumerated_at | DATETIME | NULL | Naive-UTC ISO timestamp of that last successful **GATT (LE)** enumeration. Survey `--enum-cooldown` skips devices newer than this. Added in schema v20. |
+
+> **PLANNED — schema v21, per-transport enumeration stamps.** `enumerated_by` /
+> `enumerated_at` are **LE/GATT-only** and keep that meaning. The planned
+> two-phase enumerator adds `br_enumerated_by` (TEXT) and `br_enumerated_at`
+> (DATETIME) recording the adapter and naive-UTC timestamp of the last
+> successful BR/EDR SDP enumeration (≥1 record returned); `--enum-cooldown`
+> is then evaluated per transport against the matching column. Separate
+> columns are deliberate — combining transports is an analysis-side concern.
+> Additive `ALTER TABLE` migration, no rewrite of existing rows. Design:
+> `todo_tracker.md` → "Option B — two-phase transport-priority enumerator".
 
 **Indexes:**
 - `idx_devices_device_type` on `device_type` - Fast filtering by device type
@@ -295,6 +441,7 @@ Stores Bluetooth LE advertising reports captured during passive scanning. Each r
 | rssi | INT | NULL | RSSI value for this specific advertisement in dBm. Can vary between advertisements from the same device. |
 | data | BLOB | NULL | Raw advertising data as received from the device. Stored as binary for complete fidelity. When exported via API, converted to hex string. |
 | decoded | JSON | NULL | Parsed/decoded advertising data structure. Contains structured fields like service UUIDs, manufacturer data, flags, etc. Format: JSON object with keys like `'flags'`, `'services'`, `'manufacturer_data'`, etc. |
+| adapter | TEXT | NULL | Collecting adapter (`hciN`). Consecutive-identical `(data, decoded)` samples coalesce per adapter; the same payload on a different antenna is a new row. Added in schema v19. |
 
 **Usage Notes:**
 - Multiple reports can exist for the same device (one per advertising packet)
@@ -432,12 +579,13 @@ Stores full SDP (Service Discovery Protocol) record snapshots with all attribute
 
 **Foreign Key:** `mac` REFERENCES `devices(mac) ON DELETE CASCADE`
 
-**Unique Constraint:** `(mac, service_record_handle)` - Ensures one record per service handle per device
+**Unique Constraint:** None. As of schema v16 the table is **append-only / versioned** — the former `UNIQUE(mac, service_record_handle)` constraint was removed. `upsert_sdp_record()` appends a new timestamped snapshot only when the service content changes vs the latest snapshot for the same logical service (`mac + uuid + channel`, excluding the volatile `service_record_handle`); identical re-observations (including handle rotation) are skipped. Multiple rows per `(mac, service_record_handle)` are therefore expected and represent the change-over-time history. Query the latest state with `ORDER BY ts DESC`.
 
 **Indexes:**
 - `idx_sdp_records_mac` on `mac` - Fast device lookups
 - `idx_sdp_records_uuid` on `uuid` - Service-based queries
 - `idx_sdp_records_ts` on `ts` - Time-based queries and chronological ordering
+- `idx_sdp_records_mac_handle` on `(mac, service_record_handle)` - Non-unique; replaces the former unique constraint for query performance (v16)
 
 | Column | Type | Constraints | Description |
 |--------|------|------------|-------------|
@@ -450,9 +598,13 @@ Stores full SDP (Service Discovery Protocol) record snapshots with all attribute
 | profile_descriptors | JSON | NULL | Bluetooth Profile Descriptor List (SDP attribute 0x0009) as JSON array. Contains profile UUIDs and versions. Format: `[{"uuid": "0x110e", "version": 256}, ...]`. |
 | service_version | INT | NULL | Service Version (SDP attribute 0x0300). Version number of the service implementation. |
 | service_description | TEXT | NULL | Service Description (SDP attribute 0x0101). Human-readable description of the service. |
-| protocol_descriptors | JSON | NULL | Protocol Descriptor List (SDP attribute 0x0004) as JSON. Reserved for future use - will contain protocol stack information. |
+| protocol_descriptors | JSON | NULL | Protocol Descriptor List (SDP attribute 0x0004) as JSON — the protocol stack (L2CAP/RFCOMM UUIDs and their parameters). Extracted by the SDP parsers (`ble_ops/classic/sdp.py`) and written on `upsert_sdp_record` (`core/observations/_services.py`). |
 | raw_record | TEXT | NULL | Full raw SDP record in XML or text format. Complete record as received from the device for reference and detailed analysis. |
 | ts | DATETIME | NULL | Discovery timestamp in ISO 8601 format (UTC). When the SDP record was discovered and stored. |
+| mas_instance_id | INT | NULL | MAP MAS Instance ID for MAP service records. Added in schema v12. |
+| supported_message_types | TEXT | NULL | Supported message types for MAP service records. Added in schema v12. |
+| supported_features | TEXT | NULL | Supported features bitmap for applicable service records. Added in schema v12. |
+| source | TEXT | NULL | Discovery-source provenance: `"dbus"`, `"browse"`, `"xml"`, `"records"`, or a merged `"a+b"` label. NULL for pre-v18 rows. Added in schema v18. |
 
 **Usage Notes:**
 - This table stores **detailed SDP record snapshots** with all attributes for comprehensive analysis
@@ -461,7 +613,7 @@ Stores full SDP (Service Discovery Protocol) record snapshots with all attribute
 - Records are automatically stored during SDP discovery (`classic-enum`, `csdp` commands, `discover_services_sdp()` function)
 - `profile_descriptors` JSON contains structured profile information with UUIDs and versions
 - `raw_record` provides complete record data for offline analysis and debugging
-- The unique constraint on `(mac, service_record_handle)` ensures one snapshot per service handle per device
+- **No `UNIQUE(mac, service_record_handle)` constraint** — that constraint was **dropped in schema v16**. The table is append-only/versioned: `upsert_sdp_record()` appends a new timestamped snapshot only when the service content changes for the same logical service (`mac + uuid + channel`), so **multiple rows per `(mac, service_record_handle)` are expected** and represent the change-over-time history. Query the latest state with `ORDER BY ts DESC`. (See the Unique Constraint note above for the full v16 behaviour.)
 - Use this table for detailed SDP analysis, version inference, and protocol compatibility checking
 
 ### char_history
@@ -590,6 +742,10 @@ Stores Assets-of-Interest (AoI) analysis results. Contains security analysis, un
 | unusual_characteristics | JSON | NULL | Unusual characteristics identified as JSON array. Contains information about non-standard behaviors, unexpected services, or anomalous patterns. Format: JSON array of characteristic objects. |
 | notable_services | JSON | NULL | Notable services identified as JSON array. Contains information about interesting or noteworthy services discovered on the device. Format: JSON array of service objects. |
 | recommendations | JSON | NULL | Security recommendations as JSON array. Contains actionable recommendations for addressing identified concerns or improving security posture. Format: JSON array of recommendation objects. |
+| pairing_profile | JSON | NULL | Pairing probe results as JSON object. Contains JustWorks pairing attempt results, error details, device capabilities, and authentication method used. Added in schema v11. |
+| sdp_summary | JSON | NULL | Classic SDP analysis summary as JSON object. Contains exposed Classic profiles, profile versions, and service descriptions extracted from `sdp_records`. Added in schema v11. |
+| post_pair_delta | JSON | NULL | Post-pairing service delta as JSON object. Captures what changed after pairing — new services exposed, access levels opened, characteristics that became readable. Added in schema v11. |
+| analysis_details | JSON | NULL | The `details` sub-dict of the `analyse_device()` result (i.e. `analysis["details"]`), stored as JSON alongside the summary/timestamp columns — not the entire result object. Read back under the `"details"` key by `_row_to_analysis()`. Added in schema v13. |
 
 **Usage Notes:**
 - One analysis result per device (enforced by primary key on `mac`)
@@ -598,6 +754,35 @@ Stores Assets-of-Interest (AoI) analysis results. Contains security analysis, un
 - Results can be imported/exported to/from JSON files for offline analysis
 - Use this table to track security analysis results and recommendations across devices
 - JSON fields can be queried using SQLite's JSON functions (SQLite 3.38+)
+- v11 fields (`pairing_profile`, `sdp_summary`, `post_pair_delta`) are populated by the AoI scan pipeline when `--deep` mode is used or pairing probes are enabled
+- This table holds only the **latest** analysis per device; the full analysis history is retained in `aoi_analysis_history` (schema v17)
+
+### aoi_analysis_history
+
+Append-only history of every stored AoI analysis (Schema v17). While `aoi_analysis` keeps only the latest row per device, this table records each analysis over time so re-scans can be compared. Populated automatically by `store_aoi_analysis()`; read via `get_aoi_analysis_history(mac, limit=None)` (newest-first).
+
+**Primary Key:** `id` (INTEGER AUTOINCREMENT)
+
+**Foreign Key:** `mac` REFERENCES `devices(mac) ON DELETE CASCADE`
+
+| Column | Type | Constraints | Description |
+|--------|------|------------|-------------|
+| id | INTEGER | PRIMARY KEY AUTOINCREMENT | Surrogate key; higher `id` = more recent entry. |
+| mac | TEXT | REFERENCES devices(mac) ON DELETE CASCADE | Device MAC address. Multiple rows per device are expected. |
+| analysis_timestamp | DATETIME | NULL | When the analysis was performed (ISO 8601, UTC). Matches the `aoi_analysis` row written in the same store. |
+| security_concerns | JSON | NULL | Same shape as `aoi_analysis.security_concerns` at the time of this analysis. |
+| unusual_characteristics | JSON | NULL | Same shape as `aoi_analysis.unusual_characteristics`. |
+| notable_services | JSON | NULL | Same shape as `aoi_analysis.notable_services`. |
+| recommendations | JSON | NULL | Same shape as `aoi_analysis.recommendations`. |
+| pairing_profile | JSON | NULL | Same shape as `aoi_analysis.pairing_profile`. |
+| sdp_summary | JSON | NULL | Same shape as `aoi_analysis.sdp_summary`. |
+| post_pair_delta | JSON | NULL | Same shape as `aoi_analysis.post_pair_delta`. |
+| analysis_details | JSON | NULL | Same shape as `aoi_analysis.analysis_details`. |
+
+**Usage Notes:**
+- Append-only — one row per `store_aoi_analysis()` call; never updated or overwritten
+- `get_aoi_analysis_history(mac, limit=N)` returns rows newest-first (`ORDER BY id DESC`)
+- The v16→v17 migration backfills the pre-existing latest `aoi_analysis` row as the first history entry, so no historical data is lost on upgrade
 
 ### device_type_evidence
 
@@ -626,6 +811,120 @@ Stores device type classification evidence for audit/debugging and signature cac
 - Audit trail: Track what evidence was collected for debugging
 - Signature caching: Build device signatures for performance optimization
 - Historical tracking: Detect MAC address collisions (same MAC, different evidence over time)
+
+### pairing_events
+
+Append-only log of every pairing workflow attempt (Schema v12). Each row captures one pairing attempt — the method and capabilities negotiated, the outcome, any brute-force probing performed, and the device state before/after pairing.
+
+**Primary Key:** `id` (INTEGER AUTOINCREMENT)
+
+**Foreign Key:** `mac` REFERENCES `devices(mac) ON DELETE CASCADE`
+
+**Indexes:**
+- `idx_pairing_events_mac` on `mac` - Fast lookups by device
+- `idx_pairing_events_ts` on `ts` - Time-based queries and chronological ordering
+
+| Column | Type | Constraints | Description |
+|--------|------|------------|-------------|
+| id | INTEGER | PRIMARY KEY, AUTOINCREMENT | Unique identifier for each pairing attempt. |
+| mac | TEXT | REFERENCES devices(mac) ON DELETE CASCADE | Device MAC address (foreign key). Links to the `devices` table. |
+| ts | DATETIME | NOT NULL | Timestamp when the pairing attempt occurred, in ISO 8601 format (UTC). |
+| method | TEXT | NULL | Pairing method used (e.g., `'JustWorks'`, `'PasskeyEntry'`, `'legacy_pin'`). |
+| pin | TEXT | NULL | PIN/passkey used for the attempt, if any. |
+| result | TEXT | NULL | Outcome of the attempt (e.g., `'success'`, `'failed'`, `'rejected'`). |
+| capabilities | TEXT | NULL | IO capabilities negotiated for the attempt (e.g., `'NoInputNoOutput'`, `'DisplayYesNo'`). |
+| auth_matrix | JSON | NULL | Authentication capability matrix as JSON — the combinations probed and their results. |
+| brute_attempts | INT | NULL | Number of brute-force PIN/passkey attempts made during this event. |
+| brute_duration | REAL | NULL | Wall-clock duration of brute-force probing, in seconds. |
+| pre_pair_state | JSON | NULL | Device state snapshot captured before pairing (paired/trusted/bonded flags, exposed services, etc.). |
+| post_pair_state | JSON | NULL | Device state snapshot captured after pairing, for delta analysis. |
+
+**Usage Notes:**
+- Append-only — one row per pairing attempt; multiple rows per device are expected
+- Compare `pre_pair_state` / `post_pair_state` to determine what pairing exposed
+- Written via `store_pairing_event()`; read via `get_pairing_events(mac)` (returns all events for the device; no `limit` parameter)
+
+### security_maps
+
+Per-enumeration security analysis snapshots (Schema v12). Each row records the landmine map, permission map, and enumeration annotations produced during a single enumeration of a device.
+
+**Primary Key:** `id` (INTEGER AUTOINCREMENT)
+
+**Foreign Key:** `mac` REFERENCES `devices(mac) ON DELETE CASCADE`
+
+**Indexes:**
+- `idx_security_maps_mac` on `mac` - Fast lookups by device
+- `idx_security_maps_ts` on `ts` - Time-based queries and chronological ordering
+
+| Column | Type | Constraints | Description |
+|--------|------|------------|-------------|
+| id | INTEGER | PRIMARY KEY, AUTOINCREMENT | Unique identifier for each security-map snapshot. |
+| mac | TEXT | REFERENCES devices(mac) ON DELETE CASCADE | Device MAC address (foreign key). Links to the `devices` table. |
+| ts | DATETIME | NOT NULL | Timestamp when the security map was captured, in ISO 8601 format (UTC). |
+| landmine_map | JSON | NULL | Map of handles/characteristics that caused disconnects, hangs, or errors on access ("landmines"). |
+| permission_map | JSON | NULL | Observed read/write/notify permissions and authentication requirements per handle. |
+| enumeration_annotations | JSON | NULL | Free-form annotations recorded during enumeration (anomalies, notes, timing observations). |
+| source | TEXT | NULL | Which enumeration path produced the map (e.g., `'gatt-enum'`, `'explore'`, `'aoi'`). |
+
+**Usage Notes:**
+- Append-only — one row per enumeration; multiple rows per device are expected
+- `landmine_map` supports safe re-enumeration by flagging handles to avoid
+- Written via `store_security_maps()`; read via `get_security_maps(mac)` (returns all snapshots for the device; no `limit` parameter)
+
+### media_enumerations
+
+Full media-enumeration snapshots for AVRCP/A2DP-capable devices (Schema v12). While `media_players` / `media_transports` hold the latest per-object state, this table records a complete media-subsystem snapshot per enumeration.
+
+**Primary Key:** `id` (INTEGER AUTOINCREMENT)
+
+**Foreign Key:** `mac` REFERENCES `devices(mac) ON DELETE CASCADE`
+
+**Indexes:**
+- `idx_media_enumerations_mac` on `mac` - Fast lookups by device
+- `idx_media_enumerations_ts` on `ts` - Time-based queries and chronological ordering
+
+| Column | Type | Constraints | Description |
+|--------|------|------------|-------------|
+| id | INTEGER | PRIMARY KEY, AUTOINCREMENT | Unique identifier for each media-enumeration snapshot. |
+| mac | TEXT | REFERENCES devices(mac) ON DELETE CASCADE | Device MAC address (foreign key). Links to the `devices` table. |
+| ts | DATETIME | NOT NULL | Timestamp when the snapshot was captured, in ISO 8601 format (UTC). |
+| players | JSON | NULL | All AVRCP media players discovered, with their state and metadata, as a JSON array. |
+| transports | JSON | NULL | All A2DP media transports discovered, with state/volume/codec, as a JSON array. |
+| endpoints | JSON | NULL | Media endpoints (SEPs) and their capabilities, as JSON. |
+| browse_tree | JSON | NULL | AVRCP browsing tree (folders/items) as JSON, when browsable. |
+| capabilities | JSON | NULL | Aggregated media capabilities discovered during enumeration. |
+
+**Usage Notes:**
+- Append-only — one row per media enumeration; multiple rows per device are expected
+- Complements the latest-state `media_players` / `media_transports` tables with full historical snapshots
+- Written via `store_media_enumeration()`; read via `get_media_enumerations(mac)` (returns all snapshots for the device; no `limit` parameter)
+
+### audio_recon
+
+Host-level audio reconnaissance snapshots (Schema v12). Unlike other tables, this is **not tied to a device** — it records the state of the local host's audio backend (cards, PCMs, recordings, analysis) during audio recon operations. Its `mac` is intentionally absent (host-level data), so there is **no foreign key** to `devices`.
+
+**Primary Key:** `id` (INTEGER AUTOINCREMENT)
+
+**Note:** No `mac` column and no foreign key — this table stores host-level state, not per-device data.
+
+**Indexes:**
+- `idx_audio_recon_ts` on `ts` - Time-based queries and chronological ordering
+
+| Column | Type | Constraints | Description |
+|--------|------|------------|-------------|
+| id | INTEGER | PRIMARY KEY, AUTOINCREMENT | Unique identifier for each audio-recon snapshot. |
+| ts | DATETIME | NOT NULL | Timestamp when the recon snapshot was captured, in ISO 8601 format (UTC). |
+| backend | TEXT | NULL | Audio backend inspected (e.g., `'pulseaudio'`, `'pipewire'`, `'alsa'`). |
+| cards | JSON | NULL | Sound cards / devices detected on the host, as JSON. |
+| pcms | JSON | NULL | PCM stream definitions available on the host, as JSON. |
+| recordings | JSON | NULL | Captured/attempted audio recordings and their metadata, as JSON. |
+| sox_analysis | JSON | NULL | SoX-based analysis results of captured audio (levels, spectral stats, etc.), as JSON. |
+| contention | JSON | NULL | Detected device/stream contention (who is holding an audio route), as JSON. |
+
+**Usage Notes:**
+- Host-level snapshots — rows are not associated with a specific device (`mac` is absent)
+- Append-only — one row per audio-recon run
+- Written via `store_audio_recon()`; read via `get_audio_recon(limit=10)` (most-recent snapshots first; default cap is 10)
 
 ## Device Type Classification Logic
 
@@ -1015,15 +1314,19 @@ The observation database can be accessed programmatically through functions prov
 
 The API is organized into several categories:
 
-1. **Device Management**: `upsert_device()`, `get_devices()`, `get_device_detail()`, `export_device_data()`
+1. **Device Management**: `upsert_device()`, `get_devices()`, `get_device_detail()`, `export_device_data()`, `get_enumeration_stamp()`, `get_sdp_inventory()`, `get_characteristic_values()`
 2. **Advertising Data**: `insert_adv()`
-3. **GATT Services/Characteristics**: `upsert_services()`, `upsert_characteristics()`, `get_characteristic_timeline()`, `insert_char_history()`
-4. **Classic Bluetooth**: `upsert_classic_services()`, `upsert_sdp_record()`
-5. **Media**: `snapshot_media_player()`, `snapshot_media_transport()`
+3. **GATT Services/Characteristics**: `upsert_services()`, `upsert_characteristics()`, `get_characteristic_id()`, `upsert_descriptors()`, `get_characteristic_timeline()`, `insert_char_history()`
+4. **Classic Bluetooth**: `upsert_classic_services()`, `upsert_sdp_record()`, `get_sdp_timeline()`, `upsert_pan_access()`
+5. **Media**: `snapshot_media_player()`, `snapshot_media_transport()`, `store_media_enumeration()`, `get_media_enumerations()`, `store_audio_recon()`, `get_audio_recon()`
 6. **PBAP**: `upsert_pbap_metadata()`
-7. **AoI Analysis**: `store_aoi_analysis()`, `get_aoi_analysis()`, `has_aoi_analysis()`, `get_aoi_analyzed_devices()`
+7. **AoI Analysis**: `store_aoi_analysis()`, `get_aoi_analysis()`, `get_aoi_analysis_history()`, `has_aoi_analysis()`, `get_aoi_analyzed_devices()`
 8. **Device Type Evidence**: `store_device_type_evidence()`, `get_device_type_evidence()`, `get_device_evidence_signature()`
-9. **Database Maintenance**: `maintain_database()`, `explain_query()`
+9. **Security Maps**: `store_security_maps()`, `get_security_maps()`
+10. **Pairing Events**: `store_pairing_event()`, `get_pairing_events()`
+11. **Signal Capture**: `store_signal_capture()`
+12. **Observed-UUID Catalogue ("Seen in the Wild")**: `get_observed_uuid_catalogue()`, `get_observed_uuid_evidence()`, `get_observed_uuid_names()`
+13. **Database Maintenance**: `maintain_database()`, `explain_query()`
 
 ### Quick Reference Examples
 
@@ -1060,6 +1363,6 @@ analysis = get_aoi_analysis('00:11:22:33:44:55')
 | `get_device_detail` | *(updated)* | Return dict now includes a `"descriptors"` key with all descriptor rows for the device. |
 | `export_device_data` | *(updated)* | Inherits descriptor inclusion from `get_device_detail`. |
 
-For comprehensive function documentation with signatures, parameters, return values, and detailed examples, see [Programmatic API Usage Examples](../observation_db.md#programmatic-access) in the main observation database documentation.
+For comprehensive function documentation with signatures, parameters, return values, and detailed examples, see [Programmatic API Usage Examples](observation_db.md#programmatic-access) in the main observation database documentation.
 
-For complete function signatures and implementation details, refer to the function docstrings in `bleep/core/observations.py`.
+For complete function signatures and implementation details, refer to the function docstrings in `bleep/core/observations/` (package with submodules `_devices.py`, `_services.py`, `_history.py`, etc.).

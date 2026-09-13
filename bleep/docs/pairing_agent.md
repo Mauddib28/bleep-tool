@@ -229,7 +229,7 @@ Do NOT call `bus.add_message_filter()` before or during pairing.  The `dbus-pyth
 
 ### Debug Mode Integration
 
-In debug mode, the `pair` command stops the background GLib loop before pairing and restarts it after.  This is handled automatically by `_cmd_pair()` in `bleep/modes/debug.py`.
+In debug mode, the `pair` command stops the background GLib loop before pairing and restarts it after.  This is handled automatically by `cmd_pair()` in `bleep/modes/debug_pairing.py` (`bleep/modes/debug.py` only imports and dispatches `cmd_pair`).
 
 The debug `pair` command supports three pairing modes:
 
@@ -295,7 +295,7 @@ so the user can verify manually.
    - Provide user-friendly error messages.
    - Implement retry logic for transient failures.
 
-## Current Status (v2.7.1, 2026-03-01)
+## Current Status (v3.0.0, 2026-09-13)
 
 **Pairing is CONFIRMED WORKING** end-to-end.  BLEEP successfully pairs with target `D8:3A:DD:0B:69:B9` using PIN `12345` via the debug mode `pair` command.  The `RequestPinCode` handler fires, `AutoAcceptIOHandler` returns the configured PIN, BlueZ accepts the pairing, the device is set as trusted, and bond information is stored.
 
@@ -307,9 +307,14 @@ so the user can verify manually.
 - Stale bond removal (`RemoveDevice()`) + re-discovery + re-pair
 - Post-pair auto-connect with SDP enumeration and RFCOMM keepalive (BR/EDR)
 - Post-pair BLE connect with GATT enumeration
-- `--test` flag for PoC disconnect monitoring
+- `--test` flag for PoC disconnect monitoring (debug-shell `pair` command only — added in `bleep/modes/debug_pairing.py`; it is **not** a `bleep pair` CLI flag)
 - Bond storage with MAC address extraction from device path
 - State machine tracking with safe terminal-state guards
+
+### New in v3.0.0
+
+- Pairing/agent debug-shell logic extracted into `bleep/modes/debug_pairing.py` (`cmd_pair`, `_cmd_pair_single`, `_cmd_pair_brute`, `_cmd_pair_probe`); `bleep/modes/debug.py` only imports and dispatches `cmd_pair`
+- No behavioural change to the pairing flow — the module split is internal refactoring
 
 ### New in v2.8.0
 
@@ -375,7 +380,7 @@ If a device is not found when trying to pair:
 ### RequestPinCode Handler Not Firing
 
 This issue was resolved in v2.6.2.  If encountered again, verify:
-- The background GLib loop is stopped before pairing (`_stop_glib_mainloop()`)
+- The background GLib loop is stopped before pairing (`stop_glib_mainloop()`, defined in `debug_state.py`)
 - No message filters are registered via `bus.add_message_filter()` — they block handler dispatch
 - `GLib.MainLoop().run()` is active on the main thread during pairing
 
@@ -407,7 +412,7 @@ If `Bond info must include device address` appears:
 - **Re-enable D-Bus monitoring after pairing**: Restore unified monitoring after `pair_device()` returns for subsequent D-Bus activity logging.
 - **Test all Agent1 methods**: Verify `RequestPasskey`, `RequestConfirmation`, `DisplayPasskey`, etc. against devices that trigger those pairing flows.
 - **PIN code persistence**: Store known PINs in the observations database for automatic reuse.
-- **Multi-adapter support**: Support selecting a specific Bluetooth adapter instead of hardcoding `hci0`.
+- **Multi-adapter support**: `bleep pair --adapter hciN` now constructs Device1 on that controller (Phase 4c, 2026-09-03). Agent1 remains process-global.
 - **Async pairing API**: Expose `pair_device()` for asyncio-based applications.
 - **Investigate `dbus-python` filter behavior**: Determine if the message filter interference is a bug or architectural limitation, and whether a workaround exists.
 - **Profile-level connect retry**: After failed `Connect()`, attempt specific `ConnectProfile()` calls for individual UUIDs advertised by the device.
@@ -415,8 +420,8 @@ If `Bond info must include device address` appears:
 
 ## Related Documentation
 
-- [Agent D-Bus Communication Issue](./agent_dbus_communication_issue.md): Full 5-phase investigation and resolution history
-- [Mainloop Requirement Analysis](./mainloop_requirement_analysis.md): Mainloop threading and dispatch requirement discovery
+- [Agent D-Bus Communication Issue](archive/agent_dbus_communication_issue.md): Full 5-phase investigation and resolution history
+- [Mainloop Requirement Analysis](archive/mainloop_requirement_analysis.md): Mainloop threading and dispatch requirement discovery
 - [MainLoop Architecture](./mainloop_architecture.md): Future MainLoop design — Option A (worker thread) vs Option B (stdin watch)
 - [Agent Pairing Flow Analysis](./agent_pairing_flow_analysis.md): Expected vs actual pairing flow with capabilities table
 - [Debug Mode](./debug_mode.md): Debug shell command reference (includes `pair` command)

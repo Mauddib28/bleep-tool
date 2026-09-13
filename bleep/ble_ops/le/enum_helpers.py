@@ -221,9 +221,9 @@ def multi_write_all(
         avoids silently failing in headless test environments.
     """
     if not hasattr(device, "write_characteristic"):
-        raise RuntimeError(
-            "Device object missing write_characteristic – native BlueZ stack not "
-            "loaded or incorrect object passed to multi_write_all()."
+        raise _errors.NotSupportedError(
+            "multi_write_all() (device object missing write_characteristic – native "
+            "BlueZ stack not loaded or incorrect object passed)"
         )
 
 

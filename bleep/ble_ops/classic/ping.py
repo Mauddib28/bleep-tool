@@ -25,10 +25,15 @@ def classic_l2ping(mac: str, count: int = 3, timeout: int = 13) -> tuple[Optiona
         print_and_log(f"[classic_l2ping] {msg}", LOG__DEBUG)
         return None, msg
     mac = mac.strip().upper()
-    cmd = [_L2PING, "-c", str(count), mac]
+    # #15: wire the requested timeout to l2ping's own per-response wait (-t,
+    # workDir/bluez/tools/l2ping.c getopt "t:", default 10s) so a caller asking
+    # for e.g. 3s is honoured by l2ping itself rather than only by an outer
+    # SIGKILL. The subprocess timeout stays as an independent hard cap, sized
+    # slightly above -t so l2ping can print its summary before being reaped.
+    cmd = [_L2PING, "-t", str(timeout), "-c", str(count), mac]
     print_and_log("[classic_l2ping] exec: " + " ".join(cmd), LOG__DEBUG)
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 2)
     except Exception as exc:
         return None, str(exc)
     if res.returncode != 0:

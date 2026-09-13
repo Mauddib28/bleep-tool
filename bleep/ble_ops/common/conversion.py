@@ -60,19 +60,17 @@ def decode_class_of_device(class_value: int) -> Tuple[List[str], List[str], List
     # Log debug message
     _log.print_and_log("[*] Decoding Class of Device", _log.LOG__DEBUG)
     
-    # Check bit length (expecting 23 bits, 0-23)
-    if class_value.bit_length() != 23:
-        output_log_string = "[-] Class Device bits are not of expected length (23-0); Number of bits is..."
-        if class_value.bit_length() > 23:
-            output_log_string += "More"
-        elif class_value.bit_length() < 23:
-            output_log_string += "Less"
-        else:
-            output_log_string += "Unknown"
-        output_log_string += f"\t-\t{class_value.bit_length()}"
-        _log.print_and_log(output_log_string, _log.LOG__DEBUG)
+    # Class of Device is a fixed 24-bit field (bits 23-0); leading zero bits are
+    # normal, so validate against the field width rather than an exact
+    # bit_length() (which drops leading zeros, e.g. 0x2E410C -> 22 significant
+    # bits). Only warn if the value cannot fit the 24-bit field.
+    if class_value < 0 or class_value > 0xFFFFFF:
+        _log.print_and_log(
+            f"[-] Class Device value does not fit the 24-bit field (0-0xFFFFFF); value is...\t-\t0x{class_value:X}",
+            _log.LOG__DEBUG,
+        )
     else:
-        _log.print_and_log(f"[+] Class Device bits are of expected length (23-0); Number of bits is...\t-\t{class_value.bit_length()}", _log.LOG__DEBUG)
+        _log.print_and_log(f"[+] Class Device value fits the 24-bit field (23-0); significant bits...\t-\t{class_value.bit_length()}", _log.LOG__DEBUG)
 
     # Create string of only the binary information
     class_binary_string = format(class_value, 'b').zfill(24)  # Extend to 24 bits
@@ -98,154 +96,48 @@ def decode_class_of_device(class_value: int) -> Tuple[List[str], List[str], List
     int__major_device_class = int(major_device_class, 2)
     int__minor_device_class = int(minor_device_class, 2)
     
-    # Major Service Classes
-    if int__major_service_classes & 0b00000000001:  # Limited Discoverable Mode [ bit 13 ]
-        list__major_service_classes.append('Limited Discoverable Mode')
-    if int__major_service_classes & 0b00000000010:  # LE Audio [ bit 14 ]
-        list__major_service_classes.append('LE Audio')
-    if int__major_service_classes & 0b00000000100:  # Reserved for Future Use [ bit 15 ]
-        list__major_service_classes.append('Reserved for Future Use')
-    if int__major_service_classes & 0b00000001000:  # Positioning (Location identification) [ bit 16 ]
-        list__major_service_classes.append('Positioning (Location identification)')
-    if int__major_service_classes & 0b00000010000:  # Networking (LAN, Ad hoc, ...) [ bit 17 ]
-        list__major_service_classes.append('Networking (LAN, Ad hoc, ...)')
-    if int__major_service_classes & 0b00000100000:  # Rendering (Printing, Speakers, ...) [ bit 18 ]
-        list__major_service_classes.append('Rendering (Printing, Speakers, ...)')
-    if int__major_service_classes & 0b00001000000:  # Capturing (Scanner, Microphone, ...) [ bit 19 ]
-        list__major_service_classes.append('Capturing (Scanner, Microphone, ...)')
-    if int__major_service_classes & 0b00010000000:  # Object Transfer (v-Inbox, v-Folder, ...) [ bit 20 ]
-        list__major_service_classes.append('Object Transfer (v-Inbox, v-Folder, ...)')
-    if int__major_service_classes & 0b00100000000:  # Audio (Speaker, Microphone, Headset service, ...) [ bit 21 ]
-        list__major_service_classes.append('Audio (Speaker, Microphone, Headset service, ...)')
-    if int__major_service_classes & 0b01000000000:  # Telephony (Cordless telephony, Modem, Headset service, ...) [ bit 22 ]
-        list__major_service_classes.append('Telephony (Cordless telephony, Modem, Headset service, ...)')
-    if int__major_service_classes & 0b10000000000:  # Information (WEB-server, WAP-server, ...) [ bit 23 ]
-        list__major_service_classes.append('Information (WEB-server, WAP-server, ...)')
+    # Major Service Classes (bits 23-13). Names are sourced from the generated
+    # Class-of-Device table (bt_ref/cod.py, from SIG core/class_of_device.yaml) so
+    # no CoD label is hardcoded here. The 11-bit field's LSB is SIG bit 13, so the
+    # mask for SIG bit N is (1 << (N - 13)); iterating ascending preserves order.
+    from bleep.bt_ref import cod as _cod
+    for _sig_bit in sorted(_cod.COD_SERVICES):
+        if int__major_service_classes & (1 << (_sig_bit - 13)):
+            list__major_service_classes.append(_cod.COD_SERVICES[_sig_bit])
+
+    # Major Device Class (bits 12-8); NOTE: exactly one. The 5-bit value maps
+    # directly to the CoD major number (0=Miscellaneous, 1..9 real classes,
+    # 31=Uncategorized), so a single table lookup replaces the hardcoded ladder.
+    if int__major_device_class in _cod.COD_MAJOR_DEVICE_CLASS:
+        list__major_device_class.append(_cod.COD_MAJOR_DEVICE_CLASS[int__major_device_class])
     
-    # Major Device Classes; NOTE: Should be only one Major Device Class
-    if int__major_device_class == 0b11111:  # Uncategorized (device code not specified) [ all bits ]
-        list__major_device_class.append('Uncategorized (device code not specified)')
-    if int__major_device_class == 0b00001:  # Computer (desktop, notebook, PDA, organizer, ...) [ bit 8 ]
-        list__major_device_class.append('Computer (desktop, notebook, PDA, organizer, ...)')
-    if int__major_device_class == 0b00010:  # Phone (cellular, cordless, pay phone, modem, ...) [ bit 9 ]
-        list__major_device_class.append('Phone (cellular, cordless, pay phone, modem, ...)')
-    if int__major_device_class == 0b00011:  # LAN/Network Access Point [ bits 9 + 8 ]
-        list__major_device_class.append('LAN/Network Access Point')
-    if int__major_device_class == 0b00100:  # Audio/Video (headset, speaker, stereo, video display, VCR, ...) [ bit 10 ]
-        list__major_device_class.append('Audio/Video (headset, speaker, stereo, video display, VCR, ...)')
-    if int__major_device_class == 0b00101:  # Peripheral (mouse, joystick, keyboard, ...) [ bits 10 + 8 ]
-        list__major_device_class.append('Peripheral (mouse, joystick, keyboard, ...)')
-    if int__major_device_class == 0b00110:  # Imaging (printer, scanner, camera, display, ...) [ bits 10 + 9 ]
-        list__major_device_class.append('Imaging (printer, scanner, camera, display, ...)')
-    if int__major_device_class == 0b00111:  # Wearable [ bits 10 + 9 + 8 ]
-        list__major_device_class.append('Wearable')
-    if int__major_device_class == 0b01000:  # Toy [ bit 11 ]
-        list__major_device_class.append('Toy')
-    if int__major_device_class == 0b01001:  # Health [ bit 11 + 8 ]
-        list__major_device_class.append('Health')
-    if not int__major_device_class:  # Miscellaneous [ none of the bits ]
-        list__major_device_class.append('Miscellaneous')
-    
-    ## Minor Device Classes - depends on Major Device Class
-    if 'Computer (desktop, notebook, PDA, organizer, ...)' in list__major_device_class:
-        if not int__minor_device_class:  # Uncategorized
-            list__minor_device_class.append('Uncategorized (code for device not assigned)')
-        if int__minor_device_class == 0b000001:  # Desktop Workstation
-            list__minor_device_class.append('Desktop Workstation')
-        if int__minor_device_class == 0b000010:  # Server-class Computer
-            list__minor_device_class.append('Server-class Computer')
-        if int__minor_device_class == 0b000011:  # Laptop
-            list__minor_device_class.append('Laptop')
-        if int__minor_device_class == 0b000100:  # Handheld PC/PDA (clamshell)
-            list__minor_device_class.append('Handheld PC/PDA (clamshell)')
-        if int__minor_device_class == 0b000101:  # Palm-size PC/PDA
-            list__minor_device_class.append('Palm-size PC/PDA')
-        if int__minor_device_class == 0b000110:  # Wearable Computer (watch size)
-            list__minor_device_class.append('Wearable Computer (watch size)')
-        if int__minor_device_class == 0b000111:  # Tablet
-            list__minor_device_class.append('Tablet')
-    elif 'Phone (cellular, cordless, pay phone, modem, ...)' in list__major_device_class:
-        if not int__minor_device_class:  # Uncategorized
-            list__minor_device_class.append('Uncategorized (code for device not assigned)')
-        if int__minor_device_class == 0b000001:  # Cellular
-            list__minor_device_class.append('Cellular')
-        if int__minor_device_class == 0b000010:  # Cordless
-            list__minor_device_class.append('Cordless')
-        if int__minor_device_class == 0b000011:  # Smartphone
-            list__minor_device_class.append('Smartphone')
-        if int__minor_device_class == 0b000100:  # Wired Modem or Voice Gateway
-            list__minor_device_class.append('Wired Modem or Voice Gateway')
-        if int__minor_device_class == 0b000101:  # Common ISDN Access
-            list__minor_device_class.append('Common ISDN Access')
-    elif 'LAN/Network Access Point' in list__major_device_class:
-        # Minor Device Classes for LAN/Network Access Point Major Class
-        if not int__minor_device_class:  # Fully Available + Uncategorized
-            list__minor_device_class.append('Fully available')
-        # Creating minor and sub-minor bit strings
-        minor_string = minor_device_class[0:3]  # Bits 7 + 6 + 5
-        sub_minor_string = minor_device_class[3:6]  # Bits 4 + 3 + 2
-        int__minor_string = int(minor_string, 2)
-        int__sub_minor_string = int(sub_minor_string, 2)
-        
-        # Rest of LAN/Network Access Point Minor Device Classes
-        if int__minor_string == 0b001:  # 1% to 17% utilized [ bit 5 ]
-            list__minor_device_class.append('1% to 17% utilized')
-        if int__minor_string == 0b010:  # 17% to 33% utilized [ bit 6 ]
-            list__minor_device_class.append('17% to 33% utilized')
-        if int__minor_string == 0b011:  # 33% to 50% utilized [ bits 6 + 5 ]
-            list__minor_device_class.append('33% to 50% utilized')
-        if int__minor_string == 0b100:  # 50% to 67% utilized [ bit 7 ]
-            list__minor_device_class.append('50% to 67% utilized')
-        if int__minor_string == 0b101:  # 67% to 83% utilized [ bits 7 + 5 ]
-            list__minor_device_class.append('67% to 83% utilized')
-        if int__minor_string == 0b110:  # 83% to 99% utilized [ bits 7 + 6 ]
-            list__minor_device_class.append('83% to 99% utilized')
-        if int__minor_string == 0b111:  # No service available [ bits 7 + 6 + 5 ]
-            list__minor_device_class.append('No service available')
-            
-        # Sub Minor Device Classes
-        if not int__sub_minor_string:  # Uncategorized (use this value if no others apply) [ none of the bits ]
-            list__minor_device_class.append('Uncategorized (use this value if no others apply)')
-    elif 'Audio/Video (headset, speaker, stereo, video display, VCR, ...)' in list__major_device_class:
-        if not int__minor_device_class:  # Uncategorized
-            list__minor_device_class.append('Uncategorized (code not assigned)')
-        if int__minor_device_class == 0b000001:  # Wearable Headset Device
-            list__minor_device_class.append('Wearable Headset Device')
-        if int__minor_device_class == 0b000010:  # Hands-free Device
-            list__minor_device_class.append('Hands-free Device')
-        if int__minor_device_class == 0b000011:  # Reserved for Future Use
-            list__minor_device_class.append('Reserved for Future Use')
-        if int__minor_device_class == 0b000100:  # Microphone
-            list__minor_device_class.append('Microphone')
-        if int__minor_device_class == 0b000101:  # Loudspeaker
-            list__minor_device_class.append('Loudspeaker')
-        if int__minor_device_class == 0b000110:  # Headphones
-            list__minor_device_class.append('Headphones')
-        if int__minor_device_class == 0b000111:  # Portable Audio
-            list__minor_device_class.append('Portable Audio')
-        if int__minor_device_class == 0b001000:  # Car Audio
-            list__minor_device_class.append('Car Audio')
-        if int__minor_device_class == 0b001001:  # Set-top box
-            list__minor_device_class.append('Set-top box')
-        if int__minor_device_class == 0b001010:  # HiFi Audio Device
-            list__minor_device_class.append('HiFi Audio Device')
-        if int__minor_device_class == 0b001011:  # VCR
-            list__minor_device_class.append('VCR')
-        if int__minor_device_class == 0b001100:  # Video Camera
-            list__minor_device_class.append('Video Camera')
-        if int__minor_device_class == 0b001101:  # Camcorder
-            list__minor_device_class.append('Camcorder')
-        if int__minor_device_class == 0b001110:  # Video Monitor
-            list__minor_device_class.append('Video Monitor')
-        if int__minor_device_class == 0b001111:  # Video Display and Loudspeaker
-            list__minor_device_class.append('Video Display and Loudspeaker')
-        if int__minor_device_class == 0b010000:  # Video Conferencing
-            list__minor_device_class.append('Video Conferencing')
-        if int__minor_device_class == 0b010001:  # Reserved for Future Use
-            list__minor_device_class.append('Reserved for Future Use')
-        if int__minor_device_class == 0b010010:  # Gaming/Toy
-            list__minor_device_class.append('Gaming/Toy')
-    
+    ## Minor Device Classes - depend on the Major Device Class. Names are sourced
+    ## from the generated tables (bt_ref/cod.py). Majors whose minor field is a
+    ## plain enumerated value (Computer/Phone/Audio-Video/Wearable/Toy/Health)
+    ## resolve by a single lookup. LAN/NAP (major 3) keeps its 3-bit utilisation +
+    ## sub-availability split. Peripheral (5) and Imaging (6) use bespoke bit
+    ## sub-splits and, as in the previous implementation, are not expanded here
+    ## (their full tables remain available in cod.py for future work).
+    _SIMPLE_MINOR_MAJORS = {1, 2, 4, 7, 8, 9}
+    if int__major_device_class in _SIMPLE_MINOR_MAJORS:
+        _minor_name = _cod.COD_MINOR_DEVICE_CLASS.get(int__major_device_class, {}).get(
+            int__minor_device_class
+        )
+        if _minor_name is not None:
+            list__minor_device_class.append(_minor_name)
+    elif int__major_device_class == 3:  # LAN/Network Access Point
+        _util = _cod.COD_MINOR_DEVICE_CLASS.get(3, {})       # 3-bit utilisation level
+        _subm = _cod.COD_SUBMINOR_DEVICE_CLASS.get(3, {})    # sub-availability
+        if not int__minor_device_class and 0 in _util:  # Fully available
+            list__minor_device_class.append(_util[0])
+        # Split the 6-bit minor into utilisation (bits 7-5) and sub (bits 4-2).
+        int__minor_string = int(minor_device_class[0:3], 2)
+        int__sub_minor_string = int(minor_device_class[3:6], 2)
+        if int__minor_string != 0 and int__minor_string in _util:
+            list__minor_device_class.append(_util[int__minor_string])
+        if int__sub_minor_string == 0 and 0 in _subm:
+            list__minor_device_class.append(_subm[0])
+
     return list__major_service_classes, list__major_device_class, list__minor_device_class, fixed_bits_check
 
 
@@ -848,6 +740,49 @@ def _resolve_company_name(company_id: int) -> Optional[str]:
     return _COMPANY_IDENTS_CACHE.get(key)
 
 
+_OUI_VENDORS_CACHE: Optional[Dict] = None
+
+
+def resolve_oui(mac: str) -> Optional[str]:
+    """Resolve a MAC's 24-bit IEEE OUI to its registered vendor, or ``None``.
+
+    Reads the generated ``bt_ref.oui`` reference module (regenerated offline via
+    ``python -m bleep.bt_ref.update_oui``). Gracefully returns ``None`` — "vendor
+    unknown" — when the OUI module is absent, the prefix is unregistered, or the
+    input is too short (e.g. random/private BLE addresses whose OUI is not a
+    vendor identifier). Never raises.
+    """
+    global _OUI_VENDORS_CACHE
+    if _OUI_VENDORS_CACHE is None:
+        try:
+            from bleep.bt_ref.oui import OUI_VENDORS
+            _OUI_VENDORS_CACHE = OUI_VENDORS
+        except Exception:  # noqa: BLE001 - missing/broken module → graceful unknown
+            _OUI_VENDORS_CACHE = {}
+    if not isinstance(mac, str):
+        return None
+    hex_only = "".join(c for c in mac if c in "0123456789abcdefABCDEF").upper()
+    if len(hex_only) < 6:
+        return None
+    return _OUI_VENDORS_CACHE.get(hex_only[:6])
+
+
+def format_uuid_display(uuid: Any) -> str:
+    """Normalize a UUID string for report display (readability polish).
+
+    Persisted SDP/GATT UUIDs are stored with an uppercased ``0X`` prefix for
+    the 16-/32-bit short forms (e.g. ``0X1200``). For human-facing reports we
+    lower-case that hex-literal prefix and body so it reads as ``0x1200`` — the
+    conventional Bluetooth notation — while leaving 128-bit dashed UUIDs and any
+    non-string input untouched.
+    """
+    if not isinstance(uuid, str):
+        return uuid
+    if len(uuid) >= 2 and uuid[:2].upper() == "0X" and "-" not in uuid:
+        return "0x" + uuid[2:].lower()
+    return uuid
+
+
 def _resolve_ad_type_name(ad_type: int) -> Optional[str]:
     """Resolve an Advertising Data type code to its BT SIG name."""
     global _AD_TYPES_CACHE
@@ -859,6 +794,35 @@ def _resolve_ad_type_name(ad_type: int) -> Optional[str]:
             _AD_TYPES_CACHE = {}
     key = f"0x{ad_type:04x}"
     return _AD_TYPES_CACHE.get(key)
+
+
+_CORE_VERSION_CACHE: Optional[Dict] = None
+
+
+def resolve_core_version(lmp_version: int) -> Optional[str]:
+    """Resolve an LMP/HCI version byte to its BT SIG Core Specification name.
+
+    Uses the codegen ``SPEC_ID_NAMES__CORE_VERSION`` dict from ``uuids.py``
+    (populated by ``update_ble_uuids``). Returns None if the version is unknown.
+    """
+    global _CORE_VERSION_CACHE
+    if _CORE_VERSION_CACHE is None:
+        try:
+            from bleep.bt_ref.uuids import SPEC_ID_NAMES__CORE_VERSION
+            _CORE_VERSION_CACHE = SPEC_ID_NAMES__CORE_VERSION
+        except (ImportError, AttributeError):
+            _CORE_VERSION_CACHE = {}
+    key = f"0x{lmp_version:02x}"
+    return _CORE_VERSION_CACHE.get(key)
+
+
+def resolve_manufacturer_name(manufacturer_id: int) -> Optional[str]:
+    """Resolve a 16-bit BT SIG company identifier to its registered name.
+
+    Public wrapper around ``_resolve_company_name`` for use by version
+    detection and display modules.
+    """
+    return _resolve_company_name(manufacturer_id)
 
 
 def _resolve_appearance_sig(appearance_value: int) -> Optional[str]:
@@ -946,6 +910,15 @@ def handle_hex_to_int(handle_str: str) -> int:  # noqa: D401
 # ---------------------------------------------------------------------------
 # Human-readable GATT tree formatter
 # ---------------------------------------------------------------------------
+
+def _decode_profile_value(char_uuid: str, raw) -> Optional[str]:
+    """Try to decode raw bytes using a profile-specific GATT decoder."""
+    try:
+        from bleep.ble_ops.common.gatt_profile_decode import decode_characteristic_value
+        return decode_characteristic_value(char_uuid, raw)
+    except Exception:
+        return None
+
 
 def format_gatt_tree(
     mapping: Dict[str, Any],
@@ -1049,6 +1022,9 @@ def format_gatt_tree(
                 ascii_str = "".join(chr(b) if 0x20 <= b <= 0x7E else "\ufffd" for b in raw)
                 lines.append(f"{svc_cont}{ch_cont}  Hex: {hex_str}")
                 lines.append(f"{svc_cont}{ch_cont}  ASCII: {ascii_str}")
+                decoded = _decode_profile_value(char_uuid, raw)
+                if decoded:
+                    lines.append(f"{svc_cont}{ch_cont}  Decoded: {decoded}")
             elif value is not None:
                 lines.append(f"{svc_cont}{ch_cont}  ASCII: {value}")
             else:

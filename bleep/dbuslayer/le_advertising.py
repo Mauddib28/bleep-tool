@@ -34,6 +34,7 @@ from bleep.bt_ref.constants import (
     LE_ADVERTISEMENT_BASE_PATH,
 )
 from bleep.core.log import print_and_log, LOG__DEBUG
+from bleep.dbuslayer._dbus_wait import call_async_await
 
 __all__ = [
     "LEAdvertisement",
@@ -129,8 +130,26 @@ class LEAdvertisement(dbus.service.Object):
         if c.local_name is not None:
             props["LocalName"] = dbus.String(c.local_name)
 
-        if c.includes:
-            props["Includes"] = dbus.Array(c.includes, signature="s")
+        # BlueZ rejects an advertisement that both sets a property explicitly and
+        # asks it to auto-include the same field via Includes ("Failed to parse
+        # advertisement").  Verified conflicts: LocalName vs "local-name" and
+        # Appearance vs "appearance" (TxPower vs "tx-power" does NOT conflict).
+        # The explicit value wins; drop the redundant include.
+        includes = list(c.includes) if c.includes else []
+        _explicitly_set = {
+            "local-name": c.local_name is not None,
+            "appearance": c.appearance is not None,
+        }
+        _dropped = [i for i in includes if _explicitly_set.get(i)]
+        if _dropped:
+            includes = [i for i in includes if i not in _dropped]
+            print_and_log(
+                f"[*] Dropping include(s) {_dropped}; explicit property value(s) "
+                "take precedence (BlueZ rejects both together)",
+                LOG__DEBUG,
+            )
+        if includes:
+            props["Includes"] = dbus.Array(includes, signature="s")
 
         if c.appearance is not None:
             props["Appearance"] = dbus.UInt16(c.appearance)
@@ -247,57 +266,18 @@ class LEAdvertisingManager:
 
     def register(self, adv: LEAdvertisement, options: Optional[Dict] = None) -> bool:
         """Register *adv* with bluetoothd.  Returns True on success."""
-        success: Optional[bool] = None
-
-        def _ok():
-            nonlocal success
-            success = True
-
-        def _err(error):
-            nonlocal success
-            print_and_log(f"[-] RegisterAdvertisement failed: {error}", LOG__DEBUG)
-            success = False
-
-        self._mgr_iface.RegisterAdvertisement(
+        return call_async_await(
+            self._mgr_iface.RegisterAdvertisement,
             adv.get_path(),
             dbus.Dictionary(options or {}, signature="sv"),
-            reply_handler=_ok,
-            error_handler=_err,
+            label="RegisterAdvertisement",
         )
-
-        import time
-        deadline = time.monotonic() + 5.0
-        while success is None and time.monotonic() < deadline:
-            time.sleep(0.05)
-        if success is None:
-            print_and_log("[-] RegisterAdvertisement timed out", LOG__DEBUG)
-            return False
-        return success
 
     def unregister(self, adv: LEAdvertisement) -> bool:
         """Unregister *adv*.  Returns True on success."""
-        success: Optional[bool] = None
-
-        def _ok():
-            nonlocal success
-            success = True
-
-        def _err(error):
-            nonlocal success
-            print_and_log(f"[-] UnregisterAdvertisement failed: {error}", LOG__DEBUG)
-            success = False
-
-        self._mgr_iface.UnregisterAdvertisement(
+        return call_async_await(
+            self._mgr_iface.UnregisterAdvertisement,
             adv.get_path(),
-            reply_handler=_ok,
-            error_handler=_err,
+            label="UnregisterAdvertisement",
+            error_log_level=LOG__DEBUG,
         )
-
-        import time
-        deadline = time.monotonic() + 5.0
-        while success is None and time.monotonic() < deadline:
-            time.sleep(0.05)
-        if success is None:
-            print_and_log("[-] UnregisterAdvertisement timed out", LOG__DEBUG)
-            return False
-        return success

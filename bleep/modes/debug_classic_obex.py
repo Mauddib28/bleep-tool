@@ -19,6 +19,15 @@ from bleep.modes.debug_dbus import format_dbus_error
 from bleep.core.log import print_and_log, LOG__DEBUG
 from bleep.core.config import OBEX_STAGING_DIR, OBEX_RECEIVE_DIR
 
+__all__ = [
+    "cmd_copp",
+    "cmd_cmapinfo",
+    "cmd_cmap",
+    "cmd_cftp",
+    "cmd_csync",
+    "cmd_cbip",
+]
+
 
 # ---------------------------------------------------------------------------
 # OBEX error hints (shared by copp / cmap / cftp / csync / cbip)
@@ -378,7 +387,7 @@ def cmd_cmapinfo(args: List[str], state: DebugState) -> None:
         decode_map_supported_features, decode_map_message_types,
     )
 
-    _MAP_SHORTS = (MAP_MSE_UUID_SHORT.lower(), MAP_UUID_SHORT.lower(), "1132", "1134")
+    _MAP_SHORTS = (MAP_MSE_UUID_SHORT.replace("0x", "").upper(), MAP_UUID_SHORT.replace("0x", "").upper(), "1132", "1134")
 
     print(f"[*] Querying SDP records for MAP services on {mac}...")
     try:
@@ -389,7 +398,7 @@ def cmd_cmapinfo(args: List[str], state: DebugState) -> None:
 
     map_records = []
     for rec in records:
-        uuid_str = (rec.get("uuid") or "").lower()
+        uuid_str = (rec.get("uuid") or "").upper()
         name_str = (rec.get("name") or "").lower()
         if any(s in uuid_str for s in _MAP_SHORTS) or "message" in name_str:
             map_records.append(rec)
@@ -414,7 +423,7 @@ def cmd_cmapinfo(args: List[str], state: DebugState) -> None:
         profile_ver = None
         if rec.get("profile_descriptors"):
             for pd in rec["profile_descriptors"]:
-                pd_uuid = (pd.get("uuid") or "").lower()
+                pd_uuid = (pd.get("uuid") or "").upper()
                 if any(s in pd_uuid for s in _MAP_SHORTS):
                     ver = pd.get("version")
                     if ver is not None:

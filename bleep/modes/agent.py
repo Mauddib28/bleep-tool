@@ -11,7 +11,10 @@ import argparse
 import signal
 import sys
 import time
-from typing import Literal, Optional, Dict, Any
+from typing import Literal, Optional, Dict, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from bleep.core.output import OutputContext
 
 import dbus
 from gi.repository import GLib
@@ -50,6 +53,28 @@ _AGENT_CLASSES: dict[str, str] = {
 }
 
 
+def _format_timestamp(value: Any) -> str:
+    """Render a stored epoch timestamp as local ``YYYY-MM-DD HH:MM:SS``."""
+    if value in (None, "", "Unknown"):
+        return "Unknown"
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(value)))
+    except (TypeError, ValueError, OSError):
+        return str(value)
+
+
+def _lookup_device_name(address: str) -> Optional[str]:
+    """Best-effort device name from the observations DB (None if unavailable)."""
+    try:
+        from bleep.core.observations import get_device_detail
+
+        device = (get_device_detail(address) or {}).get("device") or {}
+        name = device.get("name")
+        return name or None
+    except Exception:
+        return None
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:  # noqa: D401 – cli helper
     p = argparse.ArgumentParser(prog="bleep-agent", add_help=False)
     p.add_argument("--mode", choices=_AGENT_CLASSES.keys(), default="simple",
@@ -57,8 +82,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:  # noqa: D401 – cli helper
     p.add_argument("--cap", choices=_CAPABILITIES.keys(), default="none",
                   help="Agent capabilities: none, display, yesno, keyboard, kbdisp")
     p.add_argument("--default", action="store_true", help="RequestDefaultAgent")
-    p.add_argument("--auto-accept", action="store_true", default=True,
-                  help="Auto-accept pairing requests (for enhanced and pairing agents)")
+    p.add_argument("--no-auto-accept", dest="auto_accept", action="store_false",
+                  default=True,
+                  help="Prompt for pairing confirmation instead of auto-accepting")
     p.add_argument("--pair", metavar="MAC", help="Pair with a device (only in pairing mode)")
     p.add_argument("--trust", metavar="MAC", help="Set a device as trusted")
     p.add_argument("--untrust", metavar="MAC", help="Set a device as untrusted")
@@ -160,33 +186,42 @@ def _get_device_path(bus, mac_address: str) -> str:
 # public entrypoint – matches other modes signature
 # ---------------------------------------------------------------------------
 
-def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
-    """Run the Agent mode CLI."""
-    argv = argv or sys.argv[1:]
-    args = _build_arg_parser().parse_args(argv)
+def run(args: argparse.Namespace, output: OutputContext | None = None) -> int:
+    """Execute agent mode with parsed args and optional OutputContext.
 
-    # Setup D-Bus mainloop
+    This is the canonical entry point for Phase 3+ callers that pass a
+    pre-parsed ``argparse.Namespace`` and an ``OutputContext``.  The older
+    ``main(argv)`` wrapper remains for backward compatibility.
+    """
+    from bleep.core.output import OutputContext
+    from bleep.core.log import set_output_mode
+
+    if output is None:
+        output = OutputContext()
+
+    set_output_mode(output.mode)
+
+    # Resolve agent type: cli.py uses 'agent_mode', own parser uses 'mode'
+    agent_type = getattr(args, "agent_mode", None) or getattr(args, "mode", "simple")
+
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)  # type: ignore[attr-defined]
-
     bus = dbus.SystemBus()
-    
-    # Handle status check
+
     if args.status:
         return _check_agent_status(bus)
-    
-    # Handle trust management operations
+
+    # Trust management operations
     if args.trust or args.untrust or args.list_trusted:
         trust_manager = TrustManager(bus)
-        
+
         if args.list_trusted:
             trusted_devices = trust_manager.get_trusted_devices()
             print_and_log("[*] Trusted devices:", LOG__GENERAL)
             for path, name, address in trusted_devices:
                 print_and_log(f"    {name} ({address})", LOG__GENERAL)
-            
             if not trusted_devices:
                 print_and_log("[*] No trusted devices found", LOG__GENERAL)
-                
+
         if args.trust:
             try:
                 device_path = _get_device_path(bus, args.trust)
@@ -196,7 +231,7 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
                     print_and_log(f"[-] Failed to set device {args.trust} as trusted", LOG__GENERAL)
             except Exception as e:
                 print_and_log(f"[-] Error setting device as trusted: {str(e)}", LOG__GENERAL)
-                
+
         if args.untrust:
             try:
                 device_path = _get_device_path(bus, args.untrust)
@@ -206,27 +241,29 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
                     print_and_log(f"[-] Failed to set device {args.untrust} as untrusted", LOG__GENERAL)
             except Exception as e:
                 print_and_log(f"[-] Error setting device as untrusted: {str(e)}", LOG__GENERAL)
-    
-    # Handle bond management operations
+
+    # Bond management operations
     if args.list_bonded or args.remove_bond:
         from bleep.dbuslayer.bond_storage import DeviceBondStore
         bond_store = DeviceBondStore(args.storage_path)
-        
+
         if args.list_bonded:
             bonded_devices = bond_store.list_bonded_devices()
             print_and_log("[*] Bonded devices with stored keys:", LOG__GENERAL)
             for device in bonded_devices:
-                name = device.get("name", "Unknown")
                 addr = device.get("address", "Unknown")
-                timestamp = device.get("timestamps", {}).get("last_paired", "Unknown")
+                name = device.get("name") or ""
+                if not name or name == "Unknown":
+                    name = _lookup_device_name(addr) or "Unknown"
+                timestamp = _format_timestamp(
+                    device.get("timestamps", {}).get("last_paired")
+                )
                 print_and_log(f"    {name} ({addr}) - Last paired: {timestamp}", LOG__GENERAL)
-            
             if not bonded_devices:
                 print_and_log("[*] No bonded devices found", LOG__GENERAL)
-                
+
         if args.remove_bond:
             try:
-                # First try to look up by address directly
                 result = bond_store.load_device_bond_by_address(args.remove_bond)
                 if result and result.get("device_path"):
                     if bond_store.delete_device_bond(result["device_path"]):
@@ -237,23 +274,17 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
                     print_and_log(f"[-] No bond found for {args.remove_bond}", LOG__GENERAL)
             except Exception as e:
                 print_and_log(f"[-] Error removing bond: {str(e)}", LOG__GENERAL)
-                
+
     # If only trust/bond operations were requested, exit
     if not args.pair and (args.trust or args.untrust or args.list_trusted or args.list_bonded or args.remove_bond):
         return 0
 
-    # CRITICAL FIX: Create mainloop object BEFORE agent creation/registration
-    # This matches the pattern used in all working BlueZ reference scripts (simple-agent, test-profile, etc.)
-    # The mainloop object must exist when dbus.service.Object.__init__() is called to properly
-    # register methods on D-Bus. Without it, methods are not registered even though the object path is.
+    # Create mainloop BEFORE agent creation for proper D-Bus method registration
     loop = GLib.MainLoop()
-    
-    # Create and register agent
-    agent_type = args.mode
+
     cap = _CAPABILITIES[args.cap]
-    
+
     try:
-        # Create appropriate I/O handler based on flags
         io_handler = None
         if agent_type == "pairing":
             from bleep.dbuslayer.agent_io import create_io_handler
@@ -267,8 +298,7 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
         elif agent_type == "enhanced":
             from bleep.dbuslayer.agent_io import create_io_handler
             io_handler = create_io_handler("programmatic", auto_accept=args.auto_accept)
-        
-        # Create the agent (mainloop object now exists, ensuring proper method registration)
+
         agent = create_agent(
             bus,
             agent_type=agent_type,
@@ -278,68 +308,95 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
             io_handler=io_handler,
             storage_path=args.storage_path,
         )
-        
-        # Log the exact chosen agent type + cap + default + auto_accept + agent_path
+
         io_handler_type = io_handler.__class__.__name__ if io_handler else 'none'
         agent_path = getattr(agent, 'agent_path', 'unknown')
-        
-        # Verify agent method registration (if method exists)
+
         if hasattr(agent, '_verify_method_registration'):
             verification_result = agent._verify_method_registration()
             if verification_result:
                 print_and_log(
-                    f"[+] Agent method registration verified via D-Bus introspection",
+                    "[+] Agent method registration verified via D-Bus introspection",
                     LOG__AGENT
                 )
             else:
                 print_and_log(
-                    f"[!] WARNING: Agent method registration verification failed - methods may not be accessible",
+                    "[!] WARNING: Agent method registration verification failed - methods may not be accessible",
                     LOG__AGENT
                 )
-        
+
         print_and_log(
             f"[*] Agent registered: agent_type={agent.__class__.__name__}, capabilities={cap}, "
             f"default={args.default}, auto_accept={args.auto_accept}, agent_path={agent_path}, "
             f"io_handler={io_handler_type}",
             LOG__GENERAL,
         )
-        
+        if output.is_json:
+            output.emit_result({
+                "event": "agent_registered",
+                "agent_type": agent.__class__.__name__,
+                "capabilities": cap,
+                "default": args.default,
+                "auto_accept": args.auto_accept,
+                "agent_path": agent_path,
+                "io_handler": io_handler_type,
+            })
+
         # Handle pairing if requested
         if args.pair and isinstance(agent, PairingAgent):
             try:
                 device_path = _get_device_path(bus, args.pair)
-                
-                # Setup pairing callbacks
+                _pair_mac = args.pair.upper()
+
                 def on_pairing_started(device_info):
                     print_and_log(f"[*] Pairing started with {device_info}", LOG__GENERAL)
-                    
+                    if output.is_json:
+                        output.emit_result({"event": "pairing_started", "device": str(device_info)})
+
                 def on_pairing_succeeded(device_info):
                     print_and_log(f"[+] Pairing succeeded with {device_info}", LOG__GENERAL)
-                    
+                    if output.is_json:
+                        output.emit_result({"event": "pairing_succeeded", "device": str(device_info)})
+
                 def on_pairing_failed(device_info, reason):
                     print_and_log(f"[-] Pairing failed with {device_info}: {reason}", LOG__GENERAL)
-                    
+                    if output.is_json:
+                        output.emit_result({"event": "pairing_failed", "device": str(device_info), "reason": str(reason)})
+
                 def on_device_trusted(device_info):
                     print_and_log(f"[+] Device {device_info} set as trusted", LOG__GENERAL)
-                
+                    if output.is_json:
+                        output.emit_result({"event": "device_trusted", "device": str(device_info)})
+
                 agent.set_pairing_callback("pairing_started", on_pairing_started)
                 agent.set_pairing_callback("pairing_succeeded", on_pairing_succeeded)
                 agent.set_pairing_callback("pairing_failed", on_pairing_failed)
                 agent.set_pairing_callback("device_trusted", on_device_trusted)
-                
-                # Attempt pairing
+
                 success = agent.pair_device(device_path, set_trusted=True, timeout=args.timeout)
-                
+
+                try:
+                    from bleep.core import observations as _obs
+                    _obs.store_pairing_event(
+                        _pair_mac,
+                        method=agent.get_last_auth_type() if hasattr(agent, 'get_last_auth_type') else None,
+                        result="success" if success else "failed",
+                        capabilities=getattr(args, 'cap', None),
+                    )
+                    if success:
+                        _obs.upsert_device(_pair_mac, paired=True, trusted=True)
+                except Exception:
+                    pass
+
                 if success:
                     print_and_log(f"[+] Successfully paired with {args.pair}", LOG__GENERAL)
                 else:
                     print_and_log(f"[-] Failed to pair with {args.pair}", LOG__GENERAL)
-                    
-                # If only pairing was requested, exit
+
                 if not args.default:
                     agent.unregister()
                     return 0 if success else 1
-                    
+
             except Exception as e:
                 print_and_log(f"[-] Error during pairing: {str(e)}", LOG__GENERAL)
                 if not args.default:
@@ -349,10 +406,7 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
             print_and_log(f"[-] Pairing requires 'pairing' agent mode, current mode is '{agent_type}'", LOG__GENERAL)
             agent.unregister()
             return 1
-    
-        # Run the main loop if default agent is requested
-        # Note: mainloop object was created earlier (before agent creation) to ensure
-        # proper method registration. We only run it here if --default flag is set.
+
         if args.default:
             def _sigint(_sig, _frm):
                 print_and_log("[!] SIGINT received – unregistering agent", LOG__GENERAL)
@@ -360,39 +414,37 @@ def main(argv: list[str] | None = None):  # noqa: D401 – CLI entry
                     agent.unregister()
                 finally:
                     loop.quit()
-            
+
             signal.signal(signal.SIGINT, _sigint)
-            
+
             try:
                 print_and_log("[*] Agent running, press Ctrl+C to exit", LOG__GENERAL)
                 loop.run()
             except Exception as e:
-                print_and_log(
-                    f"[!] Mainloop error: {e}",
-                    LOG__GENERAL
-                )
+                print_and_log(f"[!] Mainloop error: {e}", LOG__GENERAL)
                 import traceback
-                print_and_log(
-                    f"[!] Mainloop traceback: {traceback.format_exc()}",
-                    LOG__GENERAL
-                )
+                print_and_log(f"[!] Mainloop traceback: {traceback.format_exc()}", LOG__GENERAL)
                 raise
             finally:
                 print_and_log("[*] Agent loop exited", LOG__GENERAL)
         else:
-            # For non-default agents, the mainloop object was still needed during
-            # registration, but we don't run it indefinitely. The agent will handle
-            # pairing requests synchronously if needed.
             print_and_log(
                 "[*] Agent registered (non-default). Mainloop object created for proper method registration.",
                 LOG__DEBUG
             )
-                
+
     except Exception as e:
         print_and_log(f"[-] Agent error: {str(e)}", LOG__GENERAL)
         return 1
-        
+
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:  # noqa: D401 – CLI entry
+    """Run the Agent mode CLI (backward-compatible wrapper)."""
+    argv = argv or sys.argv[1:]
+    args = _build_arg_parser().parse_args(argv)
+    return run(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

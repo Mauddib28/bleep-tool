@@ -261,5 +261,83 @@ def main() -> int:
         return 1
 
 
+def run_audio_profiles(args, output=None) -> int:
+    from bleep.ble_ops.audio.audio_profile_correlator import AudioProfileCorrelator
+    import json
+
+    correlator = AudioProfileCorrelator()
+
+    if args.device:
+        profile_info = correlator.identify_profiles_for_device(args.device)
+        print(json.dumps(profile_info, indent=2, ensure_ascii=False))
+    else:
+        from bleep.ble_ops.audio.audio_tools import AudioToolsHelper
+        audio_tools = AudioToolsHelper()
+        all_profiles = audio_tools.identify_bluetooth_profiles_from_alsa()
+
+        result = {"devices": {}}
+
+        for profile_uuid, devices in all_profiles.items():
+            for device in devices:
+                mac = device.get("mac_address")
+                if mac:
+                    if mac not in result["devices"]:
+                        result["devices"][mac] = {
+                            "mac_address": mac,
+                            "profiles": []
+                        }
+                    result["devices"][mac]["profiles"].append({
+                        "uuid": profile_uuid,
+                        "profile_name": device.get("profile_name"),
+                        "backend": device.get("backend"),
+                        "sink_name": device.get("sink_name"),
+                        "source_name": device.get("source_name"),
+                    })
+
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    return 0
+
+
+def run_audio_config(args, output=None) -> int:
+    from bleep.ble_ops.audio.alsa_config import (
+        read_asound_conf, configure_bluealsa_device, remove_bluealsa_device,
+        create_audio_tunnel, backup_and_restore,
+    )
+    action = args.action
+    if not action:
+        print("Usage: bleep audio-config {show|add|remove|tunnel|backup|restore}")
+        return 1
+    if action == "show":
+        entries = read_asound_conf(args.path)
+        if not entries:
+            print("[*] No ALSA config entries found")
+        else:
+            for name, entry in entries.items():
+                mac_str = f"  MAC: {entry.mac}" if entry.mac else ""
+                print(f"  {name}{mac_str}")
+                for line in entry.body.splitlines():
+                    print(f"    {line.strip()}")
+    elif action == "add":
+        configure_bluealsa_device(args.address, args.device_type, config_path=args.path)
+        print(f"[+] Added BlueALSA {args.device_type} for {args.address}")
+    elif action == "remove":
+        if remove_bluealsa_device(args.address, config_path=args.path):
+            print(f"[+] Removed entries for {args.address}")
+        else:
+            print(f"[-] No entries found for {args.address}")
+    elif action == "tunnel":
+        tc = create_audio_tunnel(args.source, args.sink, config_path=args.path)
+        print(f"[+] Tunnel: {tc.source_pcm} → {tc.loopback_device} → {tc.sink_pcm}")
+    elif action == "backup":
+        bak = backup_and_restore("backup", args.path)
+        if bak:
+            print(f"[+] Backup: {bak}")
+    elif action == "restore":
+        backup_and_restore("restore", args.path)
+        print("[+] Restored")
+    return 0
+
+
 if __name__ == "__main__":
     sys.exit(main())

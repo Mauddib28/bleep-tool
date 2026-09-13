@@ -90,6 +90,15 @@ from bleep.modes.debug_media import (
     cmd_mediaenum, cmd_mediactrl, cmd_mediaprops,
     cmd_audiorecon, cmd_audioplay, cmd_audiorec, cmd_audiocfg,
 )
+from bleep.modes.debug_survey import cmd_survey, cmd_survey_status
+from bleep.modes.debug_advmon import cmd_advertise_monitor
+from bleep.modes.debug_cli_adapters import (
+    cmd_uuidtr, cmd_adaptercfg, cmd_netenum, cmd_cping, cmd_db,
+)
+from bleep.modes.debug_stateful_adapters import (
+    cmd_explore, cmd_signal, cmd_gattserver, cmd_advertise,
+    cmd_audiointercept, cmd_devicesets, cmd_mesh, cmd_ctf, cmd_cenum,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -107,12 +116,13 @@ def _cmd_help(args, state):
 
     _GROUPS = [
         ("Scanning", [
-            ("scan",     "scan",                                                           "Passive BLE scan (10 s)"),
-            ("scann",    "scann",                                                          "Naggy scan (DuplicateData off)"),
-            ("scanp",    "scanp <MAC>",                                                    "Pokey scan (spam active 1-s scans)"),
-            ("scanb",    "scanb",                                                          "Brute scan (BR/EDR + LE, sequential)"),
+            ("scan",     "scan [--timeout N]",                                             "Passive BLE scan (default 10 s)"),
+            ("scann",    "scann [--timeout N]",                                            "Naggy scan (DuplicateData on)"),
+            ("scanp",    "scanp <MAC> [--timeout N]",                                      "Pokey scan (spam active 1-s scans)"),
+            ("scanb",    "scanb [--timeout N]",                                            "Brute scan (BR/EDR + LE, default 20 s)"),
             ("dscan",    "dscan [--timeout T]",                                            "Dual scan (LE + BR/EDR, single session)"),
             ("cscan",    "cscan",                                                          "Classic (BR/EDR) passive scan"),
+            ("advertise-monitor", "advertise-monitor caps | start [-p OFF:AD:HEX] [--rssi-high N] [--duration N]", "Kernel-offloaded advertisement pattern monitor"),
         ]),
         ("Connection", [
             ("connect",    "connect <mac>",                                                "Connect to a device"),
@@ -133,11 +143,13 @@ def _cmd_help(args, state):
             ("enumn",    "enumn <MAC>",                                                    "Naggy enumeration (multi-read only)"),
             ("enump",    "enump <MAC> [--rounds N] [--verify]",                            "Pokey enumeration with 0/1 write probes"),
             ("enumb",    "enumb <MAC> <CHAR_UUID> [--range a-b] [--patterns ...] [--payload-file FILE] [--force] [--verify]", "Brute enumeration"),
+            ("explore",  "explore [MAC] [--out F] [--conn-mode passive|naggy] [--timeout N]", "Scan & dump GATT DB to JSON (mirrors CLI 'explore'; MAC defaults to current device)"),
         ]),
         ("BLE Read/Write", [
             ("read",     "read <char_uuid|handle>",                                        "Read characteristic value"),
             ("write",    "write <char_uuid|handle> <value>",                               "Write to characteristic"),
             ("notify",   "notify <char_uuid|handle> [on|off]",                             "Subscribe/unsubscribe to notifications"),
+            ("signal",   "signal <char_uuid|handle> [--time N]",                           "Timed notification listener on the current device (mirrors CLI 'signal')"),
         ]),
         ("Advanced BLE Read/Write", [
             ("multiread",     "multiread <char_uuid|handle> [rounds=N]",                   "Read a characteristic multiple times (e.g., rounds=1000)"),
@@ -145,8 +157,9 @@ def _cmd_help(args, state):
             ("brutewrite",    "brutewrite <char_uuid|handle> <pattern> [--range start-end] [--verify]", "Brute force write values"),
         ]),
         ("BR/EDR Classic Profiles", [
-            ("csdp",  "csdp <mac> [--connectionless] [--l2ping-count N] [--l2ping-timeout N]", "SDP discovery"),
-            ("pbap",  "pbap [--repos PB,ICH] [--format vcard21] [--auto-auth] [--watchdog 8] [--out /path/to/file.vcf]", "Dump phonebook via PBAP"),
+            ("csdp",  "csdp <mac> [--connectionless] [--l2ping-count N] [--l2ping-timeout N]", "SDP discovery (raw socket browse)"),
+            ("cenum", "cenum [MAC] [--version-info] [--analyze] [--sdp-source S] [--connectionless]", "Rich SDP enumeration/analysis (mirrors CLI 'classic-enum'; MAC defaults to current device)"),
+            ("pbap",  "pbap [--repos PB,ICH] [--format vcard21] [--auto-auth] [--watchdog 30] [--out /path/to/file.vcf]", "Dump phonebook via PBAP"),
             ("ckeep", "ckeep [--first|--svc NAME|CHANNEL]|--close",                       "Open/close keep-alive RFCOMM socket"),
             ("copen", "copen [--first|--svc NAME|CHANNEL]|--close|--status",               "Open/close RFCOMM data socket"),
             ("csend", "csend <hex:XX|str:XX|file:PATH|data>",                              "Send data over RFCOMM"),
@@ -157,18 +170,20 @@ def _cmd_help(args, state):
             ("cmapinfo","cmapinfo",                                                        "MAP version, features & BlueZ compat info"),
             ("cmap",  "cmap folders|list|get|push|inbox|props|read|delete",                "Message Access Profile"),
             ("cftp",  "cftp ls|cd|get|put|mkdir|rm|cp|mv",                                 "File Transfer Profile (browse/transfer)"),
-            ("cpan",      "cpan connect|disconnect|status|server",                         "Personal Area Networking (PAN)"),
+            ("cpan",      "cpan connect|disconnect|status|server-reg|server-unreg",       "Personal Area Networking (PAN)"),
             ("cprofiles", "cprofiles",                                                     "List Device1.UUIDs (advertised profiles)"),
             ("cprofile",  "cprofile connect|disconnect <UUID>",                            "Connect/disconnect a specific profile"),
-            ("chid",      "chid",                                                          "Show HID classification for connected device"),
+            ("chid",      "chid [MAC]",                                                    "HID classification (connected device, or connectionless with MAC)"),
             ("cspp",      "cspp register [--auth|--no-auth]|unregister|status",            "SPP serial port profile"),
             ("csync", "csync get|put [--location int|sim1]",                               "IrMC Synchronization (phonebook)"),
             ("cbip",  "cbip props|get|thumb <handle>",                                     "Basic Imaging Profile [experimental]"),
             ("cbind", "cbind <ch> [--device N] | release [N] | list",                       "Persistent RFCOMM /dev/rfcommN binding"),
+            ("netenum","netenum [--adapter hciX] [--all-devices] [--json]",                 "Enumerate PAN network capability (adapters + devices)"),
+            ("cping", "cping <MAC> [--count N] [--timeout N] [--adapter hciX]",             "L2CAP echo (l2ping) reachability test"),
         ]),
         ("Pairing & Security", [
             ("agent", "agent status|register|unregister",                                  "Pairing agent visibility/control (debug)"),
-            ("pair",  "pair <MAC> [--pin CODE] [--cap CAP] [--timeout SEC] [--probe]",     "Pair with device (--probe: discover auth method)"),
+            ("pair",  "pair <MAC> [--pin CODE] [--cap CAP] [--timeout SEC] [--no-connect] [--no-trust] [--probe]",     "Pair with device (--probe: discover auth method)"),
         ]),
         ("D-Bus Inspection", [
             ("interfaces", "interfaces",                                                   "List available D-Bus interfaces"),
@@ -176,7 +191,7 @@ def _cmd_help(args, state):
             ("methods",    "methods <interface>",                                          "List methods for an interface"),
             ("signals",    "signals <interface>",                                          "List signals for an interface"),
             ("call",       "call <interface> <method> [args...]",                          "Call a method"),
-            ("monitor",    "monitor [start|stop]",                                        "Monitor device properties"),
+            ("monitor",    "monitor [start|stop]",                                        "Monitor device PropertiesChanged (not adv; see advertise-monitor)"),
             ("introspect", "introspect [path]",                                           "Introspect a D-Bus object"),
         ]),
         ("Navigation", [
@@ -187,17 +202,36 @@ def _cmd_help(args, state):
         ]),
         ("Analysis & Database", [
             ("aoi",      "aoi [--save] [MAC]",                                             "Assets-of-Interest analysis and reporting"),
-            ("dbsave",   "dbsave [on|off]",                                                "Toggle database saving"),
-            ("dbexport", "dbexport [--save]",                                              "Export device data from database"),
+            ("dbsave",   "dbsave [on|off]",                                                "Toggle database saving (session helper)"),
+            ("dbexport", "dbexport [--save]",                                              "Export current session's device data (session helper)"),
+            ("db",       "db <list|show|timeline|export|uuids|maintain> [MAC] [options]",  "Full observation-DB query/maintenance (mirrors CLI 'bleep db')"),
+        ]),
+        ("Utilities", [
+            ("uuidtr",     "uuidtr <uuid...> [--json] [--verbose] [--include-unknown]",     "Translate UUID(s) to human-readable names"),
+            ("adaptercfg", "adaptercfg [show | get <prop> | set <prop> <val...>] [--adapter hciX]", "View/modify local adapter configuration"),
+        ]),
+        ("Local Roles & Broadcast", [
+            ("gattserver", "gattserver start [--uuid U ...] [--name N] [--read-value HEX] [--duration N]", "Publish a local GATT server (Ctrl-C to stop)"),
+            ("advertise",  "advertise caps | start [options]",                              "Broadcast custom LE advertisements (Ctrl-C to stop)"),
+        ]),
+        ("Sets / Mesh / CTF", [
+            ("devicesets", "devicesets [list | connect <path> | disconnect <path> | info <path>]", "DeviceSet1 coordinated sets (e.g. TWS earbuds)"),
+            ("mesh",       "mesh [join <uuid> | provision <uuid> | reprovision <unicast> --node-path P]", "Bluetooth Mesh provisioning (experimental)"),
+            ("ctf",        "ctf [--device MAC] [--discover] [--solve] [--visualize] [--interactive]", "BLE CTF solver/analyzer (secondary interaction path)"),
         ]),
         ("Media & Audio", [
             ("mediaenum",  "mediaenum",                                                    "List media D-Bus objects for connected device"),
             ("mediactrl",  "mediactrl <play|pause|stop|next|prev|volume|info|press> [val]","AVRCP media player control"),
             ("mediaprops", "mediaprops",                                                   "Show MediaControl/Player/Transport properties"),
             ("audiorecon", "audiorecon [--mac MAC] [--file F] [--no-play] [--no-record]",  "Audio reconnaissance (backend, cards, play/rec)"),
-            ("audioplay",  "audioplay <file> [--system] [--volume N] [--direct]",          "Play audio file to connected BT device"),
-            ("audiorec",   "audiorec <output> [--system] [--duration N] [--direct]",       "Record audio from connected BT device"),
-            ("audiocfg",   "audiocfg",                                                     "Show host audio backend and BT stack status"),
+            ("audioplay",  "audioplay <file> [--system] [--volume N] [--direct] [--codec C]", "Play audio file to connected BT device"),
+            ("audiorec",   "audiorec <output> [--system] [--duration N] [--direct] [--hfp] [--keep-profile]", "Record audio from connected BT device"),
+            ("audiocfg",   "audiocfg [--endpoints] | <show|add|remove|tunnel|backup|restore> [...]", "Audio backend diagnostics; or ALSA/BlueALSA config (mirrors CLI 'audio-config')"),
+            ("audiointercept", "audiointercept [MAC] [--duration N] [--engine whisper|vosk] [--no-transcribe]", "Capture/transcribe audio from a BT device (mirrors CLI 'audio-intercept')"),
+        ]),
+        ("Survey", [
+            ("survey",        "survey start [--duration N] [--round-time N] [-o FILE] | survey stop", "Start/stop background device survey"),
+            ("survey-status", "survey-status",                                              "Show survey progress and device counts"),
         ]),
         ("Session", [
             ("help", "help",                                                               "Show this help"),
@@ -302,6 +336,23 @@ def _build_dispatch_table(state: DebugState):
         "audioplay":     _wrap(cmd_audioplay),
         "audiorec":      _wrap(cmd_audiorec),
         "audiocfg":      _wrap(cmd_audiocfg),
+        "survey":        _wrap(cmd_survey),
+        "survey-status": _wrap(cmd_survey_status),
+        "advertise-monitor": _wrap(cmd_advertise_monitor),
+        "uuidtr":        _wrap(cmd_uuidtr),
+        "adaptercfg":    _wrap(cmd_adaptercfg),
+        "netenum":       _wrap(cmd_netenum),
+        "cping":         _wrap(cmd_cping),
+        "db":            _wrap(cmd_db),
+        "explore":       _wrap(cmd_explore),
+        "cenum":         _wrap(cmd_cenum),
+        "signal":        _wrap(cmd_signal),
+        "gattserver":    _wrap(cmd_gattserver),
+        "advertise":     _wrap(cmd_advertise),
+        "audiointercept": _wrap(cmd_audiointercept),
+        "devicesets":    _wrap(cmd_devicesets),
+        "mesh":          _wrap(cmd_mesh),
+        "ctf":           _wrap(cmd_ctf),
         "quit":          lambda _: None,
         "exit":          lambda _: None,
     }
@@ -343,6 +394,9 @@ def debug_shell(state: DebugState) -> None:
         cmd, *rest = parts
 
         if cmd.lower() in ("quit", "exit"):
+            if state.survey_thread is not None and state.survey_thread.is_alive():
+                state.survey_stop_event.set()
+                state.survey_thread.join(timeout=5.0)
             if state.keepalive_sock:
                 try:
                     state.keepalive_sock.close()

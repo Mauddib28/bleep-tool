@@ -6,7 +6,12 @@ This document describes the internal workings of the Assets-of-Interest (AoI) mo
 
 The AoI functionality is implemented across multiple modules:
 
-1. **Command Line Interface**: `bleep/cli.py` contains the AoI command parser and parameter handling.
+1. **Command Line Interface**: `bleep/cli/parsers/aoi.py` defines the canonical AoI
+   argument set (`_add_aoi_arguments`) and subcommand resolution
+   (`apply_aoi_subcommand`); `bleep/cli/dispatch.py` routes the parsed `aoi`
+   command to the mode. The standalone `bleep/modes/aoi.py:main()` reuses the
+   same canonical definitions, so `bleep aoi …` and `python -m bleep.modes.aoi …`
+   share one source of truth.
 2. **AoI Mode**: `bleep/modes/aoi.py` implements the main functionality for scanning, analyzing, listing, reporting, and exporting.
 3. **AoI Analyzer**: `bleep/analysis/aoi_analyser.py` provides the core analysis logic for device data.
 
@@ -27,7 +32,7 @@ The `AOIAnalyser` class in `bleep/analysis/aoi_analyser.py` is responsible for a
 
 #### Key Methods:
 
-- **`__init__(self, aoi_dir=None)`**: Initializes the analyzer with a specified data directory.
+- **`__init__(self, aoi_dir=None, use_db=True, db_only=False)`**: Initializes the analyzer. `aoi_dir` defaults to `~/.bleep/aoi/`; `use_db` toggles observation-DB storage/retrieval (default `True`); `db_only` skips file writes (database only).
 - **`list_devices(self)`**: Returns a list of all devices in the AOI database.
 - **`load_device_data(self, device_mac)`**: Loads data for a specific device.
 - **`save_device_data(self, device_mac, data)`**: Saves device data to the database.
@@ -38,13 +43,17 @@ The `AOIAnalyser` class in `bleep/analysis/aoi_analyser.py` is responsible for a
 
 ### AoI Mode Functions
 
-The `main()` function in `bleep/modes/aoi.py` processes the different subcommands:
+The `_run_impl()` function in `bleep/modes/aoi.py` (invoked by both the
+integrated CLI via `bleep/cli/dispatch.py` and the standalone `main()`) processes
+the different subcommands:
 
 - **`scan`**: Reads devices from JSON files and collects data.
 - **`analyze`**: Analyzes a specific device's data.
 - **`list`**: Lists all devices in the database.
-- **`report`**: Generates a report for a specific device.
+- **`report`**: Generates a report for a specific device (read-only — never
+  persists analysis to the DB).
 - **`export`**: Exports device data for external processing.
+- **`db`**: Database operations (`import`, `export`, `sync`, `list`).
 
 ## Data Structures
 
@@ -56,11 +65,15 @@ The device data JSON files can contain various structures:
 {
   "address": "00:11:22:33:44:55",
   "name": "Device Name",
+  "device_type": "le",
+  "device_type_source": "live",
   "services": ["uuid1", "uuid2", ...],
   "services_mapping": {
-    "handle1": "uuid1",
-    "handle2": "uuid2",
-    ...
+    "<service-uuid>": {
+      "chars": {
+        "<char-uuid>": {"properties": ["read", "write"], "value": "..."}
+      }
+    }
   },
   "characteristics": {
     "uuid1": {
@@ -74,6 +87,29 @@ The device data JSON files can contain various structures:
   "scan_timestamp": 1632150000
 }
 ```
+
+`device_type` is the resolved transport (`le`/`classic`/`dual`/`unknown`).
+`device_type_source` records how it was resolved: `live` when derived from the
+live evidence-based classifier, or `seed` when the live classification was
+inconclusive (`unknown`) and a trustworthy survey/DB device-type was adopted
+instead (see `device_type_classification.md` → "AoI scan seeding").
+
+`services_mapping` is a **nested** structure keyed by **service UUID**; each
+value carries its characteristics under a `chars` sub-dict (live-scan payloads
+may use `Characteristics` — the analyser accepts both):
+
+```json
+"services_mapping": {
+  "0000180f-0000-1000-8000-00805f9b34fb": {
+    "chars": {
+      "00002a19-0000-1000-8000-00805f9b34fb": {"properties": ["read", "notify"], "value": "64"}
+    }
+  }
+}
+```
+
+It is **not** a flat `{handle: uuid}` map. When the flat `characteristics` dict
+is absent, `analyse_device()` extracts characteristics by walking this nested map.
 
 ### Analysis Report Structure
 
@@ -142,11 +178,14 @@ elif isinstance(services_data, dict):
 **Fix**: Added support for extracting characteristics from other fields:
 
 ```python
-# Handle cases where characteristics might be in services_mapping instead
+# Extract characteristics from the nested services_mapping when the flat
+# `characteristics` dict is absent. services_mapping is keyed by SERVICE UUID;
+# each value nests its characteristics under "chars" (or "Characteristics").
 if not characteristics and "services_mapping" in data:
-    for handle, uuid in data.get("services_mapping", {}).items():
-        char_info = {"uuid": uuid, "handle": handle}
-        char_report = self._analyse_characteristic(uuid, char_info)
+    for _svc_uuid, svc_data in data.get("services_mapping", {}).items():
+        chars_data = svc_data.get("chars") or svc_data.get("Characteristics") or {}
+        for char_uuid, char_info in chars_data.items():
+            char_report = self._analyse_characteristic(char_uuid, dict(char_info, uuid=char_uuid))
         # ...
 elif isinstance(characteristics, dict):
     # Process normal characteristics dictionary
@@ -197,13 +236,18 @@ The AoI module now integrates with BLEEP's observation database, providing a uni
 The integration uses the following components:
 
 1. **Database Functions**:
-   - `store_aoi_analysis`: Stores analysis results in the `aoi_analysis` table
-   - `get_aoi_analysis`: Retrieves analysis results from the database
+   - `store_aoi_analysis`: Stores analysis results — writes the latest-only row to
+     `aoi_analysis` **and** appends a timestamped row to `aoi_analysis_history`
+   - `get_aoi_analysis`: Retrieves the **latest** analysis for a device
+   - `get_aoi_analysis_history`: Retrieves the full analysis history for a device
+     (newest-first, optional `limit`) so re-scans can be compared over time
    - `has_aoi_analysis`: Checks if analysis exists for a device
    - `get_aoi_analyzed_devices`: Lists all devices with AoI analysis
 
 2. **Schema Changes**:
-   - Version 4 of the database schema introduces the `aoi_analysis` table
+   - Schema v4 introduced the `aoi_analysis` table (latest-only, one row per device)
+   - Schema v17 added the append-only `aoi_analysis_history` table; the v16→v17
+     migration backfills the existing latest row as the first history entry
    - Automatic migration is performed when the schema version changes
 
 3. **Fallback Mechanism**:

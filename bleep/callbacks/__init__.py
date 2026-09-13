@@ -18,6 +18,13 @@ from bleep.callbacks.base import BleepCallback
 from bleep.core.log import print_and_log, LOG__DEBUG
 from bleep.signals.capture_config import SignalType
 
+__all__ = [
+    "BleepCallback",
+    "DEFAULT_CALLBACK_DIR",
+    "load_callbacks",
+    "get_loaded",
+]
+
 DEFAULT_CALLBACK_DIR = os.path.expanduser("~/.config/bleep/callbacks")
 
 _loaded: Dict[str, BleepCallback] = {}

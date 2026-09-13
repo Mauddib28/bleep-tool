@@ -1,9 +1,11 @@
 """
 Enumeration controller for multi-attempt device enumeration.
 
-This module orchestrates enumeration attempts with proper error handling,
-using existing BLEEP components (ReconnectionMonitor, ConnectionResetManager,
-landmine mapping) to provide structured enumeration results.
+This module orchestrates enumeration attempts with proper error handling
+and structured result annotations.  It wraps the low-level connect/enumerate
+primitive and, for non-passive modes, delegates to the variant-specific
+post-connect logic in ``bleep.ble_ops.le.scan`` (multi-read, write probes,
+payload fuzzing).
 """
 
 from __future__ import annotations
@@ -15,7 +17,6 @@ from typing import Dict, List, Optional, Any, Tuple
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
 from bleep.core.errors import (
-    BLEEPError,
     ConnectionError,
     NotAuthorizedError,
     DeviceNotFoundError,
@@ -23,7 +24,12 @@ from bleep.core.errors import (
 )
 from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy
 
-__all__ = ["EnumerationController", "EnumerationResult", "ErrorAction"]
+__all__ = [
+    "EnumerationController",
+    "EnumerationResult",
+    "ConnectionAnnotation",
+    "ErrorAction",
+]
 
 
 class ErrorAction(Enum):
@@ -54,119 +60,284 @@ class EnumerationResult:
     landmine_map: Optional[Dict[str, Any]] = None
     permission_map: Optional[Dict[str, Any]] = None
 
+    @property
+    def serialized_annotations(self) -> List[Dict[str, Any]]:
+        """Return annotations as a JSON-serialisable list of dicts."""
+        return [
+            {
+                "timestamp": a.timestamp,
+                "error_type": a.error_type,
+                "details": a.details,
+                "attempted_solution": a.attempted_solution,
+            }
+            for a in self.annotations
+        ]
+
+    def persist_security_maps(self, mac: str, source: str = "enum-scan") -> None:
+        """Persist landmine/permission maps and annotations to the observation DB.
+
+        Safe to call unconditionally — silently returns if the observation
+        module is unavailable or there is nothing to persist.
+        """
+        if not (self.landmine_map or self.permission_map or self.annotations):
+            return
+        try:
+            from bleep.core import observations as _obs
+            _obs.store_security_maps(
+                mac,
+                landmine_map=self.landmine_map,
+                permission_map=self.permission_map,
+                enumeration_annotations=self.serialized_annotations or None,
+                source=source,
+            )
+        except Exception:
+            pass
+
 
 class EnumerationController:
+    """Orchestrates multi-attempt enumeration with error annotations.
+
+    For ``passive`` mode the controller calls
+    ``connect_and_enumerate__bluetooth__low_energy`` directly (base connect +
+    service resolution).
+
+    For ``naggy``, ``pokey``, and ``brute``/``bruteforce`` modes the controller
+    delegates to the corresponding ``scan.py`` variant function which runs
+    variant-specific post-connect logic (multi-read, write probes, or payload
+    fuzzing) on top of the same base connect path.
+
+    All modes benefit from the controller's retry loop (up to ``MAX_ATTEMPTS``)
+    and typed ``ConnectionAnnotation`` error tracking.
     """
-    Orchestrates multi-attempt enumeration with proper error handling.
-    
-    Uses existing BLEEP components (ReconnectionMonitor, ConnectionResetManager,
-    landmine mapping) to provide structured enumeration results with annotations.
-    """
-    
+
     MAX_ATTEMPTS = 3
-    
-    def __init__(self, target_mac: str):
+
+    # Maps caller-facing mode names to scan.py variant functions.
+    # 'bruteforce' is accepted as an alias for 'brute'.
+    _VARIANT_MODES = frozenset({"naggy", "pokey", "brute", "bruteforce"})
+
+    def __init__(self, target_mac: str, *, adapter_name: str | None = None, skip_scan: bool = False):
         """
-        Initialize enumeration controller.
-        
         Parameters
         ----------
         target_mac : str
-            Target device MAC address
+            Target device MAC address.
+        adapter_name : str | None
+            BlueZ controller to use for connect/enumerate (e.g. ``"hci1"``);
+            ``None`` keeps the default (``ADAPTER_NAME``). Threaded from
+            ``enum-scan --adapter`` (F5b).
+        skip_scan : bool
+            Skip PRE-FLIGHT discovery in the connect primitive (Device1 already
+            exists on this adapter).
         """
         self.target_mac = target_mac.upper()
+        self.adapter_name = adapter_name
+        self.skip_scan = skip_scan
         self.attempts = 0
         self.annotations: List[ConnectionAnnotation] = []
-    
-    def enumerate(self, mode: str = 'passive') -> EnumerationResult:
-        """
-        Perform enumeration with up to MAX_ATTEMPTS attempts.
-        
+
+    # ------------------------------------------------------------------
+    # Variant dispatch helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _run_naggy(target: str, *, adapter_name: str | None = None, skip_scan: bool = False) -> Tuple[Any, Dict, Dict, Dict, Dict]:
+        """Naggy variant: base connect + 3-round multi-read."""
+        from bleep.ble_ops.le.scan import naggy_enum
+        result = naggy_enum(target, adapter_name=adapter_name, skip_scan=skip_scan)
+        changed = result.get("changed_chars")
+        return (
+            result.get("device"),
+            result.get("mapping", {}),
+            result.get("mine_map", {}),
+            result.get("perm_map", {}),
+            {
+                "multi_read": result.get("multi_read"),
+                "changed_chars": sorted(changed) if isinstance(changed, set) else changed,
+                "device_props": result.get("device_props"),
+            },
+        )
+
+    @staticmethod
+    def _run_pokey(target: str, *, adapter_name: str | None = None, skip_scan: bool = False, **kwargs) -> Tuple[Any, Dict, Dict, Dict, Dict]:
+        """Pokey variant: multi-round reconnect + write probes."""
+        from bleep.ble_ops.le.scan import pokey_enum
+        result = pokey_enum(target, adapter_name=adapter_name, skip_scan=skip_scan, **kwargs)
+        return (
+            result.get("device"),
+            result.get("mapping", {}),
+            result.get("mine_map", {}),
+            result.get("perm_map", {}),
+            {
+                "rounds": result.get("rounds"),
+                "device_props": result.get("device_props"),
+            },
+        )
+
+    @staticmethod
+    def _run_brute(target: str, *, adapter_name: str | None = None, skip_scan: bool = False, **kwargs) -> Tuple[Any, Dict, Dict, Dict, Dict]:
+        """Brute variant: base connect + payload fuzzing."""
+        from bleep.ble_ops.le.scan import brute_enum
+        result = brute_enum(target, adapter_name=adapter_name, skip_scan=skip_scan, **kwargs)
+        return (
+            result.get("device"),
+            result.get("mapping", {}),
+            result.get("mine_map", {}),
+            result.get("perm_map", {}),
+            {
+                "device_props": result.get("device_props"),
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def enumerate(
+        self,
+        mode: str = "passive",
+        *,
+        timeout: Optional[int] = None,
+        max_attempts: Optional[int] = None,
+        **variant_kwargs,
+    ) -> EnumerationResult:
+        """Perform enumeration with up to *MAX_ATTEMPTS* attempts.
+
         Parameters
         ----------
         mode : str
-            Enumeration mode ('passive', 'naggy', 'pokey', 'bruteforce')
-            Currently only 'passive' is fully supported
-        
+            ``'passive'`` (default) — base connect + service resolution only.
+            ``'naggy'`` — base connect + 3-round multi-read for value-change
+            detection.
+            ``'pokey'`` — multi-round reconnect + write probes.  Accepts
+            ``rounds`` and ``verify`` kwargs.
+            ``'brute'`` / ``'bruteforce'`` — base connect + payload fuzzing.
+            Requires ``write_char``; accepts ``value_range``, ``patterns``,
+            ``payload_file``, ``force``, ``verify``, ``deep``.
+        timeout : int, optional
+            Per-phase timeout (seconds) applied to the base-connect path
+            (``passive`` mode): bounds both the connect wait and service
+            resolution. ``None`` (default) keeps the connect helper's own
+            defaults. Ignored by the variant modes (they run their own timing).
+        max_attempts : int, optional
+            Override the retry-loop bound for this call. ``None`` (default)
+            uses the class ``MAX_ATTEMPTS``. Used e.g. to cap seeded ``dual``
+            targets to a single LE attempt before falling through to SDP, since
+            the Classic half will not answer an LE connect.
+        **variant_kwargs
+            Forwarded to the variant function (ignored for ``passive``).
+
         Returns
         -------
         EnumerationResult
-            Result containing data or error annotations
+            Structured result with data, error annotations, and maps.
         """
+        limit = max_attempts if max_attempts and max_attempts > 0 else self.MAX_ATTEMPTS
+
         print_and_log(
-            f"[*] Starting enumeration controller for {self.target_mac} (max {self.MAX_ATTEMPTS} attempts)",
-            LOG__GENERAL
+            f"[*] Starting enumeration controller for {self.target_mac} "
+            f"(mode={mode}, max {limit} attempts)",
+            LOG__GENERAL,
         )
-        
-        while self.attempts < self.MAX_ATTEMPTS:
+
+        while self.attempts < limit:
             self.attempts += 1
             print_and_log(
-                f"[*] Enumeration attempt {self.attempts}/{self.MAX_ATTEMPTS} for {self.target_mac}",
-                LOG__GENERAL
+                f"[*] Enumeration attempt {self.attempts}/{limit} "
+                f"for {self.target_mac}",
+                LOG__GENERAL,
             )
-            
+
             try:
-                # Attempt connection and enumeration
-                device, mapping, landmine_map, perm_map = connect_and_enumerate__bluetooth__low_energy(
-                    self.target_mac,
-                    deep_enumeration=(mode in ['pokey', 'bruteforce']),
-                )
-                
-                # Success - return result
+                extra: Dict[str, Any] = {}
+                if mode in self._VARIANT_MODES:
+                    device, mapping, landmine_map, perm_map, extra = (
+                        self._dispatch_variant(mode, **variant_kwargs)
+                    )
+                else:
+                    connect_kwargs: Dict[str, Any] = {}
+                    if timeout is not None:
+                        connect_kwargs["timeout_connect"] = timeout
+                        connect_kwargs["timeout_services"] = timeout
+                    device, mapping, landmine_map, perm_map = (
+                        connect_and_enumerate__bluetooth__low_energy(
+                            self.target_mac,
+                            adapter_name=self.adapter_name,
+                            skip_scan=self.skip_scan,
+                            **connect_kwargs,
+                        )
+                    )
+
                 print_and_log(
-                    f"[+] Enumeration successful for {self.target_mac} on attempt {self.attempts}",
-                    LOG__GENERAL
+                    f"[+] Enumeration successful for {self.target_mac} "
+                    f"on attempt {self.attempts}",
+                    LOG__GENERAL,
                 )
-                
+
+                result_data = dict(mapping) if mapping else {}
+                if extra:
+                    result_data["_variant_extra"] = extra
+
                 return EnumerationResult(
                     success=True,
-                    data=mapping,
+                    data=result_data,
                     annotations=self.annotations.copy(),
                     attempts=self.attempts,
                     device=device,
                     landmine_map=landmine_map,
                     permission_map=perm_map,
                 )
-                
+
             except Exception as e:
-                # Handle error and determine action
                 error_action = self._handle_error(e)
-                
-                # Annotate the error
                 annotation = self._create_annotation(e, error_action)
                 self.annotations.append(annotation)
-                
-                # Determine if we should continue
+
                 if error_action == ErrorAction.GIVE_UP:
                     print_and_log(
-                        f"[-] Giving up enumeration for {self.target_mac} after {self.attempts} attempts",
-                        LOG__GENERAL
+                        f"[-] Giving up enumeration for {self.target_mac} "
+                        f"after {self.attempts} attempts",
+                        LOG__GENERAL,
                     )
                     break
                 elif error_action == ErrorAction.RECONNECT:
                     print_and_log(
                         f"[*] Will retry connection for {self.target_mac}",
-                        LOG__DEBUG
+                        LOG__DEBUG,
                     )
-                    # Brief delay before retry
                     time.sleep(1.0)
                 elif error_action == ErrorAction.ANNOTATE_AND_CONTINUE:
                     print_and_log(
                         f"[*] Annotated error, will retry for {self.target_mac}",
-                        LOG__DEBUG
+                        LOG__DEBUG,
                     )
-                    # Brief delay before retry
                     time.sleep(0.5)
-        
-        # All attempts exhausted or gave up
+
         error_summary = self._generate_error_summary()
-        
         return EnumerationResult(
             success=False,
             annotations=self.annotations.copy(),
             error_summary=error_summary,
             attempts=self.attempts,
         )
+
+    def _dispatch_variant(
+        self, mode: str, **kwargs
+    ) -> Tuple[Any, Dict, Dict, Dict, Dict]:
+        """Route to the appropriate scan.py variant function."""
+        if mode == "naggy":
+            return self._run_naggy(
+                self.target_mac, adapter_name=self.adapter_name, skip_scan=self.skip_scan
+            )
+        elif mode == "pokey":
+            return self._run_pokey(
+                self.target_mac, adapter_name=self.adapter_name, skip_scan=self.skip_scan, **kwargs
+            )
+        elif mode in ("brute", "bruteforce"):
+            return self._run_brute(
+                self.target_mac, adapter_name=self.adapter_name, skip_scan=self.skip_scan, **kwargs
+            )
+        raise ValueError(f"Unknown variant mode: {mode!r}")
     
     def _handle_error(self, error: Exception) -> ErrorAction:
         """
@@ -282,14 +453,3 @@ class EnumerationController:
             summary_parts.append("Recommendation: Device may be out of range or unresponsive")
         
         return "; ".join(summary_parts)
-    
-    def _should_continue(self) -> bool:
-        """
-        Check if enumeration should continue.
-        
-        Returns
-        -------
-        bool
-            True if should continue, False otherwise
-        """
-        return self.attempts < self.MAX_ATTEMPTS

@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 
 from bleep.core.log import print_and_log, LOG__DEBUG, LOG__GENERAL
+from bleep.core.errors import BLEEPError
+from bleep.bt_ref.constants import RESULT_ERR
 from bleep.ble_ops.classic.connect import classic_rfccomm_open
 
 
@@ -183,7 +185,7 @@ def bind_rfcomm_channel(
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
     if result.returncode != 0:
         err = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(f"rfcomm bind failed (rc={result.returncode}): {err}")
+        raise BLEEPError(f"rfcomm bind failed (rc={result.returncode}): {err}", RESULT_ERR)
 
     dev_path = f"/dev/rfcomm{device_id}"
     print_and_log(f"[rfcomm-bind] Bound {mac} ch {channel} → {dev_path}", LOG__GENERAL)
@@ -220,7 +222,7 @@ def release_rfcomm_channel(device_id: int = 0) -> None:
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
     if result.returncode != 0:
         err = result.stderr.strip() or result.stdout.strip()
-        raise RuntimeError(f"rfcomm release failed (rc={result.returncode}): {err}")
+        raise BLEEPError(f"rfcomm release failed (rc={result.returncode}): {err}", RESULT_ERR)
 
     print_and_log(f"[rfcomm-release] Released /dev/rfcomm{device_id}", LOG__GENERAL)
 

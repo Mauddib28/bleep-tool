@@ -7,8 +7,9 @@ with the original logging implementation while providing a cleaner interface.
 
 import logging
 import sys
+import threading
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, Optional
 from . import config
 
 # Re-export log type constants for external modules
@@ -58,10 +59,16 @@ for _log_type, _internal_path in _INTERNAL_PATHS.items():
             _legacy_path.unlink()
         _legacy_path.symlink_to(_internal_path)
     except Exception:
-        # As a fallback (e.g., no permission to symlink on some filesystems) we
-        # create a plain file at the legacy location so code that expects it
-        # can still write or at least detect its presence.
-        _legacy_path.touch(exist_ok=True)
+        # Best-effort legacy-path compatibility ONLY. Real logging always uses
+        # the per-user ``_INTERNAL_PATHS`` below, so failure to manage the
+        # legacy /tmp path must never crash import. This legitimately fails
+        # when, e.g., another user (a prior ``sudo bleep`` run) owns a symlink
+        # in sticky ``/tmp`` (EPERM on unlink) or the fallback ``touch``
+        # follows that symlink to an unwritable target — swallow both.
+        try:
+            _legacy_path.touch(exist_ok=True)
+        except Exception:
+            pass
 
 # Use the internal paths for all logging handlers going forward
 _LOG_PATHS: Dict[str, Path] = _INTERNAL_PATHS
@@ -153,10 +160,51 @@ def logging__log_event(log_type: str, string_to_log: str) -> None:
     _log_func_map.get(log_type, logging__general_log)(string_to_log)
 
 
+# ---------------------------------------------------------------------------
+# Thread-local output-mode routing (Phase 3 — v3.0 Expansion)
+# ---------------------------------------------------------------------------
+# Controls *only* the ``print()`` half of ``print_and_log()``.
+# ``logging__log_event()`` is NEVER affected — log files always receive
+# every message regardless of output mode.
+#
+# Modes:
+#   "terminal" (default) — print to stdout  (existing behavior)
+#   "json"               — print to stderr  (keeps stdout clean for JSON)
+#   "quiet"              — print to stderr  (same routing; caller can ignore)
+
+_output_mode_local = threading.local()
+
+from bleep.core.output import OutputMode as OutputModeLiteral  # noqa: E402
+
+
+def set_output_mode(mode: OutputModeLiteral) -> None:
+    """Set the terminal-output routing for ``print_and_log()`` in the current thread.
+
+    This controls *only* the ``print()`` destination.  File logging via
+    ``logging__log_event()`` is never affected.
+    """
+    _output_mode_local.mode = mode
+
+
+def get_output_mode() -> OutputModeLiteral:
+    """Return the current thread's output mode (default ``"terminal"``)."""
+    return getattr(_output_mode_local, "mode", "terminal")
+
+
 def print_and_log(output_string: str, log_type: str = LOG__GENERAL) -> None:
-    """Print to stdout and log to the specified log type."""
+    """Print to stdout (or stderr in json/quiet mode) and log to the specified log type.
+
+    File logging via ``logging__log_event()`` **always** executes regardless
+    of output mode — no log data is ever lost or deferred.
+    """
     if log_type not in (LOG__DEBUG, LOG__ENUM):
-        print(output_string)
+        # flush=True keeps stdout in correct chronological order with the
+        # (already line-flushed) file logs and stderr when redirected to a
+        # pipe/file, where stdout would otherwise be block-buffered.
+        if get_output_mode() in ("json", "quiet"):
+            print(output_string, file=sys.stderr, flush=True)
+        else:
+            print(output_string, flush=True)
     logging__log_event(log_type, output_string)
 
 

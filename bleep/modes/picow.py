@@ -32,13 +32,12 @@ from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energ
 
 # Pico W specific constants
 PICOW_NAME_PATTERN = re.compile(r'(?i)pico|raspberry')
-PICOW_SERVICE_UUID = "00000001-1234-1000-8000-00805f9b34fb"  # Example service UUID
-PICOW_CHAR_UUID_PREFIX = "0000"  # Example characteristic UUID prefix
+PICOW_SERVICE_UUID = "00000001-1234-1000-8000-00805F9B34FB"
+PICOW_CHAR_UUID_PREFIX = "0000"
 
-# Pico W specific characteristic UUIDs (examples)
-PICOW_LED_CHAR_UUID = "00000002-1234-1000-8000-00805f9b34fb"
-PICOW_BUTTON_CHAR_UUID = "00000003-1234-1000-8000-00805f9b34fb"
-PICOW_TEMP_CHAR_UUID = "00000004-1234-1000-8000-00805f9b34fb"
+PICOW_LED_CHAR_UUID = "00000002-1234-1000-8000-00805F9B34FB"
+PICOW_BUTTON_CHAR_UUID = "00000003-1234-1000-8000-00805F9B34FB"
+PICOW_TEMP_CHAR_UUID = "00000004-1234-1000-8000-00805F9B34FB"
 
 class PicoWDevice:
     """Class for interacting with Pico W devices."""

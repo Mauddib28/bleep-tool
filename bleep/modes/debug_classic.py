@@ -11,10 +11,20 @@ import argparse
 from typing import Dict, List, Optional
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
-from bleep.bt_ref.utils import get_name_from_uuid
+from bleep.core.errors import BLEEPError
+from bleep.bt_ref.uuid_translator import get_uuid_name
 
 from bleep.modes.debug_state import DebugState
 from bleep.modes.debug_dbus import format_dbus_error, print_detailed_dbus_error
+
+__all__ = [
+    "cmd_cscan",
+    "cmd_cconnect",
+    "cmd_cservices",
+    "cmd_ckeep",
+    "cmd_csdp",
+    "cmd_pbap",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -36,46 +46,20 @@ def _ch(entry) -> Optional[int]:
 
 
 def cmd_cscan(args: List[str], state: DebugState) -> None:
-    """Scan for BR/EDR devices using BlueZ discovery."""
-    from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
+    """``cscan [--uuid U] [--rssi N] [--pathloss N] [--timeout N] [--adapter hciX] [--debug]``.
 
-    adapter = _Adapter()
-    if not adapter.is_ready():
-        print("[-] Bluetooth adapter not ready")
+    Delegates to the same ``classic_scan.run`` the CLI ``classic-scan`` subcommand
+    uses (CDU-M7a) — BR/EDR inquiry with optional discovery filters and observation
+    DB persistence — parsed through the real CLI subparser so options can't drift.
+    """
+    from bleep.modes.debug_cli_adapters import parse_as_cli
+
+    ns = parse_as_cli("classic-scan", args)
+    if ns is None:
         return
+    from bleep.modes.classic_scan import run as _cscan_run
 
-    print_and_log("[*] Scanning for Classic devices…", LOG__GENERAL)
-    try:
-        try:
-            adapter.set_discovery_filter({"Transport": "bredr"})
-        except Exception:
-            pass
-
-        adapter.run_scan__timed(duration=10)
-
-        def _is_classic(dev: dict) -> bool:
-            if "type" in dev:
-                try:
-                    return dev["type"].lower() == "br/edr"
-                except Exception:
-                    return False
-            return dev.get("device_class") is not None
-
-        raw_devices = adapter.get_discovered_devices()
-        devices = [d for d in raw_devices if _is_classic(d)]
-
-        if not devices:
-            print("No Classic devices found")
-            return
-
-        print("\nAddress              Name (RSSI)")
-        for d in devices:
-            name = d["name"] or d["alias"] or "(unknown)"
-            rssi = d.get("rssi", "?")
-            print(f"{d['address']:17}  {name} ({rssi})")
-        print()
-    except Exception as exc:
-        print_and_log(f"[-] Classic scan failed: {exc}", LOG__DEBUG)
+    _cscan_run(ns)
 
 
 def cmd_cconnect(args: List[str], state: DebugState) -> None:
@@ -146,12 +130,12 @@ def cmd_cservices(args: List[str], state: DebugState) -> None:
                 print(f"\n  {key:25} → ch {entry}")
                 continue
             uuid = entry.get("uuid") or ""
-            uuid_name = get_name_from_uuid(uuid) if uuid else ""
+            uuid_name = get_uuid_name(uuid) if uuid else ""
             print(f"\nRecord {i}:")
             if entry.get("name"):
                 print(f"  Name        : {entry['name']}")
             if uuid:
-                label = f"{uuid} ({uuid_name})" if uuid_name and uuid_name != "Unknown" else uuid
+                label = f"{uuid} ({uuid_name})" if uuid_name else uuid
                 print(f"  UUID        : {label}")
             if entry.get("channel") is not None:
                 print(f"  RFCOMM Ch   : {entry['channel']}")
@@ -165,11 +149,16 @@ def cmd_cservices(args: List[str], state: DebugState) -> None:
                 print("  Profiles    :")
                 for p in entry["profile_descriptors"]:
                     p_uuid = p.get("uuid", "?")
-                    p_name = get_name_from_uuid(p_uuid) if p_uuid else ""
-                    p_label = f"{p_uuid} ({p_name})" if p_name and p_name != "Unknown" else p_uuid
+                    p_name = get_uuid_name(p_uuid) if p_uuid else ""
+                    p_label = f"{p_uuid} ({p_name})" if p_name else p_uuid
                     ver = p.get("version")
                     ver_str = f"v0x{ver:04X}" if ver is not None else ""
                     print(f"    {p_label} {ver_str}")
+            if isinstance(entry, dict) and entry.get("protocol_descriptors"):
+                from bleep.ble_ops.classic.sdp import format_protocol_descriptors
+                proto_str = format_protocol_descriptors(entry["protocol_descriptors"])
+                if proto_str:
+                    print(f"  Protocols   : {proto_str}")
         print("\n" + "=" * 80)
     else:
         for key, entry in state.current_mapping.items():
@@ -178,9 +167,9 @@ def cmd_cservices(args: List[str], state: DebugState) -> None:
                 print(f"  {key:30} ch {ch}")
                 continue
             uuid = entry.get("uuid") or ""
-            uuid_name = get_name_from_uuid(uuid) if uuid else ""
+            uuid_name = get_uuid_name(uuid) if uuid else ""
             name_part = entry.get("name") or ""
-            if uuid_name and uuid_name != "Unknown" and uuid_name != name_part:
+            if uuid_name and uuid_name != name_part:
                 display = f"{name_part} ({uuid_name})" if name_part else uuid_name
             else:
                 display = name_part or uuid or key
@@ -332,7 +321,7 @@ def cmd_csdp(args: List[str], state: DebugState) -> None:
                     mac, timeout=30,
                     l2ping_count=opts.l2ping_count, l2ping_timeout=opts.l2ping_timeout,
                 )
-            except RuntimeError as exc:
+            except (RuntimeError, BLEEPError) as exc:
                 error_str = str(exc)
                 if "not reachable" in error_str.lower() or "unreachable" in error_str.lower():
                     print(f"[-] Device {mac} is not reachable: {error_str}")
@@ -353,12 +342,17 @@ def cmd_csdp(args: List[str], state: DebugState) -> None:
 
         print("\nSDP Records:")
         print("=" * 80)
+        from bleep.ble_ops.classic.sdp import format_protocol_descriptors
         for i, rec in enumerate(records, 1):
             print(f"\nRecord {i}:")
             if rec.get("name"):
                 print(f"  Name: {rec['name']}")
             if rec.get("uuid"):
-                print(f"  UUID: {rec['uuid']}")
+                uuid_name = get_uuid_name(rec["uuid"])
+                if not rec.get("name") and uuid_name:
+                    print(f"  UUID: {rec['uuid']} ({uuid_name})")
+                else:
+                    print(f"  UUID: {rec['uuid']}")
             if rec.get("channel") is not None:
                 print(f"  RFCOMM Channel: {rec['channel']}")
             if rec.get("handle") is not None:
@@ -376,6 +370,9 @@ def cmd_csdp(args: List[str], state: DebugState) -> None:
                         print(f"    {uuid}: Version 0x{ver:04X}")
                     else:
                         print(f"    {uuid}: Version unknown")
+            proto_str = format_protocol_descriptors(rec.get("protocol_descriptors"))
+            if proto_str:
+                print(f"  Protocols: {proto_str}")
 
         print("\n" + "=" * 80)
 
@@ -414,11 +411,11 @@ def cmd_pbap(args: List[str], state: DebugState) -> None:
         return
 
     parser = argparse.ArgumentParser(prog="pbap", description="Dump phonebook via PBAP")
-    parser.add_argument("--repos", default="PB")
-    parser.add_argument("--format", choices=["vcard21", "vcard30"], default="vcard21")
-    parser.add_argument("--auto-auth", action="store_true")
-    parser.add_argument("--watchdog", type=int, default=8)
-    parser.add_argument("--out")
+    # Shared canonical PBAP option set (single source of truth with the CLI
+    # `classic-pbap` subparser) — keeps --repos/--format/--auto-auth/--watchdog/
+    # --out identical across surfaces (incl. the safe --watchdog default of 30 s).
+    from bleep.cli.parsers.classic import _add_pbap_arguments
+    _add_pbap_arguments(parser)
 
     try:
         opts = parser.parse_args(args)
@@ -431,13 +428,13 @@ def cmd_pbap(args: List[str], state: DebugState) -> None:
     if state.current_mapping:
         for key, entry in state.current_mapping.items():
             low = key.lower()
-            uuid_low = ""
+            uuid_up = ""
             if isinstance(entry, dict):
-                uuid_low = (entry.get("uuid") or "").lower()
+                uuid_up = (entry.get("uuid") or "").upper()
             if ("phonebook" in low or "pbap" in low
                     or low == "0x112f" or low == "112f"
                     or low == "0000112f-0000-1000-8000-00805f9b34fb"
-                    or "112f" in uuid_low):
+                    or "112F" in uuid_up):
                 pbap_channel = _ch(entry)
                 break
 
@@ -447,8 +444,8 @@ def cmd_pbap(args: List[str], state: DebugState) -> None:
             print_and_log("[*] PBAP not in service map, checking SDP records...", LOG__DEBUG)
             records = discover_services_sdp(mac, timeout=10)
             for rec in records:
-                uuid = rec.get("uuid", "").lower()
-                if "112f" in uuid or "pbap" in rec.get("name", "").lower():
+                uuid = rec.get("uuid", "").upper()
+                if "112F" in uuid or "pbap" in rec.get("name", "").lower():
                     pbap_channel = rec.get("channel")
                     if pbap_channel:
                         break

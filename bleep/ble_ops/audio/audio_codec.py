@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from typing import Optional, Tuple
 
 # Try to import GStreamer Python bindings (optional).
@@ -47,6 +48,97 @@ APTX_CODEC = APTX_CODEC_ID
 APTX_HD_CODEC = APTX_HD_CODEC_ID
 LC3_CODEC = LC3_CODEC_ID
 VENDOR_SPECIFIC_CODEC = VENDOR_SPECIFIC_CODEC_ID
+
+
+def _pump_fd_to_sink(
+    fd: int,
+    condition: int,
+    *,
+    read_chunk: int,
+    deadline: Optional[float],
+    hup_err_mask: int,
+    push_cb,
+    eos_cb,
+    _now=time.monotonic,
+) -> bool:
+    """Single GLib IO-watch iteration: read the transport FD and push to a sink.
+
+    Kept GStreamer-agnostic (no ``Gst``/``GLib`` references) so the pump logic
+    is unit-testable with an ``os.pipe()`` and plain callables.
+
+    Parameters
+    ----------
+    fd : int
+        Transport file descriptor (expected to be non-blocking).
+    condition : int
+        GLib IO condition bitmask reported by the watch.
+    read_chunk : int
+        Bytes to read per iteration.
+    deadline : Optional[float]
+        ``time.monotonic()`` deadline; ``None`` means run until FD close/EOS.
+    hup_err_mask : int
+        Bitmask of hang-up/error conditions that should terminate the stream.
+    push_cb : Callable[[bytes], bool]
+        Consumes a data chunk; returns ``True`` to continue, ``False`` to stop.
+    eos_cb : Callable[[], None]
+        Invoked once when the stream should end (signals EOS downstream).
+
+    Returns
+    -------
+    bool
+        ``True`` to keep the GLib IO watch registered, ``False`` to remove it.
+    """
+    # Duration timebox takes priority over draining.
+    if deadline is not None and _now() >= deadline:
+        eos_cb()
+        return False
+    # Drain readable data FIRST so a hang-up delivered alongside buffered data
+    # (poll reports IN|HUP together) does not discard the tail of the stream.
+    try:
+        data = os.read(fd, read_chunk)
+    except BlockingIOError:
+        # No data right now. End only if the FD also hung up/errored;
+        # otherwise keep the watch alive and wait for more data.
+        if condition & hup_err_mask:
+            eos_cb()
+            return False
+        return True
+    except OSError:
+        eos_cb()
+        return False
+    if data:
+        return bool(push_cb(data))
+    # A successful zero-length read is a definitive EOF (FD closed).
+    eos_cb()
+    return False
+
+
+# SBC codec-specific info element, octet 0, sampling-frequency bits (A2DP spec
+# §4.3.2 "SBC Codec Specific Information Elements"). Maps the frequency bit to
+# the RTP clock-rate used in the ``application/x-rtp`` caps for ``rtpsbcdepay``.
+_SBC_SAMPLING_FREQ_BITS = {
+    0x80: 16000,
+    0x40: 32000,
+    0x20: 44100,
+    0x10: 48000,
+}
+
+
+def _sbc_rtp_clock_rate(configuration, default: int = 44100) -> int:
+    """Derive the RTP clock-rate (SBC sampling frequency) from a negotiated
+    SBC codec configuration blob.
+
+    The A2DP transport carries RTP-encapsulated SBC; ``rtpsbcdepay`` needs the
+    sampling frequency as the RTP ``clock-rate``. Octet 0's high nibble encodes
+    the frequency. Falls back to ``default`` (44100 Hz, the common A2DP value)
+    when the configuration is missing or unrecognised.
+    """
+    try:
+        if configuration is not None and len(configuration) >= 1:
+            return _SBC_SAMPLING_FREQ_BITS.get(int(configuration[0]) & 0xF0, default)
+    except (TypeError, ValueError, IndexError):
+        pass
+    return default
 
 
 class AudioCodecEncoder:
@@ -226,7 +318,11 @@ class AudioCodecEncoder:
             mainloop = GLib.MainLoop()
             pipeline_playing = [True]  # Use list to allow modification in nested function
             
-            def bus_message(bus, message, user_data):
+            # NB: the GstBus "message" signal invokes handlers as
+            # ``handler(bus, message)`` — a third ``user_data`` positional here
+            # makes every emission raise TypeError, silently dropping EOS/ERROR
+            # so the main loop never quits. Keep the arity at two.
+            def bus_message(bus, message):
                 if message.type == Gst.MessageType.EOS:
                     print_and_log("[+] End of stream", LOG__GENERAL)
                     pipeline_playing[0] = False
@@ -317,7 +413,9 @@ class AudioCodecDecoder:
         input_fd: int,
         output_file: str,
         codec: int,
-        mtu: int
+        mtu: int,
+        duration: Optional[int] = None,
+        configuration: Optional[bytes] = None,
     ) -> bool:
         """
         Decode audio stream from transport FD and write to file.
@@ -334,6 +432,15 @@ class AudioCodecDecoder:
             Codec ID
         mtu : int
             Maximum transmission unit
+        duration : Optional[int]
+            Maximum recording duration in seconds. If ``None``, records until
+            the transport FD closes (device stops streaming) or an error/EOS
+            occurs. A Bluetooth transport has no natural end-of-stream, so a
+            duration (or an external FD close) is required to terminate cleanly.
+        configuration : Optional[bytes]
+            Negotiated codec configuration blob from the MediaTransport. For
+            SBC this supplies the sampling frequency used as the RTP
+            ``clock-rate`` when depayloading the A2DP stream.
         
         Returns
         -------
@@ -341,7 +448,10 @@ class AudioCodecDecoder:
             True if decoding succeeded, False otherwise
         """
         if _HAS_GST_PYTHON:
-            return self._decode_with_python_bindings(input_fd, output_file, codec, mtu)
+            return self._decode_with_python_bindings(
+                input_fd, output_file, codec, mtu, duration=duration,
+                configuration=configuration,
+            )
         elif self._gst_launch_path:
             print_and_log(
                 "[!] GStreamer Python bindings not available, using subprocess (limited functionality)",
@@ -360,7 +470,9 @@ class AudioCodecDecoder:
         input_fd: int,
         output_file: str,
         codec: int,
-        mtu: int
+        mtu: int,
+        duration: Optional[int] = None,
+        configuration: Optional[bytes] = None,
     ) -> bool:
         """
         Use GStreamer Python bindings for decoding (preferred method).
@@ -370,8 +482,22 @@ class AudioCodecDecoder:
             
             # Build pipeline based on codec
             if codec == SBC_CODEC_ID:
+                # A2DP transport FDs deliver RTP-encapsulated SBC (RFC
+                # draft-ietf-payload-rtp-sbc / A2DP v1.2 §4.3.4), *not* raw SBC
+                # frames. ``rtpsbcdepay`` strips the RTP + SBC payload headers
+                # and reassembles fragmented frames; it requires
+                # ``application/x-rtp`` caps on the source with the SBC
+                # sampling frequency as the RTP clock-rate. Each transport read
+                # is one L2CAP SEQPACKET = one RTP packet = one pushed buffer,
+                # which is exactly the framing ``rtpsbcdepay`` expects.
+                clock_rate = _sbc_rtp_clock_rate(configuration)
                 pipeline_str = (
-                    "appsrc name=src ! "
+                    "appsrc name=src "
+                    'caps="application/x-rtp,media=(string)audio,'
+                    "payload=(int)96,"
+                    f"clock-rate=(int){clock_rate},"
+                    'encoding-name=(string)SBC" ! '
+                    "rtpsbcdepay ! "
                     "sbcparse ! "
                     "sbcdec ! "
                     "audioconvert ! "
@@ -381,7 +507,9 @@ class AudioCodecDecoder:
             elif codec == MP3_CODEC_ID:
                 pipeline_str = (
                     "appsrc name=src ! "
-                    "mp3parse ! "
+                    # ``mp3parse`` was removed from modern GStreamer (>=1.x);
+                    # the current MPEG-audio parser element is ``mpegaudioparse``.
+                    "mpegaudioparse ! "
                     "mpg123audiodec ! "
                     "audioconvert ! "
                     "audioresample ! "
@@ -410,11 +538,20 @@ class AudioCodecDecoder:
                 print_and_log("[-] Failed to get appsrc from pipeline", LOG__DEBUG)
                 return False
             
+            # Configure appsrc for live streaming push from the transport FD.
+            src.set_property("format", Gst.Format.TIME)
+            src.set_property("is-live", True)
+            src.set_property("do-timestamp", True)
+            
             # Bus message handler
             mainloop = GLib.MainLoop()
             pipeline_playing = [True]
             
-            def bus_message(bus, message, user_data):
+            # NB: the GstBus "message" signal invokes handlers as
+            # ``handler(bus, message)`` — a third ``user_data`` positional here
+            # makes every emission raise TypeError, silently dropping EOS/ERROR
+            # so the main loop never quits. Keep the arity at two.
+            def bus_message(bus, message):
                 if message.type == Gst.MessageType.EOS:
                     print_and_log("[+] Recording complete", LOG__GENERAL)
                     pipeline_playing[0] = False
@@ -442,13 +579,69 @@ class AudioCodecDecoder:
                 pipeline.set_state(Gst.State.NULL)
                 return False
             
-            # Read data from transport FD and feed to appsrc
-            # This requires proper main loop integration
-            # For now, this is a placeholder - full implementation would:
-            # 1. Read from transport FD in chunks
-            # 2. Push data to appsrc using appsrc.push_buffer()
-            # 3. Handle EOS when transport closes
-            # Reference: GStreamer appsrc documentation
+            # Feed data from the transport FD into appsrc.
+            #
+            # A Bluetooth transport FD delivers a continuous stream with no
+            # natural EOS, so termination is driven by: (a) the requested
+            # duration, (b) the FD closing/erroring (HUP/ERR), or (c) a
+            # zero-length read. The FD is made non-blocking so the GLib main
+            # loop stays responsive and the duration deadline is honoured.
+            #
+            # This mirrors the proven producer path in
+            # ``_encode_with_python_bindings`` (appsink + os.write), inverted
+            # for consumption (os.read + appsrc push-buffer). The per-iteration
+            # logic lives in the GStreamer-agnostic ``_pump_fd_to_sink`` helper
+            # so it can be unit-tested without GStreamer.
+            #
+            # NB: A2DP transport FDs deliver RTP-encapsulated media payloads.
+            # The SBC pipeline above handles this with ``rtpsbcdepay`` fed by
+            # ``application/x-rtp`` caps. MP3/AAC branches remain raw-frame
+            # pipelines (only reachable for non-A2DP/optional codec configs).
+            import fcntl
+            
+            try:
+                _flags = fcntl.fcntl(input_fd, fcntl.F_GETFL)
+                fcntl.fcntl(input_fd, fcntl.F_SETFL, _flags | os.O_NONBLOCK)
+            except OSError as exc:
+                print_and_log(
+                    f"[-] Failed to set transport FD non-blocking: {exc}",
+                    LOG__DEBUG,
+                )
+                pipeline.set_state(Gst.State.NULL)
+                return False
+            
+            read_chunk = max(int(mtu or 0), 2048)
+            deadline = (time.monotonic() + duration) if duration else None
+            hup_err_mask = GLib.IOCondition.HUP | GLib.IOCondition.ERR
+            
+            def _push(data):
+                flow = src.emit(
+                    "push-buffer", Gst.Buffer.new_wrapped(data),
+                )
+                if flow != Gst.FlowReturn.OK:
+                    print_and_log(
+                        f"[-] appsrc push-buffer returned {flow}", LOG__DEBUG,
+                    )
+                    return False
+                return True
+            
+            def _feed_appsrc(fd, condition):
+                return _pump_fd_to_sink(
+                    fd,
+                    int(condition),
+                    read_chunk=read_chunk,
+                    deadline=deadline,
+                    hup_err_mask=int(hup_err_mask),
+                    push_cb=_push,
+                    eos_cb=lambda: src.emit("end-of-stream"),
+                )
+            
+            GLib.io_add_watch(
+                input_fd,
+                GLib.PRIORITY_DEFAULT,
+                GLib.IOCondition.IN | hup_err_mask,
+                _feed_appsrc,
+            )
             
             # Run main loop
             try:

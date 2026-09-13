@@ -13,6 +13,8 @@ from typing import Dict, Any, List, Optional
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG, LOG__USER
 
+__all__ = ["main"]
+
 # Heavy D-Bus imports are deferred into functions to prevent circular imports
 # when bleep.dbuslayer.device_le is still being initialised (see device_le.py
 # module-level signals singleton and the bleep/__init__.py signal integration
@@ -106,7 +108,7 @@ def _get_role_uuid_sets():
 def _infer_likely_role(uuids: List[str]) -> str:
     """Infer a device's likely audio role from its advertised UUIDs."""
     sink_uuids, source_uuids = _get_role_uuid_sets()
-    lower = {u.lower() for u in uuids}
+    lower = {u.upper() for u in uuids}
     is_sink = bool(lower & sink_uuids)
     is_source = bool(lower & source_uuids)
     if is_sink and is_source:
@@ -152,23 +154,35 @@ def assess_media_device(
         _device = _LEDevice(mac_address)
     device = _device
 
+    from bleep.core.errors import BLEEPError, DeviceNotFoundError
+    from bleep.bt_ref.constants import RESULT_ERR_UNKNOWN_OBJECT
+
     addr = device.get_address() or mac_address
     name = device.get_name() or device.get_alias() or "Unknown"
 
     # -- Device identity -----------------------------------------------------
-    report: Dict[str, Any] = {
-        "mode": "passive",
-        "device_info": {
-            "address": addr,
-            "name": name,
-            "icon": device.get_device_icon(),
-            "modalias": device.get_modalias(),
-            "is_connected": device.is_connected(),
-            "is_paired": device.is_paired(),
-            "is_trusted": device.is_trusted(),
-            "is_bonded": device.is_bonded(),
-        },
-    }
+    # Passive recon reads only cached Device1 state, so the object must still
+    # exist in BlueZ. LE peers using resolvable-private addresses routinely
+    # rotate and disappear between discovery and assessment; surface that as a
+    # clean DeviceNotFoundError instead of a raw UnknownObject D-Bus dump.
+    try:
+        report: Dict[str, Any] = {
+            "mode": "passive",
+            "device_info": {
+                "address": addr,
+                "name": name,
+                "icon": device.get_device_icon(),
+                "modalias": device.get_modalias(),
+                "is_connected": device.is_connected(),
+                "is_paired": device.is_paired(),
+                "is_trusted": device.is_trusted(),
+                "is_bonded": device.is_bonded(),
+            },
+        }
+    except BLEEPError as exc:
+        if getattr(exc, "code", None) == RESULT_ERR_UNKNOWN_OBJECT:
+            raise DeviceNotFoundError(mac_address) from exc
+        raise
 
     # -- Media assessment ----------------------------------------------------
     uuids = device.get_uuids() or []
@@ -296,10 +310,20 @@ def enumerate_media_passive(mac_address: str, verbose: bool = False) -> Dict[str
     if _obs:
         try:
             from bleep.ble_ops.le.scan import _collect_device_props, _enrich_device_info_from_props
+            _me_addr = device.get_address() or mac_address
             props = _collect_device_props(device)
             dev_info: Dict[str, Any] = {"name": device.get_name() or device.get_alias()}
             _enrich_device_info_from_props(dev_info, props)
-            _obs.upsert_device(device.get_address() or mac_address, **dev_info)
+            _obs.upsert_device(_me_addr, **dev_info)
+
+            # P2-B4: Persist media enumeration from passive path
+            _obs.store_media_enumeration(
+                _me_addr,
+                players=report.get("players"),
+                transports=report.get("transports"),
+                endpoints=report.get("endpoints"),
+                capabilities=report.get("capabilities"),
+            )
         except Exception:
             pass
 
@@ -685,6 +709,242 @@ def main() -> int:
     else:
         print_and_log("[-] No command specified. Use --help for usage information.", LOG__USER)
         return 1
+
+
+def run_media_enum(args, output=None) -> int:
+    import sys
+    import json
+    import time
+    from typing import Dict, Any
+
+    if getattr(args, "passive", False):
+        report = enumerate_media_passive(args.address, verbose=getattr(args, "verbose", False))
+        if report:
+            print(json.dumps(report, indent=2, ensure_ascii=False, sort_keys=False))
+        return 0 if report else 1
+
+    from bleep.dbuslayer.device_le import system_dbus__bluez_device__low_energy as _LEDeviceCls
+    from bleep.dbuslayer.media import get_player_properties_verbose, pretty_print_track_info
+
+    connect_via = getattr(args, "connect_via", "auto")
+
+    def _media_enum_connect_error(exc, device):
+        err = str(exc).lower()
+        if "br-connection-profile-unavailable" in err:
+            print(f"[-] Connection failed: br-connection-profile-unavailable")
+            print("    No host audio daemon is handling A2DP/HFP/HSP profiles.")
+            print("    Install bluez-alsa-utils, or enable PulseAudio/PipeWire")
+            print("    Bluetooth support, then retry.")
+            if device.has_media_uuids():
+                print(f"    Device advertises: {', '.join(device.get_media_uuid_names())}")
+        else:
+            print(f"[-] Connection failed: {exc}")
+
+    if connect_via == "ble":
+        from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
+        print(f"[*] BLE-connect to {args.address} (GATT-oriented path)")
+        device, _, _, _ = _connect_enum(args.address)
+        print(f"[+] Connected to {args.address}")
+    else:
+        label = "Classic-connect" if connect_via == "classic" else "Attempting connection"
+        print(f"[*] {label} to {args.address} (Device1.Connect)")
+        device = _LEDeviceCls(args.address)
+        if not device.is_connected():
+            try:
+                device.connect()
+            except Exception as exc:
+                _media_enum_connect_error(exc, device)
+                return 1
+        print(f"[+] Connected to {args.address}")
+
+    if not device.is_media_device():
+        if device.has_media_uuids():
+            names = device.get_media_uuid_names()
+            print(f"[!] {args.address} advertises media UUIDs ({', '.join(names)})")
+            print("    but no D-Bus media objects are present.")
+            print("    This usually means no host audio daemon is running.")
+            if connect_via == "auto":
+                print("    Try: bleep media-enum --connect-via classic " + args.address)
+                print("    Or install an audio daemon (bluez-alsa-utils / PulseAudio / PipeWire)")
+        else:
+            print(f"[!] {args.address} is not a media device")
+        return 1
+
+    def _dump(obj):
+        def _compact(o):
+            if isinstance(o, list):
+                if o and all(isinstance(x, int) and 0 <= x < 256 for x in o):
+                    return "[" + ", ".join(str(x) for x in o) + "]"
+                return [_compact(v) for v in o]
+            elif isinstance(o, dict):
+                return {k: _compact(v) for k, v in o.items()}
+            return o
+
+        compact_obj = _compact(obj)
+        return json.dumps(compact_obj, indent=2, ensure_ascii=False, sort_keys=False)
+
+    media_info = {
+        "device_info": {
+            "address": device.get_address(),
+            "name": device.get_name() or device.get_alias() or "Unknown",
+            "is_connected": device.is_connected(),
+        },
+        "media_capabilities": {
+            "has_media_control": device.get_media_control() is not None,
+            "has_media_player": device.get_media_player() is not None,
+            "has_media_endpoints": len(device.get_media_endpoints()) > 0,
+            "has_media_transports": len(device.get_media_transports()) > 0,
+        }
+    }
+
+    player = device.get_media_player()
+    if player:
+        if args.verbose:
+            media_info["player"] = get_player_properties_verbose(player)
+        else:
+            media_info["player"] = {
+                "name": player.get_name(),
+                "status": player.get_status(),
+                "type": player.get_type(),
+                "subtype": player.get_subtype(),
+                "position": player.get_position(),
+                "repeat": player.get_repeat(),
+                "shuffle": player.get_shuffle(),
+                "browsable": player.is_browsable(),
+                "searchable": player.is_searchable(),
+                "track": player.get_track(),
+            }
+
+    from bleep.bt_ref.constants import (
+        get_profile_name as _get_profile_name,
+        get_codec_name as _get_codec_name,
+        PROFILE_UUID_COMPLEMENTS,
+    )
+
+    transports = device.get_media_transports()
+    if transports:
+        media_info["transports"] = []
+        for transport in transports:
+            tp_uuid = transport.get_uuid()
+            tp_codec = transport.get_codec()
+            tp_cfg = transport.get_configuration()
+            transport_info = {
+                "path": transport.transport_path,
+                "uuid": tp_uuid,
+                "uuid_name": _get_profile_name(tp_uuid) if tp_uuid else None,
+                "role": "local",
+                "codec": tp_codec,
+                "codec_name": _get_codec_name(tp_codec) if tp_codec is not None else None,
+                "state": transport.get_state(),
+                "volume": transport.get_volume(),
+                "configuration": list(tp_cfg) if tp_cfg else None,
+                "parent_endpoint": transport.transport_path.rsplit("/", 1)[0]
+                    if "/fd" in transport.transport_path else None,
+            }
+
+            if args.verbose:
+                transport_info["properties"] = transport.get_properties()
+
+            media_info["transports"].append(transport_info)
+
+    endpoints = device.get_media_endpoints()
+    if endpoints:
+        media_info["endpoints"] = []
+        for endpoint in endpoints:
+            ep_uuid = endpoint.get_uuid()
+            ep_codec = endpoint.get_codec()
+            ep_caps = endpoint.get_capabilities()
+            expected_transport_uuid = (
+                PROFILE_UUID_COMPLEMENTS.get(ep_uuid) if ep_uuid else None
+            )
+            endpoint_info = {
+                "path": endpoint.endpoint_path,
+                "uuid": ep_uuid,
+                "uuid_name": _get_profile_name(ep_uuid) if ep_uuid else None,
+                "role": "remote",
+                "codec": ep_codec,
+                "codec_name": _get_codec_name(ep_codec) if ep_codec is not None else None,
+                "capabilities": list(ep_caps) if ep_caps else None,
+                "delay_reporting": endpoint.supports_delay_reporting(),
+                "expected_transport_uuid": expected_transport_uuid,
+                "expected_transport_role": (
+                    _get_profile_name(expected_transport_uuid)
+                    if expected_transport_uuid else None
+                ),
+            }
+
+            if args.verbose:
+                endpoint_info["properties"] = endpoint.get_properties()
+
+            media_info["endpoints"].append(endpoint_info)
+
+    if args.verbose:
+        try:
+            from bleep.dbuslayer.media import find_media_objects
+            media_info["media_objects"] = find_media_objects()
+        except Exception:
+            pass
+
+    if args.browse and player and player.is_browsable():
+        try:
+            from bleep.dbuslayer.media_browse import MediaFolder
+            playlist_path = player.get_playlist()
+            if playlist_path:
+                folder = MediaFolder(playlist_path)
+                items = folder.list_items()
+                media_info["browse"] = {
+                    "folder_path": playlist_path,
+                    "folder_name": folder.get_name(),
+                    "number_of_items": folder.get_number_of_items(),
+                    "items": [
+                        {"path": p, "properties": props}
+                        for p, props in items
+                    ],
+                }
+        except Exception:
+            pass
+
+    try:
+        from bleep.ble_ops.le.scan import _collect_device_props, _enrich_device_info_from_props
+        from bleep.core import observations as _obs_media
+        _me_addr = device.get_address()
+        _me_props = _collect_device_props(device)
+        _me_dev: Dict[str, Any] = {"name": device.get_name() or device.get_alias()}
+        _enrich_device_info_from_props(_me_dev, _me_props)
+        _obs_media.upsert_device(_me_addr, **_me_dev)
+
+        _obs_media.store_media_enumeration(
+            _me_addr,
+            players=media_info.get("players"),
+            transports=media_info.get("transports"),
+            endpoints=media_info.get("endpoints"),
+            browse_tree=media_info.get("browse"),
+            capabilities=media_info.get("media_capabilities"),
+        )
+    except Exception:
+        pass
+
+    if args.monitor:
+        print(f"[*] Monitoring media status for {args.duration} seconds (Ctrl+C to stop)...")
+        end_time = time.time() + args.duration
+
+        try:
+            while time.time() < end_time:
+                if player:
+                    status = player.get_status()
+                    track = player.get_track()
+
+                    print(f"\r[*] Status: {status} | Track: {pretty_print_track_info(track)}", end="")
+                    sys.stdout.flush()
+
+                time.sleep(args.interval)
+            print("\n[+] Monitoring complete")
+        except KeyboardInterrupt:
+            print("\n[*] Monitoring stopped by user")
+    else:
+        print(_dump(media_info))
+
+    return 0
 
 
 if __name__ == "__main__":

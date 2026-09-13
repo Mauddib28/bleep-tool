@@ -18,8 +18,8 @@ D-Bus reference: ``org.bluez.obex.Image.rst``
 
 .. warning::
    ``Image1`` is marked **[experimental]** in BlueZ.  It may change or be
-   removed without notice.  A ``RuntimeError`` is raised at session creation
-   if the interface is unavailable.
+   removed without notice.  A :class:`~bleep.core.errors.NotSupportedError`
+   is raised at session creation if the interface is unavailable.
 """
 
 from __future__ import annotations
@@ -41,7 +41,10 @@ from bleep.bt_ref.constants import (
 from bleep.dbuslayer._obex_common import (
     poll_obex_transfer as _poll_transfer,
     unwrap_dbus as _unwrap,
+    obex_session_error as _obex_session_error,
 )
+from bleep.core.errors import BLEEPError, NotSupportedError, map_dbus_error
+from bleep.bt_ref.constants import RESULT_ERR_WRONG_STATE
 
 
 class BipSession:
@@ -63,9 +66,10 @@ class BipSession:
             client_obj = self._bus.get_object(_OBEX_SERVICE, OBEX_ROOT_PATH)
             self._client = dbus.Interface(client_obj, _OBEX_CLIENT_IFACE)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
+            raise BLEEPError(
                 f"BlueZ obexd not running or D-Bus error: "
-                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
+                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}",
+                RESULT_ERR_WRONG_STATE,
             ) from exc
 
         print_and_log(f"[BIP] Creating session → {self.mac}", LOG__DEBUG)
@@ -74,10 +78,8 @@ class BipSession:
                 self.mac, {"Target": "bip-avrcp"}
             )
         except dbus.exceptions.DBusException as exc:
-            msg = exc.get_dbus_message() or ""
-            raise RuntimeError(
-                f"BIP CreateSession failed (is obexd running with "
-                f"--experimental?): {exc.get_dbus_name()}: {msg}"
+            raise _obex_session_error(
+                exc, self.mac, profile="BIP", service_hint="BIP (0x111A/0x111B)",
             ) from exc
 
         session_obj = self._bus.get_object(_OBEX_SERVICE, self._session_path)
@@ -85,10 +87,9 @@ class BipSession:
             self._image = dbus.Interface(session_obj, _OBEX_IMAGE_IFACE)
         except dbus.exceptions.DBusException as exc:
             self._cleanup_session()
-            raise RuntimeError(
-                f"Image1 interface not available (experimental flag "
-                f"required): {exc.get_dbus_name()}: "
-                f"{exc.get_dbus_message() or ''}"
+            raise NotSupportedError(
+                "BIP Image1 interface (obexd must run with --experimental): "
+                f"{exc.get_dbus_name()}: {exc.get_dbus_message() or ''}"
             ) from exc
 
     def _cleanup_session(self) -> None:
@@ -119,10 +120,7 @@ class BipSession:
         try:
             raw = self._image.Properties(handle)
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"BIP Properties failed: {exc.get_dbus_name()}: "
-                f"{exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
         return _unwrap(raw)
 
     def get_image(
@@ -150,10 +148,7 @@ class BipSession:
                 target_file, handle, desc,
             )
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"BIP Get failed: {exc.get_dbus_name()}: "
-                f"{exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
 
         result = _poll_transfer(self._bus, transfer_path, timeout, label="BIP")
         filename = result.get("filename", target_file)
@@ -179,10 +174,7 @@ class BipSession:
                 target_file, handle,
             )
         except dbus.exceptions.DBusException as exc:
-            raise RuntimeError(
-                f"BIP GetThumbnail failed: {exc.get_dbus_name()}: "
-                f"{exc.get_dbus_message() or ''}"
-            ) from exc
+            raise map_dbus_error(exc) from exc
 
         result = _poll_transfer(self._bus, transfer_path, timeout, label="BIP")
         filename = result.get("filename", target_file)

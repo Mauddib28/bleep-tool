@@ -31,6 +31,20 @@ from bleep.dbuslayer.descriptor import Descriptor
 __all__ = ["Characteristic"]
 
 
+def _dbus_exc():
+    """Resolve the current ``dbus.exceptions.DBusException`` class at call time.
+
+    During testing the ``dbus`` module in ``sys.modules`` may be a lightweight
+    stub.  Using this helper instead of the module-level ``dbus`` binding
+    ensures ``except`` clauses catch the correct exception class.
+    """
+    import sys as _s
+    _d = _s.modules.get("dbus")
+    if _d is not None:
+        return getattr(getattr(_d, "exceptions", None), "DBusException", Exception)
+    return Exception
+
+
 class Characteristic:  # noqa: N801 – keep legacy-friendly name
     """Lightweight wrapper around the BlueZ *GattCharacteristic1* interface."""
 
@@ -55,7 +69,7 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
 
         self.uuid: str = str(
             self._props_iface.Get(GATT_CHARACTERISTIC_INTERFACE, "UUID")
-        )
+        ).strip().upper()
         self.flags: list[str] = list(
             dbus_to_python(
                 self._props_iface.Get(GATT_CHARACTERISTIC_INTERFACE, "Flags")
@@ -293,7 +307,7 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
         if self._acquired_write_fd is None:
             try:
                 self.acquire_write()
-            except dbus.exceptions.DBusException:
+            except _dbus_exc():
                 self.write_value(value, without_response=True)
                 return len(value)
 
@@ -310,7 +324,7 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
         if self._acquired_notify_fd is None:
             try:
                 self.acquire_notify()
-            except dbus.exceptions.DBusException:
+            except _dbus_exc():
                 return b""
 
         read_size = size or self._acquired_notify_mtu or 512
@@ -397,6 +411,33 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
         print_and_log(
             f"[DEBUG] Notifications enabled for characteristic {self.uuid}", LOG__DEBUG
         )
+
+    def release(self) -> None:
+        """Drop proxies, notification match and cached values for collection.
+
+        Deliberately *not* :meth:`stop_notify` — that issues ``StopNotify`` over
+        D-Bus, which is pointless (and slow) on a device we are finished with
+        and may already have disconnected.  Only the local match is removed.
+        Called from :meth:`Service.release`.
+        """
+        if self._notify_signal is not None:
+            try:
+                self._notify_signal.remove()
+            except Exception:  # pragma: no cover - best-effort teardown
+                pass
+            self._notify_signal = None
+        for desc in self.descriptors:
+            try:
+                desc.release()
+            except Exception:  # pragma: no cover - best-effort teardown
+                pass
+        self.descriptors = []
+        # ``_notification_history`` retains every notified value; drop it too.
+        self._notification_history = []
+        self._notify_cb = None
+        self._char_iface = None
+        self._props_iface = None
+        self.bus = None
 
     def stop_notify(self):
         if self._notify_signal is not None:
@@ -545,16 +586,7 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
         """
         from time import sleep as _sleep
         from bleep.bt_ref import constants as _C
-
-        # Local mapping of D-Bus error names → RESULT_ERR_*
-        _ERR_MAP = {
-            "org.bluez.Error.NotPermitted": _C.RESULT_ERR_READ_NOT_PERMITTED,
-            "org.bluez.Error.NotAuthorized": _C.RESULT_ERR_NOT_AUTHORIZED,
-            "org.bluez.Error.NotSupported": _C.RESULT_ERR_NOT_SUPPORTED,
-            "org.bluez.Error.NotConnected": _C.RESULT_ERR_NOT_CONNECTED,
-            "org.freedesktop.DBus.Error.NoReply": _C.RESULT_ERR_NO_REPLY,
-            "org.bluez.Error.InProgress": _C.RESULT_ERR_ACTION_IN_PROGRESS,
-        }
+        from bleep.core.error_handling import classify_gatt_read_error
 
         attempt = 0
         last_err: int | None = None
@@ -563,8 +595,7 @@ class Characteristic:  # noqa: N801 – keep legacy-friendly name
                 data = self.read_value_with_fallback()
                 return data, None
             except dbus.exceptions.DBusException as exc:  # type: ignore[attr-defined]
-                error_name = exc.get_dbus_name()
-                mapped = _ERR_MAP.get(error_name, _C.RESULT_ERR_UNKNOWN_CONNECT_FAILURE)  # type: ignore[attr-defined]
+                mapped = classify_gatt_read_error(exc)  # message-aware (BlueZ ATT semantics)
                 last_err = mapped
                 if mapped == _C.RESULT_ERR_ACTION_IN_PROGRESS:
                     _sleep(delay)

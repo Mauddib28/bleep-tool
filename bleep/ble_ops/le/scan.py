@@ -6,12 +6,13 @@ code has been removed.
 
 Scan *variants* implemented here (in increasing chattiness):
 
-* passive_scan – BlueZ default: DuplicateData=True, respects interval hints.
-* naggy_scan   – Same filter but DuplicateData=False so we get **every** adv.
+* passive_scan – BlueZ default DuplicateData=false (duplicate suppression on).
+* naggy_scan   – Merged filter with DuplicateData=true so BlueZ emits every
+                  ManufacturerData/ServiceData change (when the controller allows).
 * pokey_scan   – Repeated 1-second *naggy* scans (stop/start discovery) to
-                  coerce extra advertising.  Optional Address filter hammers a
-                  specific device (fewer HCI events, quicker).  Inspired by
-                  behaviour in the golden-template monolith.
+                  coerce extra advertising.  Optional colonized Pattern hammers a
+                  specific device (fewer HCI events, quicker); client-side MAC
+                  filtering remains authoritative.
 * brute_scan   – Combination BR/EDR + LE phases – loudest footprint.
 """
 
@@ -28,6 +29,7 @@ except Exception:  # noqa: BLE001 – missing GI bindings / BlueZ runtime
     _HAS_NATIVE_STACK = False
 
 from bleep.core.log import print_and_log, LOG__GENERAL, LOG__DEBUG
+from bleep.core.errors import NotSupportedError
 from bleep.core.constants import (
     BT_DEVICE_TYPE_UNKNOWN,
     BT_DEVICE_TYPE_CLASSIC, 
@@ -35,7 +37,19 @@ from bleep.core.constants import (
     BT_DEVICE_TYPE_DUAL
 )
 import json as _json
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
+
+def _colonize_pattern(value: str) -> str:
+    """Normalize a MAC/OUI prefix for BlueZ ``Pattern`` (prefer colonized form)."""
+    p = str(value).strip()
+    if all(c in "0123456789abcdefABCDEF:" for c in p) and ":" in p:
+        return p.upper()
+    # Digits-only OUI/MAC fragments → insert colons every two hex digits when even length.
+    hex_only = "".join(c for c in p if c in "0123456789abcdefABCDEF")
+    if hex_only and len(hex_only) % 2 == 0 and len(hex_only) >= 2 and hex_only == p.replace(":", ""):
+        return ":".join(hex_only[i : i + 2].upper() for i in range(0, len(hex_only), 2))
+    return p
 
 
 def _json_compact(obj: Any) -> str:
@@ -46,44 +60,140 @@ def _json_compact(obj: Any) -> str:
         return "{}"
 
 
-def _native_scan(device: str | None, timeout: int, transport: str = "auto", quiet: bool = False) -> int:
-    """Perform a simple LE discovery using the refactored stack."""
+def _native_scan(
+    device: str | None,
+    timeout: int,
+    transport: str = "auto",
+    quiet: bool = False,
+    *,
+    filter_record: bool = False,
+    duplicate_data: Optional[bool] = None,
+    pattern: Optional[str] = None,
+    adapter_name: str | None = None,
+) -> int:
+    """Perform a simple LE discovery using the refactored stack.
 
-    adapter = _Adapter()
-    
-    # Explicitly set discovery filter transport to avoid stale filter state
-    adapter.set_discovery_filter({"Transport": transport.lower()})
+    When *device* is supplied, results are filtered client-side to that MAC
+    (BlueZ ``SetDiscoveryFilter`` has no address key, so filtering must be applied
+    to results — see ``org.bluez.Adapter``). The filter always narrows console
+    output and the returned dict; database persistence is narrowed only when
+    *filter_record* is True (otherwise all discovered devices are still recorded).
 
+    Discovery uses exactly one merged ``SetDiscoveryFilter`` via the device
+    manager (Transport plus optional DuplicateData/Pattern).
+
+    *adapter_name* selects the BlueZ controller (e.g. ``"hci1"``); ``None`` keeps
+    the default (``ADAPTER_NAME``). Callers that need adapter readiness surfaced
+    with a non-zero exit should pre-check via ``core.preflight.require_adapter``
+    (the CLI ``scan`` dispatch does this) — this function binds the manager to
+    the requested adapter but does not itself gate on readiness.
+    """
+
+    adapter = _Adapter(adapter_name) if adapter_name else _Adapter()
     manager = adapter.create_device_manager()
 
-    # In this first rewrite we ignore *device* filtering; higher-level code
-    # expects a *passive* broadcast scan.
-    manager.start_discovery(timeout=timeout)
-    manager.run()  # blocks until timeout expires
+    # BlueZ performs a broadcast discovery (its SetDiscoveryFilter has no address
+    # key); any ``device`` narrowing is applied client-side to the results below.
+    # Optional Pattern is an optimization only — client filter remains authoritative.
+    manager.start_discovery(
+        timeout=timeout,
+        transport=transport,
+        duplicate_data=duplicate_data,
+        pattern=pattern,
+    )
+    manager.run()  # blocks until timeout; _timeout harvests before StopDiscovery (R1)
+    raw = manager.take_last_harvest()
 
-    raw = adapter.get_discovered_devices()
+    # Client-side address filtering. ``view`` drives console output and the
+    # returned dict; ``persist_src`` drives DB recording (full set unless the
+    # caller explicitly narrows persistence via ``filter_record``).
+    if device:
+        _want = device.strip().upper()
+        view = [e for e in raw if str(e.get("address", "")).upper() == _want]
+    else:
+        view = raw
+    persist_src = view if (device and filter_record) else raw
 
     # Only print output if not in quiet mode
     if not quiet:
-        if not raw:
-            print_and_log("[*] No BLE devices discovered", LOG__GENERAL)
+        if not view:
+            # F5: distinguish "nothing was in range" from "devices were seen but
+            # none matched the -d/--device filter" so an empty result under a filter
+            # is not misread as a dead scan.
+            if device:
+                print_and_log(
+                    f"[*] No device matching {device} found "
+                    f"({len(raw)} other device(s) discovered)",
+                    LOG__GENERAL,
+                )
+            else:
+                print_and_log("[*] No BLE devices discovered", LOG__GENERAL)
         else:
-            print_and_log(f"[*] Discovered {len(raw)} device(s)", LOG__GENERAL)
+            print_and_log(f"[*] Discovered {len(view)} device(s)", LOG__GENERAL)
 
-            for entry in raw:
+            for entry in view:
                 addr = entry.get("address", "??")
                 name = entry.get("name") or entry.get("alias") or "?"
                 rssi_val = entry.get("rssi")
-                rssi_disp = rssi_val if rssi_val is not None else "?"
-                rssi_display = f"{rssi_disp} dBm" if rssi_disp != "?" else "? dBm"
-                print_and_log(f"  {addr} ({name}) - RSSI: {rssi_display}", LOG__GENERAL)
+                # #12: surface BlueZ's reported address type — LE peers are
+                # frequently 'random' (resolvable-private) addresses, and
+                # showing it helps explain identity churn across scans.
+                atype = entry.get("address_type")
+                atype_disp = f" [{atype}]" if atype else ""
+                # N4: BlueZ reports ``Address`` as the *Identity Address after
+                # pairing* (org.bluez.Device.rst:226), so a bonded device seen via
+                # a resolvable-private address yields a second D-Bus object whose
+                # path encodes the RPA but whose ``Address`` equals the identity.
+                # That makes two distinct objects print as an identical line.
+                # Rather than de-dupe (which would hide the RPA↔identity linkage),
+                # surface the path/adv MAC when it differs from the resolved Address.
+                _path = entry.get("path") or ""
+                _path_mac = _path.rsplit("/dev_", 1)[-1].replace("_", ":").upper() if "/dev_" in _path else ""
+                ident_disp = (
+                    f" [identity; adv/RPA {_path_mac}]"
+                    if _path_mac and _path_mac != str(addr).upper()
+                    else ""
+                )
+                beacon_disp = ""
+                try:
+                    from bleep.analysis.adv_dissect import (
+                        dissect_advertisement,
+                        format_beacon_summary,
+                    )
+                    _summary = format_beacon_summary(
+                        dissect_advertisement(
+                            manufacturer_data=entry.get("manufacturer_data"),
+                            service_data=entry.get("service_data"),
+                            service_uuids=entry.get("uuids") or [],
+                            advertising_data=entry.get("advertising_data"),
+                        )
+                    )
+                    if _summary:
+                        beacon_disp = f" {_summary}"
+                except Exception:  # noqa: BLE001 - display enrichment must not break scanning
+                    beacon_disp = ""
+                # #10/#11: a missing RSSI means BlueZ has the device cached but it
+                # is not advertising right now — tag it (and note any existing
+                # bond) so it isn't mistaken for a freshly-seen device whose RSSI
+                # read merely failed.
+                if rssi_val is not None:
+                    print_and_log(
+                        f"  {addr} ({name}){atype_disp}{ident_disp} - RSSI: {rssi_val} dBm{beacon_disp}",
+                        LOG__GENERAL,
+                    )
+                else:
+                    tag = "bonded, cached" if (entry.get("bonded") or entry.get("paired")) else "cached, not advertising"
+                    print_and_log(
+                        f"  {addr} ({name}){atype_disp}{ident_disp} - RSSI: n/a [{tag}]{beacon_disp}",
+                        LOG__GENERAL,
+                    )
     
     # Always update observations if available
-    if raw and _obs:
+    if persist_src and _obs:
         from bleep.analysis.device_type_classifier import DeviceTypeClassifier
         classifier = DeviceTypeClassifier()  # Create once, reuse for all devices
         
-        for entry in raw:
+        for entry in persist_src:
             addr = entry.get("address", "??")
             if addr == "??":
                 continue
@@ -138,14 +248,65 @@ def _native_scan(device: str | None, timeout: int, transport: str = "auto", quie
                          for k, v in entry["advertising_data"].items()}
                     )
 
+                # P2-B10: persist advertised UUIDs
+                adv_uuids = entry.get("uuids", [])
+                if adv_uuids:
+                    device_info['uuids'] = adv_uuids
+
+                # P2-B11: persist connection state booleans when available
+                if entry.get("paired") is not None:
+                    device_info['paired'] = bool(entry["paired"])
+                if entry.get("trusted") is not None:
+                    device_info['trusted'] = bool(entry["trusted"])
+                if entry.get("bonded") is not None:
+                    device_info['bonded'] = bool(entry["bonded"])
+
                 _obs.upsert_device(addr, **device_info)
-                
+
+                # P2-B8: persist raw advertisement report
+                if rssi_val is not None:
+                    adv_raw = entry.get("advertising_data") or {}
+                    adv_blob = b''
+                    if adv_raw:
+                        for _ad_type, _ad_val in adv_raw.items():
+                            adv_blob += bytes(_ad_val) if isinstance(_ad_val, (bytes, bytearray)) else b''
+                    decoded = {}
+                    if adv_uuids:
+                        decoded["uuids"] = adv_uuids
+                    if entry.get("manufacturer_data"):
+                        decoded["manufacturer_data"] = {
+                            str(k): bytes(v).hex() for k, v in entry["manufacturer_data"].items()
+                        }
+                    if entry.get("service_data"):
+                        decoded["service_data"] = {
+                            k: bytes(v).hex() if isinstance(v, (bytes, bytearray)) else str(v)
+                            for k, v in entry["service_data"].items()
+                        }
+                    if entry.get("tx_power") is not None:
+                        decoded["tx_power"] = entry["tx_power"]
+                    # G-7.5: structured, attributed, lossless dissection of the
+                    # advertisement fields. Additive only — never blocks the scan.
+                    try:
+                        from bleep.analysis.adv_dissect import dissect_advertisement
+                        dissection = dissect_advertisement(
+                            manufacturer_data=entry.get("manufacturer_data"),
+                            service_data=entry.get("service_data"),
+                            service_uuids=adv_uuids,
+                            advertising_data=entry.get("advertising_data"),
+                        )
+                        if any(dissection.get(k) for k in
+                               ("manufacturer_data", "service_data", "service_uuids", "advertising_data")):
+                            decoded["adv_dissection"] = dissection
+                    except Exception:  # noqa: BLE001 - enrichment must not break scanning
+                        pass
+                    _obs.insert_adv(addr, rssi_val, adv_blob, decoded, adapter=adapter_name)
+
                 # STEP 2: NOW perform classification with database cache enabled
                 # Device exists in DB, so foreign key constraints will be satisfied
                 context = {
                     "device_class": device_class,
                     "address_type": addr_type,
-                    "uuids": entry.get("uuids", []),
+                    "uuids": adv_uuids,
                     "connected": entry.get("connected", False),
                     "service_data": entry.get("service_data", {}),
                     "advertising_data": entry.get("advertising_data", {}),
@@ -173,11 +334,24 @@ def _native_scan(device: str | None, timeout: int, transport: str = "auto", quie
                 else:
                     print_and_log(f"[-] Error processing device {addr}: {e}", LOG__DEBUG)
 
-    # Convert raw device list to dictionary format expected by higher-level code
+    # Convert filtered device list to dictionary format expected by higher-level code
     devices = {}
-    for entry in raw:
+    for entry in view:
         addr = entry.get("address", "??")
         if addr != "??":
+            # LR-2c: fingerprint_rotated_in_round is attached during manager harvest
+            # (R1). Retain a best-effort pop for legacy GMO fallback paths.
+            if "fingerprint_rotated_in_round" not in entry:
+                try:
+                    _p = entry.get("path") or ""
+                    pop_mac = (
+                        _p.rsplit("/dev_", 1)[-1].replace("_", ":").upper()
+                        if "/dev_" in _p
+                        else str(addr).upper()
+                    )
+                    entry["fingerprint_rotated_in_round"] = manager.pop_fingerprint_rotated(pop_mac)
+                except Exception:  # noqa: BLE001 - enrichment must never break scanning
+                    pass
             devices[addr] = entry
     
     print_and_log(f"[DEBUG] _native_scan returning {len(devices)} devices", LOG__DEBUG)
@@ -207,16 +381,10 @@ def create_and_return__bluetooth_scan__discovered_devices(
     from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
 
     adapter = _Adapter(adapter_name) if adapter_name else _Adapter()
-
-    # Apply transport filter if explicitly requested
-    if transport.lower() in {"le", "bredr"}:
-        adapter.set_discovery_filter({"Transport": transport.lower()})
-
     manager = adapter.create_device_manager()
-    manager.start_discovery(timeout=timeout)
+    manager.start_discovery(timeout=timeout, transport=transport)
     manager.run()
-
-    return adapter.get_discovered_devices()
+    return manager.take_last_harvest()
 
 
 def create_and_return__bluetooth_scan__discovered_devices__specific_adapter(
@@ -275,6 +443,15 @@ def _enrich_device_info_from_props(device_info: Dict[str, Any], props: dict) -> 
         device_info["advertising_data"] = _json_compact(
             {str(k): bytes(v).hex() for k, v in props["AdvertisingData"].items()}
         )
+    # P2-B11: connection state booleans
+    if "Paired" in props:
+        device_info["paired"] = bool(props["Paired"])
+    if "Trusted" in props:
+        device_info["trusted"] = bool(props["Trusted"])
+    if "Bonded" in props:
+        device_info["bonded"] = bool(props["Bonded"])
+    if "UUIDs" in props and "uuids" not in device_info:
+        device_info["uuids"] = [str(u) for u in props["UUIDs"]]
 
 
 def _persist_mapping(mac: str, mapping: Dict[str, Any]):
@@ -459,6 +636,100 @@ def _persist_mapping(mac: str, mapping: Dict[str, Any]):
         print_and_log(f"[-] Traceback: {traceback.format_exc()}", LOG__DEBUG)
 
 
+# DIS (Device Information Service) characteristic UUIDs — 128-bit canonical form
+_DIS_SVC_UUID = "0000180a-0000-1000-8000-00805f9b34fb"
+_DIS_FIRMWARE_REV_UUID = "00002a26-0000-1000-8000-00805f9b34fb"
+_DIS_SOFTWARE_REV_UUID = "00002a28-0000-1000-8000-00805f9b34fb"
+_DIS_PNP_ID_UUID = "00002a50-0000-1000-8000-00805f9b34fb"
+_DIS_MODEL_NUMBER_UUID = "00002a24-0000-1000-8000-00805f9b34fb"
+_DIS_MANUFACTURER_UUID = "00002a29-0000-1000-8000-00805f9b34fb"
+
+
+def _extract_dis_version_data(mac: str, mapping: Dict[str, Any]):
+    """Extract version-related data from the GATT Device Information Service.
+
+    If the DIS (0x180A) was discovered and characteristics read during BLE
+    enumeration, persist firmware revision, software revision, and PnP ID
+    to the device record in the observations DB.
+    """
+    if not _obs or not mapping:
+        return
+
+    # Locate DIS in the mapping (keys may be short or full 128-bit UUIDs)
+    dis_data = None
+    for svc_uuid, svc_data in mapping.items():
+        if not isinstance(svc_data, dict):
+            continue
+        normalized = svc_uuid.lower().replace("_", "-")
+        if normalized == _DIS_SVC_UUID or normalized == "0000180a" or normalized == "180a":
+            dis_data = svc_data
+            break
+
+    if dis_data is None:
+        return
+
+    chars = dis_data.get("chars") or dis_data.get("Characteristics") or {}
+    if not chars:
+        return
+
+    update_fields: Dict[str, Any] = {}
+
+    for char_uuid, char_data in chars.items():
+        if not isinstance(char_data, dict):
+            continue
+        normalized_char = char_uuid.lower().replace("_", "-")
+        value = char_data.get("Value") or char_data.get("value")
+        if not value:
+            continue
+
+        if normalized_char in (_DIS_FIRMWARE_REV_UUID, "00002a26", "2a26"):
+            update_fields["firmware_revision"] = str(value).strip()
+        elif normalized_char in (_DIS_SOFTWARE_REV_UUID, "00002a28", "2a28"):
+            update_fields["software_revision"] = str(value).strip()
+        elif normalized_char in (_DIS_PNP_ID_UUID, "00002a50", "2a50"):
+            _parse_pnp_id(value, update_fields)
+        elif normalized_char in (_DIS_MODEL_NUMBER_UUID, "00002a24", "2a24"):
+            update_fields["model_number"] = str(value).strip()
+        elif normalized_char in (_DIS_MANUFACTURER_UUID, "00002a29", "2a29"):
+            update_fields["dis_manufacturer_name"] = str(value).strip()
+
+    if update_fields:
+        try:
+            from bleep.core.time_utils import utc_now_iso
+            update_fields["version_queried_at"] = utc_now_iso()
+            _obs.upsert_device(mac, **update_fields)
+        except Exception as exc:
+            print_and_log(f"[-] DIS version persist failed: {exc}", LOG__DEBUG)
+
+
+def _parse_pnp_id(value, fields: Dict[str, Any]):
+    """Parse PnP ID characteristic value (7 bytes) into vendor/product/version."""
+    try:
+        if isinstance(value, str):
+            raw = bytes.fromhex(value.replace(" ", "").replace(":", ""))
+        elif isinstance(value, (list, tuple)):
+            raw = bytes(value)
+        elif isinstance(value, bytes):
+            raw = value
+        else:
+            return
+
+        if len(raw) < 7:
+            return
+
+        vendor_source = raw[0]
+        vendor_id = int.from_bytes(raw[1:3], "little")
+        product_id = int.from_bytes(raw[3:5], "little")
+        product_version = int.from_bytes(raw[5:7], "little")
+
+        fields["pnp_vendor_source"] = vendor_source
+        fields["pnp_vendor_id"] = vendor_id
+        fields["pnp_product_id"] = product_id
+        fields["pnp_product_version"] = product_version
+    except (ValueError, TypeError):
+        pass
+
+
 def _collect_device_props(device) -> dict:
     """Collect org.bluez.Device1 + auxiliary interface properties from D-Bus.
 
@@ -490,11 +761,17 @@ def _collect_device_props(device) -> dict:
     return props
 
 
-def _base_enum(target_bt_addr: str, *, deep: bool = False):
-    """Connect & enumerate, return (device, mapping, mine_map, perm_map, device_props)."""
+def _base_enum(target_bt_addr: str, *, deep: bool = False, adapter_name: str | None = None, skip_scan: bool = False):
+    """Connect & enumerate, return (device, mapping, mine_map, perm_map, device_props).
+
+    *adapter_name* selects the BlueZ controller (F5b); ``None`` keeps the default.
+    *skip_scan* skips PRE-FLIGHT discovery when Device1 already exists on the adapter.
+    """
     from bleep.ble_ops.le.connect import connect_and_enumerate__bluetooth__low_energy as _connect_enum
     
-    device, mapping, mine_map, perm_map = _connect_enum(target_bt_addr, deep_enumeration=deep)
+    device, mapping, mine_map, perm_map = _connect_enum(
+        target_bt_addr, deep_enumeration=deep, adapter_name=adapter_name, skip_scan=skip_scan
+    )
     
     device_props = _collect_device_props(device)
     
@@ -524,6 +801,9 @@ def _base_enum(target_bt_addr: str, *, deep: bool = False):
             
             # STEP 2: Save services and characteristics (creates more classification evidence)
             _persist_mapping(addr, mapping)
+
+            # STEP 2b: Extract Device Information Service version data if present
+            _extract_dis_version_data(addr, mapping)
             
             # STEP 3: Perform classification with full context (including services)
             # Use 'naggy' mode since we just connected and enumerated
@@ -571,14 +851,18 @@ def _base_enum(target_bt_addr: str, *, deep: bool = False):
     return device, mapping, mine_map, perm_map, device_props
 
 
-def passive_enum(target_bt_addr: str, *, deep: bool = False):
-    _, mapping, mine_map, perm_map, device_props = _base_enum(target_bt_addr, deep=deep)
-    return {"mapping": mapping, "mine_map": mine_map, "perm_map": perm_map,
+def passive_enum(target_bt_addr: str, *, deep: bool = False, adapter_name: str | None = None, skip_scan: bool = False):
+    device, mapping, mine_map, perm_map, device_props = _base_enum(
+        target_bt_addr, deep=deep, adapter_name=adapter_name, skip_scan=skip_scan
+    )
+    return {"device": device, "mapping": mapping, "mine_map": mine_map, "perm_map": perm_map,
             "device_props": device_props}
 
 
-def naggy_enum(target_bt_addr: str, *, deep: bool = False):
-    device, mapping, mine_map, perm_map, device_props = _base_enum(target_bt_addr, deep=deep)
+def naggy_enum(target_bt_addr: str, *, deep: bool = False, adapter_name: str | None = None, skip_scan: bool = False):
+    device, mapping, mine_map, perm_map, device_props = _base_enum(
+        target_bt_addr, deep=deep, adapter_name=adapter_name, skip_scan=skip_scan
+    )
     multi = multi_read_all(device, mapping=mapping, rounds=3)
 
     # Update mapping with the most recent value from multi-read and detect changes
@@ -610,6 +894,7 @@ def naggy_enum(target_bt_addr: str, *, deep: bool = False):
                 changed_chars.add(label)
 
     return {
+        "device": device,
         "mapping": mapping,
         "multi_read": multi,
         "mine_map": mine_map,
@@ -624,6 +909,8 @@ def pokey_enum(
     *,
     rounds: int = 3,
     verify: bool = False,
+    adapter_name: str | None = None,
+    skip_scan: bool = False,
 ):
     """Enumerate with light write-probes (0/1) after each round."""
     results = {}
@@ -633,7 +920,9 @@ def pokey_enum(
     device_props: dict = {}
     for r in range(rounds):
         print_and_log(f"[*] Pokey enum round {r+1}/{rounds}", LOG__GENERAL)
-        device, mapping, mine_map, perm_map, device_props = _base_enum(target_bt_addr, deep=False)
+        device, mapping, mine_map, perm_map, device_props = _base_enum(
+            target_bt_addr, deep=False, adapter_name=adapter_name, skip_scan=skip_scan
+        )
         device_obj = device
         from bleep.ble_ops.le.enum_helpers import small_write_probe
         small_write_probe(device, mapping, verify=verify)
@@ -658,8 +947,12 @@ def brute_enum(
     force: bool = False,
     verify: bool = False,
     deep: bool = False,
+    adapter_name: str | None = None,
+    skip_scan: bool = False,
 ):
-    device, mapping, mine_map, perm_map, device_props = _base_enum(target_bt_addr, deep=deep)
+    device, mapping, mine_map, perm_map, device_props = _base_enum(
+        target_bt_addr, deep=deep, adapter_name=adapter_name, skip_scan=skip_scan
+    )
 
     from typing import Any
     from bleep.ble_ops.le.enum_helpers import build_payload_iterator
@@ -716,28 +1009,34 @@ __all__ += [
 # ---------------------------------------------------------------------------
 
 
-def passive_scan(device: str | None = None, timeout: int = 60, transport: str = "auto", quiet: bool = False):  # noqa: D401
+def passive_scan(device: str | None = None, timeout: int = 60, transport: str = "auto", quiet: bool = False, *, filter_record: bool = False, adapter_name: str | None = None):  # noqa: D401
     """Execute a passive BLE scan.
 
     Parameters
     ----------
     device
-        Optional MAC address to target (ignored in native scan for now).
+        Optional MAC address to filter results to (client-side; see ``_native_scan``).
+    filter_record
+        When True *and* *device* is set, restrict database recording to the target
+        device as well (default records all discovered devices).
     timeout
         Duration in seconds for the discovery main-loop.
     transport
         Bluetooth transport filter: "auto" (default), "le" (Low Energy), or "bredr" (Classic).
     quiet
         If True, suppress console output during scanning.
+    adapter_name
+        Optional BlueZ controller name (e.g. ``"hci1"``); ``None`` keeps the
+        default (``ADAPTER_NAME``).
     """
 
     if not _HAS_NATIVE_STACK:
-        raise RuntimeError(
-            "PyGObject/BlueZ bindings not available – passive_scan now requires "
-            "a native environment after monolith fallback removal."
+        raise NotSupportedError(
+            "passive_scan (PyGObject/BlueZ bindings not available – requires a "
+            "native environment after monolith fallback removal)"
         )
 
-    return _native_scan(device, timeout, transport, quiet)
+    return _native_scan(device, timeout, transport, quiet, filter_record=filter_record, adapter_name=adapter_name)
 
 
 # ---------------------------------------------------------------------------
@@ -745,24 +1044,39 @@ def passive_scan(device: str | None = None, timeout: int = 60, transport: str = 
 # ---------------------------------------------------------------------------
 
 
-def naggy_scan(device: str | None = None, timeout: int = 60, transport: str = "auto"):
-    """Active scan with *DuplicateData=False* (slightly more chatty)."""
+def naggy_scan(
+    device: str | None = None,
+    timeout: int = 60,
+    transport: str = "auto",
+    *,
+    filter_record: bool = False,
+    pattern: str | None = None,
+    adapter_name: str | None = None,
+):
+    """Active scan with DuplicateData=true in one merged discovery filter.
+
+    *adapter_name* selects the BlueZ controller; ``None`` keeps the default.
+    """
     if not _HAS_NATIVE_STACK:
-        raise RuntimeError("GI/BlueZ runtime missing – naggy_scan unavailable")
+        raise NotSupportedError("naggy_scan (GI/BlueZ runtime missing)")
 
-    # Set discovery filter once via adapter then delegate to native scan
-    from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
-
-    _adapter = _Adapter()
-    _adapter.set_discovery_filter({"DuplicateData": False})
-
-    return _native_scan(device, timeout, transport)
+    return _native_scan(
+        device,
+        timeout,
+        transport,
+        filter_record=filter_record,
+        duplicate_data=True,
+        pattern=pattern,
+        adapter_name=adapter_name,
+    )
 
 
 def pokey_scan(
     target_mac: str | None = None,
     *,
     timeout: int = 30,
+    transport: str = "auto",
+    adapter_name: str | None = None,
 ):
     """Rapid-fire active scan loop ("pokey mode").
 
@@ -776,37 +1090,47 @@ def pokey_scan(
 
     target_mac (optional)
     ---------------------
-    When supplied we set `Address=<MAC>` filter once so only that device’s
-    adverts are processed – reduces controller load & log spam when you’re
-    investigating a single beacon.
+    When supplied, each naggy round merges a colonized BlueZ ``Pattern`` into
+    the single discovery filter as an optimization. Client-side MAC filtering
+    remains authoritative.
+
+    *transport* and *adapter_name* are threaded into every inner naggy round so
+    each round hits the same controller/transport (F5).
     """
     if not _HAS_NATIVE_STACK:
-        raise RuntimeError("GI/BlueZ runtime missing – pokey_scan unavailable")
+        raise NotSupportedError("pokey_scan (GI/BlueZ runtime missing)")
 
     import time as _time
     end_time = _time.monotonic() + timeout
     rounds = 0
-
-    # One-time filter setup when target specified
-    if target_mac:
-        from bleep.dbuslayer.adapter import system_dbus__bluez_adapter as _Adapter
-        _Adapter().set_discovery_filter({"Address": target_mac.upper()})
+    pattern = _colonize_pattern(target_mac) if target_mac else None
 
     while _time.monotonic() < end_time:
         rounds += 1
         print_and_log(f"[*] Pokey round {rounds}", LOG__DEBUG)
-        naggy_scan(target_mac if target_mac else None, timeout=1)
+        naggy_scan(
+            target_mac if target_mac else None,
+            timeout=1,
+            transport=transport,
+            pattern=pattern,
+            adapter_name=adapter_name,
+        )
     return 0
 
 
-def brute_scan(timeout: int = 30):
-    """Full BR/EDR + LE sweep (loudest)."""
+def brute_scan(timeout: int = 30, *, adapter_name: str | None = None):
+    """Full BR/EDR + LE sweep (loudest).
+
+    Both phases run on the same controller when *adapter_name* is given (F5);
+    ``None`` keeps the default. ``transport`` is intrinsic to brute (BR/EDR then
+    LE) and is therefore not a parameter.
+    """
     if not _HAS_NATIVE_STACK:
-        raise RuntimeError("GI/BlueZ runtime missing – brute_scan unavailable")
+        raise NotSupportedError("brute_scan (GI/BlueZ runtime missing)")
 
     half = max(1, timeout // 2)
     print_and_log("[*] Brute scan – BR/EDR phase", LOG__GENERAL)
-    _native_scan(None, half, transport="bredr")
+    _native_scan(None, half, transport="bredr", adapter_name=adapter_name)
     print_and_log("[*] Brute scan – LE active phase", LOG__GENERAL)
-    naggy_scan(None, half, transport="le")
+    naggy_scan(None, half, transport="le", adapter_name=adapter_name)
     return 0
