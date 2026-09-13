@@ -1,4 +1,7 @@
+# Runtime dependencies for BLEEP.
+# setup.py is the source of truth; this file mirrors the hard runtime imports
+# for `pip install -r requirements.txt` (used by the Dockerfile). Test-only
+# packages live in the `test` extra: `pip install -e .[test]`.
 dbus-python>=1.2.0
 PyGObject>=3.48.0
 PyYAML>=6.0
-pytest>=8.0.0 
